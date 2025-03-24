@@ -4,3 +4,4 @@ venv/
 .ipynb_checkpoints
 *.pyc
 .__pycache__/
+mlb_pred.egg-info/
