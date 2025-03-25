@@ -5,3 +5,5 @@ venv/
 *.pyc
 .__pycache__/
 mlb_pred.egg-info/
+!src/data/
+!src/
