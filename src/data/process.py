@@ -7,270 +7,115 @@ from collections import defaultdict
 
 logger = logging.getLogger(__name__)
 
-def aggregate_statcast_to_game_level(statcast_df):
+def aggregate_to_game_level(statcast_df):
     """
-    Aggregate statcast data to pitcher-game level
+    Aggregate statcast pitch-level data to pitcher-game level
+    """
+    import numpy as np
+    import pandas as pd
     
-    Args:
-        statcast_df (pandas.DataFrame): Raw statcast data
-        
-    Returns:
-        pandas.DataFrame: Aggregated pitcher-game level data
-    """
     logger.info("Aggregating statcast data to pitcher-game level...")
     
-    # Analyze input data structure for debugging
-    logger.info(f"Input data shape: {statcast_df.shape}")
-    logger.info(f"Available columns: {', '.join(statcast_df.columns[:10])}...")
+    # Basic validation
+    if statcast_df.empty:
+        logger.warning("Empty dataframe provided for aggregation.")
+        return pd.DataFrame()
     
-    # Check for required columns
+    # Ensure required columns exist
     required_cols = ['game_date', 'pitcher']
-    missing_cols = [col for col in required_cols if col not in statcast_df.columns]
-    
-    if missing_cols:
-        logger.error(f"Missing required columns: {missing_cols}")
-        
-        # Try to recover if possible - map common column name variations
-        column_alternatives = {
-            'pitcher': ['pitcher_id', 'pitcher_name', 'player_id'],
-            'game_date': ['game_day', 'date']
-        }
-        
-        for missing_col in missing_cols.copy():
-            for alt in column_alternatives.get(missing_col, []):
-                if alt in statcast_df.columns:
-                    logger.info(f"Using {alt} column as {missing_col}")
-                    statcast_df[missing_col] = statcast_df[alt]
-                    missing_cols.remove(missing_col)
-                    break
-        
-        if missing_cols:
-            logger.error("Cannot continue with data aggregation due to missing required columns")
-            return pd.DataFrame()
-    
-    # Ensure we have player_name
-    if 'player_name' not in statcast_df.columns:
-        if 'pitcher_name' in statcast_df.columns:
-            statcast_df['player_name'] = statcast_df['pitcher_name']
-        elif 'pitcher' in statcast_df.columns and 'player_name' not in statcast_df.columns:
-            # Create placeholder player names from pitcher IDs
-            statcast_df['player_name'] = 'Pitcher_' + statcast_df['pitcher'].astype(str)
-            logger.warning("Created placeholder player names from pitcher IDs")
+    missing = [col for col in required_cols if col not in statcast_df.columns]
+    if missing:
+        logger.error(f"Missing required columns: {missing}")
+        return pd.DataFrame()
     
     # Convert game_date to datetime
     statcast_df['game_date'] = pd.to_datetime(statcast_df['game_date'], errors='coerce')
     
-    # Create unique game ID
-    if 'game_pk' in statcast_df.columns:
-        statcast_df['game_id'] = statcast_df['game_pk'].astype(str)
-    else:
-        # If game_pk is not available, create a synthetic game ID
-        logger.warning("game_pk column not found, creating synthetic game IDs")
-        statcast_df['game_id'] = statcast_df['game_date'].dt.strftime('%Y%m%d') + '_' + statcast_df.groupby(['game_date', 'pitcher']).ngroup().astype(str)
+    # Create game_id column if it doesn't exist
+    if 'game_id' not in statcast_df.columns:
+        if 'game_pk' in statcast_df.columns:
+            statcast_df['game_id'] = statcast_df['game_pk'].astype(str)
+        else:
+            # Create synthetic game ID from date and home team
+            logger.warning("Creating synthetic game IDs")
+            if 'home_team' in statcast_df.columns:
+                statcast_df['game_id'] = statcast_df['game_date'].dt.strftime('%Y%m%d') + '_' + statcast_df['home_team']
+            else:
+                # Last resort - create IDs based on date only
+                statcast_df['game_id'] = statcast_df['game_date'].dt.strftime('%Y%m%d') + '_' + \
+                                        statcast_df.groupby(['game_date']).ngroup().astype(str)
     
-    # Add season if not present
-    if 'season' not in statcast_df.columns:
-        statcast_df['season'] = statcast_df['game_date'].dt.year
-    
-    # Ensure the pitcher column is string type for grouping
-    statcast_df['pitcher'] = statcast_df['pitcher'].astype(str)
-    
-    # Log the number of unique pitchers, games, and pitcher-game combinations
-    logger.info(f"Unique pitchers: {statcast_df['pitcher'].nunique()}")
-    logger.info(f"Unique games: {statcast_df['game_id'].nunique()}")
-    logger.info(f"Unique pitcher-game combinations: {statcast_df.groupby(['pitcher', 'game_id']).ngroups}")
-    
-    # Process pitch types directly from raw data before aggregation
-    pitch_type_present = False
-    if 'pitch_type' in statcast_df.columns:
-        pitch_type_present = True
-        # Get counts of each pitch type for each pitcher-game
-        logger.info("Pitch type column found - extracting pitch mix data")
-        
-        # Create empty dictionaries to store pitch counts and percentages
-        pitch_counts = defaultdict(lambda: defaultdict(int))
-        pitch_percentages = defaultdict(dict)
-        
-        # Count pitches by type for each pitcher-game
-        for _, row in statcast_df.iterrows():
-            if pd.notna(row['pitch_type']):
-                pitcher = row['pitcher']
-                game_id = row['game_id']
-                pitch_type = row['pitch_type']
-                pitch_counts[(pitcher, game_id)]['total'] += 1
-                pitch_counts[(pitcher, game_id)][pitch_type] += 1
-        
-        # Calculate percentages
-        for (pitcher, game_id), counts in pitch_counts.items():
-            total = counts['total']
-            if total > 0:
-                for pitch_type, count in counts.items():
-                    if pitch_type != 'total':
-                        pitch_percentages[(pitcher, game_id)][pitch_type] = count / total
-    else:
-        logger.warning("No pitch_type column found - unable to extract pitch mix data")
-    
-    # Group by pitcher and game
+    # Define grouping columns
     group_cols = ['pitcher', 'game_id', 'game_date']
     if 'player_name' in statcast_df.columns:
         group_cols.append('player_name')
     if 'season' in statcast_df.columns:
         group_cols.append('season')
+    elif 'game_date' in statcast_df.columns:
+        # Add season column based on year
+        statcast_df['season'] = statcast_df['game_date'].dt.year
+        group_cols.append('season')
+        
+    # Log grouping info
+    logger.info(f"Grouping by columns: {group_cols}")
     
+    # Group by pitcher and game
     grouped = statcast_df.groupby(group_cols)
     
-    # Count total pitches per pitcher per game
-    pitch_counts_df = grouped.size().reset_index(name='pitch_count')
+    # Count pitches per game
+    pitch_counts = grouped.size().reset_index(name='pitch_count')
+    game_level = pitch_counts.copy()
     
-    # Calculate basic stats
+    # Try to aggregate metrics
     try:
-        # Create aggregation functions for game-level metrics
-        agg_dict = {'pitch_count': 'first'}  # Already calculated
-        
-        # Add optional columns to the aggregation if they exist
-        optional_cols = [
-            'release_speed', 'release_pos_x', 'release_pos_z', 'pfx_x', 'pfx_z',
-            'plate_x', 'plate_z', 'effective_speed', 'release_spin_rate', 'release_extension',
-            'zone', 'description'
-        ]
-        
-        for col in optional_cols:
+        # Pitch velocity and spin rate
+        metric_cols = ['release_speed', 'release_spin_rate']
+        for col in metric_cols:
             if col in statcast_df.columns:
-                if col in ['release_speed', 'effective_speed', 'release_spin_rate']:
-                    agg_dict[col] = ['mean', 'max']
-                elif col in ['release_pos_x', 'release_pos_z', 'pfx_x', 'pfx_z', 'plate_x', 'plate_z']:
-                    agg_dict[col] = 'mean'
-                elif col == 'zone':
-                    agg_dict[col] = lambda x: (x == 1).mean()  # Zone percentage
+                means = grouped[col].mean().reset_index(name=f"{col}_mean")
+                maxes = grouped[col].max().reset_index(name=f"{col}_max")
+                game_level = pd.merge(game_level, means, on=group_cols, how='left')
+                game_level = pd.merge(game_level, maxes, on=group_cols, how='left')
         
-        # Apply aggregation
-        game_level = grouped.agg(agg_dict)
+        # Zone rate
+        if 'zone' in statcast_df.columns:
+            zone_rate = grouped['zone'].apply(lambda x: (x > 0).mean()).reset_index(name='zone_rate')
+            game_level = pd.merge(game_level, zone_rate, on=group_cols, how='left')
         
-        # Flatten multi-level columns if they exist
-        if isinstance(game_level.columns, pd.MultiIndex):
-            game_level.columns = ['_'.join(col).strip('_') if isinstance(col, tuple) else col 
-                                for col in game_level.columns.values]
-        
-        # Reset index to convert grouped columns to regular columns
-        game_level = game_level.reset_index()
-        
+        # Process events (strikeouts, walks, etc.)
+        if 'events' in statcast_df.columns:
+            # Filter to rows with events
+            events_df = statcast_df[statcast_df['events'].notna()]
+            
+            if not events_df.empty:
+                # Track key events
+                for event, new_name in [('strikeout', 'strikeouts'), ('walk', 'walks'), 
+                                       ('home_run', 'home_runs')]:
+                    # Count occurrences
+                    event_counts = events_df[events_df['events'] == event].groupby(group_cols).size().reset_index(name=new_name)
+                    if not event_counts.empty:
+                        game_level = pd.merge(game_level, event_counts, on=group_cols, how='left')
+                
+                # Hits (combination of single, double, triple, home_run)
+                hit_events = ['single', 'double', 'triple', 'home_run']
+                hits_df = events_df[events_df['events'].isin(hit_events)].groupby(group_cols).size().reset_index(name='hits')
+                if not hits_df.empty:
+                    game_level = pd.merge(game_level, hits_df, on=group_cols, how='left')
     except Exception as e:
-        logger.error(f"Error during statcast aggregation: {e}")
-        # Fallback to basic aggregation
-        logger.info("Falling back to basic aggregation")
-        game_level = pitch_counts_df  # Just use pitch counts
+        logger.error(f"Error during aggregation: {e}")
     
-    # Extract game outcome data
-    # Look for columns that might contain event outcomes
-    outcome_col = None
-    for col_name in ['events', 'event', 'outcome', 'play_outcome']:
-        if col_name in statcast_df.columns:
-            outcome_col = col_name
-            break
+    # Fill NAs with zeros
+    for col in game_level.columns:
+        if col not in group_cols and pd.api.types.is_numeric_dtype(game_level[col]):
+            game_level[col] = game_level[col].fillna(0)
     
-    if outcome_col:
-        logger.info(f"Found outcome data in column: {outcome_col}")
-        outcome_agg = statcast_df.groupby(['pitcher', 'game_id'])[outcome_col].value_counts().unstack(fill_value=0)
-        
-        # Check if event types exist for strikeouts, hits, walks, home runs
-        for outcome_type, col_name in [
-            ('strikeout', 'strikeouts'), 
-            ('walk', 'walks'),
-            ('home_run', 'home_runs')
-        ]:
-            if outcome_type in outcome_agg.columns:
-                # Map outcome to game_level
-                outcome_map = outcome_agg[outcome_type].to_dict()
-                game_level[col_name] = game_level.set_index(['pitcher', 'game_id']).index.map(
-                    lambda x: outcome_map.get(x, 0)
-                )
-            else:
-                game_level[col_name] = 0
-        
-        # For hits, we may need to check multiple event types
-        hit_types = ['single', 'double', 'triple', 'home_run']
-        hit_cols = [ht for ht in hit_types if ht in outcome_agg.columns]
-        
-        if hit_cols:
-            # Sum all hit types
-            hits_map = outcome_agg[hit_cols].sum(axis=1).to_dict()
-            game_level['hits'] = game_level.set_index(['pitcher', 'game_id']).index.map(
-                lambda x: hits_map.get(x, 0)
-            )
-        else:
-            game_level['hits'] = 0
-    else:
-        # If no event column found, add default outcome columns
-        logger.warning("No outcome/event column found - using zeros for game outcomes")
-        game_level['strikeouts'] = 0
-        game_level['hits'] = 0
-        game_level['walks'] = 0
-        game_level['home_runs'] = 0
-    
-    # Calculate swing and miss metrics
-    if 'description' in statcast_df.columns:
-        # Get swinging strike percentage
-        swing_miss = statcast_df.groupby(['pitcher', 'game_id'])['description'].apply(
-            lambda x: (x == 'swinging_strike').mean() if len(x) > 0 else 0
-        ).to_dict()
-        
-        game_level['swinging_strike_pct'] = game_level.set_index(['pitcher', 'game_id']).index.map(
-            lambda x: swing_miss.get(x, 0)
-        )
-        
-        # Get called strike percentage
-        called_strike = statcast_df.groupby(['pitcher', 'game_id'])['description'].apply(
-            lambda x: (x == 'called_strike').mean() if len(x) > 0 else 0
-        ).to_dict()
-        
-        game_level['called_strike_pct'] = game_level.set_index(['pitcher', 'game_id']).index.map(
-            lambda x: called_strike.get(x, 0)
-        )
-    else:
-        # Default values if not available
-        game_level['swinging_strike_pct'] = 0
-        game_level['called_strike_pct'] = 0
-    
-    # Calculate zone rate if zone column exists
-    if 'zone' in statcast_df.columns:
-        zone_rate = statcast_df.groupby(['pitcher', 'game_id'])['zone'].apply(
-            lambda x: (x != 0).mean() if len(x) > 0 else 0
-        ).to_dict()
-        
-        game_level['zone_rate'] = game_level.set_index(['pitcher', 'game_id']).index.map(
-            lambda x: zone_rate.get(x, 0)
-        )
-    else:
-        game_level['zone_rate'] = 0
-    
-    # Add pitch mix percentages to game_level
-    if pitch_type_present:
-        # Get unique pitch types
-        all_pitch_types = set()
-        for percentages in pitch_percentages.values():
-            all_pitch_types.update(percentages.keys())
-        
-        logger.info(f"Found {len(all_pitch_types)} unique pitch types: {', '.join(sorted(all_pitch_types))}")
-        
-        # Add columns for each pitch type
-        for pitch_type in all_pitch_types:
-            column_name = f'pitch_pct_{pitch_type}'
-            game_level[column_name] = game_level.apply(
-                lambda row: pitch_percentages.get((row['pitcher'], row['game_id']), {}).get(pitch_type, 0),
-                axis=1
-            )
-    
-    # Ensure all numeric columns have sensible values
-    for col in game_level.select_dtypes(include=[np.number]).columns:
-        game_level[col] = game_level[col].fillna(0)
+    # Check for columns with all zeros (only numeric columns)
+    numeric_cols = game_level.select_dtypes(include=[np.number]).columns
+    zero_cols = [col for col in numeric_cols if game_level[col].sum() == 0]
+    if zero_cols:
+        logger.warning(f"The following columns contain all zeros: {zero_cols}")
     
     logger.info(f"Aggregated data to {len(game_level)} pitcher-game records with {len(game_level.columns)} columns")
-    
-    # List columns with all zero values - these might indicate problems
-    zero_cols = [col for col in game_level.columns if game_level[col].sum() == 0]
-    if zero_cols:
-        logger.warning(f"The following columns contain all zeros and may need attention: {', '.join(zero_cols)}")
-    
     return game_level
 
 def process_traditional_stats(trad_df):
@@ -434,3 +279,79 @@ def normalize_name(name):
             name = f"{first} {last}"
     
     return name
+
+def merge_traditional_stats(game_level_df, traditional_df):
+    """
+    Merge game-level data with traditional stats based on pitcher ID and season
+    
+    Args:
+        game_level_df (pd.DataFrame): Game-level statcast data
+        traditional_df (pd.DataFrame): Season-level traditional stats
+        
+    Returns:
+        pd.DataFrame: Merged dataset
+    """
+    import pandas as pd
+    
+    logger.info(f"Merging {len(game_level_df)} game records with traditional stats")
+    
+    # Ensure we have the necessary columns
+    if 'pitcher' not in game_level_df.columns or 'season' not in game_level_df.columns:
+        logger.error("Game level data missing required columns for merging")
+        return game_level_df
+    
+    # Process traditional stats to prepare for merging
+    if 'IDfg' in traditional_df.columns:
+        # If it's raw traditional data
+        trad_processed = traditional_df.copy()
+        
+        # Rename ID columns
+        trad_processed['traditional_id'] = trad_processed['IDfg']
+        
+        if 'Season' in trad_processed.columns:
+            trad_processed['season'] = trad_processed['Season']
+        
+        # Select relevant columns for merging
+        stat_cols = ['ERA', 'FIP', 'xFIP', 'K/9', 'BB/9', 'WHIP', 'BABIP', 'LOB%', 'WAR', 'Team']
+        relevant_cols = ['traditional_id', 'season'] + [col for col in stat_cols if col in trad_processed.columns]
+        trad_processed = trad_processed[relevant_cols]
+        
+        # Convert column names to lowercase
+        trad_processed.columns = [col.lower() if col != 'LOB%' else 'lob_pct' for col in trad_processed.columns]
+        
+    else:
+        # If it's already processed from the database
+        trad_processed = traditional_df.copy()
+    
+    # Get pitcher mappings from the database
+    from src.data.db import get_db_connection
+    conn = get_db_connection()
+    pitcher_map = pd.read_sql("""
+        SELECT pitcher_id, statcast_id, traditional_id 
+        FROM pitchers 
+        WHERE statcast_id IS NOT NULL AND traditional_id IS NOT NULL
+    """, conn)
+    conn.close()
+    
+    if pitcher_map.empty:
+        logger.error("No pitcher ID mappings found in database")
+        return game_level_df
+    
+    # Add traditional_id to game_level data using the mapping
+    pitcher_dict = dict(zip(pitcher_map['statcast_id'], pitcher_map['traditional_id']))
+    game_level_df['traditional_id'] = game_level_df['pitcher'].astype(int).map(pitcher_dict)
+    
+    # Merge with traditional stats
+    merged_df = pd.merge(
+        game_level_df,
+        trad_processed,
+        on=['traditional_id', 'season'],
+        how='left'
+    )
+    
+    # Report merge stats
+    merged_count = merged_df.dropna(subset=['era']).shape[0]
+    merge_pct = merged_count / len(game_level_df) * 100
+    logger.info(f"Successfully merged traditional stats for {merged_count} games ({merge_pct:.1f}%)")
+    
+    return merged_df
