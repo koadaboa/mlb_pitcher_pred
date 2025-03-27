@@ -59,6 +59,9 @@ def create_prediction_features(force_refresh=False):
             # by only using past data for each observation
             pitcher_data[f'last_{window}_games_strikeouts_avg'] = pitcher_data['strikeouts'].rolling(
                 window=window, min_periods=1).mean().shift(1)
+
+            pitcher_data[f'last_{window}_games_outs_avg'] = pitcher_data['outs'].rolling(
+                window=window, min_periods=1).mean().shift(1)
             
             pitcher_data[f'last_{window}_games_k9_avg'] = pitcher_data['k_per_9'].rolling(
                 window=window, min_periods=1).mean().shift(1)
@@ -188,101 +191,3 @@ def create_prediction_features(force_refresh=False):
         logger.warning("No features created.")
     
     conn.close()
-
-def select_features_for_strikeout_model(df):
-    """
-    Select relevant features for strikeout prediction model
-    
-    Args:
-        df (pandas.DataFrame): Complete dataset with features
-        
-    Returns:
-        pandas.DataFrame: Selected features for strikeout model
-    """
-    # Basic features always included
-    basic_features = [
-        'pitcher_id', 'player_name', 'game_date', 'season',
-        'last_3_games_strikeouts_avg', 'last_5_games_strikeouts_avg',
-        'last_3_games_k9_avg', 'last_5_games_k9_avg',
-        'last_3_games_velo_avg', 'last_5_games_velo_avg',
-        'last_3_games_swinging_strike_pct_avg', 'last_5_games_swinging_strike_pct_avg',
-        'days_rest', 'team_changed'
-    ]
-    
-    # Pitch mix features - select all available
-    pitch_mix_cols = [col for col in df.columns if col.startswith('pitch_pct_')]
-    
-    # Combine all features
-    all_features = basic_features + pitch_mix_cols
-    
-    # Select only available columns
-    available_features = [col for col in all_features if col in df.columns]
-    
-    # Target variable
-    target = 'strikeouts'
-    
-    if target in df.columns:
-        available_features.append(target)
-    
-    # Select the features
-    selected_df = df[available_features].copy()
-    
-    # Handle missing values
-    selected_df.fillna(0, inplace=True)
-    
-    logger.info(f"Selected {len(available_features)} features for strikeout model")
-    return selected_df
-
-def select_features_for_era_model(df):
-    """
-    Select relevant features for ERA prediction model
-    
-    Args:
-        df (pandas.DataFrame): Complete dataset with features
-        
-    Returns:
-        pandas.DataFrame: Selected features for ERA model
-    """
-    # Basic features always included
-    basic_features = [
-        'pitcher_id', 'player_name', 'game_date', 'season',
-        'last_3_games_era_avg', 'last_5_games_era_avg',
-        'last_3_games_fip_avg', 'last_5_games_fip_avg',
-        'last_3_games_velo_avg', 'last_5_games_velo_avg',
-        'last_3_games_swinging_strike_pct_avg', 'last_5_games_swinging_strike_pct_avg',
-        'days_rest', 'team_changed'
-    ]
-    
-    # Additional features that may be useful for ERA prediction
-    additional_features = [
-        'release_speed_mean', 'release_spin_rate_mean', 
-        'swinging_strike_pct', 'called_strike_pct', 'zone_rate'
-    ]
-    
-    # Pitch mix features - select all available
-    pitch_mix_cols = [col for col in df.columns if col.startswith('pitch_pct_')]
-    
-    # Combine all features
-    all_features = basic_features + additional_features + pitch_mix_cols
-    
-    # Select only available columns
-    available_features = [col for col in all_features if col in df.columns]
-    
-    # Try different possible ERA column names
-    era_target = None
-    for possible_col in ['era', 'ERA', 'era_x', 'era_y']:
-        if possible_col in df.columns:
-            era_target = possible_col
-            break
-    
-    if era_target:
-        available_features.append(era_target)
-    
-    # Select the features
-    selected_df = df[available_features].copy()
-    
-    # Handle missing values
-    selected_df.fillna(0, inplace=True)
-    
-    logger.info(f"Selected {len(available_features)} features for ERA model")
-    return selected_df

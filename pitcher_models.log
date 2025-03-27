@@ -1,0 +1,77 @@
+2025-03-27 12:02:52,732 - __main__ - INFO - Loading pitcher data...
+2025-03-27 12:02:52,732 - src.data.db - INFO - Retrieving pitcher data from database...
+2025-03-27 12:02:53,237 - src.data.db - WARNING - No pitch mix data found in the database
+2025-03-27 12:02:53,237 - src.data.db - INFO - Retrieved 104453 rows of pitcher data with 27 columns
+2025-03-27 12:02:53,293 - src.data.db - INFO - Null value counts in key columns:
+team          104453
+era           104453
+k_per_9       104453
+bb_per_9      104453
+k_bb_ratio    104453
+whip          104453
+babip         104453
+lob_pct       104453
+fip           104453
+xfip          104453
+war           104453
+dtype: int64
+2025-03-27 12:02:53,294 - __main__ - INFO - Selecting features for strikeout model...
+2025-03-27 12:02:53,294 - __main__ - INFO - Selected 5 features for strikeout model: ['zone_rate', 'hits', 'walks', 'release_speed_max', 'swinging_strike_pct']
+2025-03-27 12:02:53,294 - __main__ - INFO - Training strikeout prediction model with years (2019, 2020, 2021, 2022) for training and (2023, 2024) for testing...
+2025-03-27 12:02:53,294 - src.models.train - INFO - Training strikeout prediction model with 5 features
+2025-03-27 12:02:53,294 - src.models.train - INFO - Training years: (2019, 2020, 2021, 2022), Testing years: (2023, 2024)
+2025-03-27 12:02:53,297 - src.models.train - INFO - Using 104453 rows after dropping NA values
+2025-03-27 12:02:53,299 - src.models.train - INFO - Training set: 63310 rows, Test set: 41143 rows
+2025-03-27 12:02:56,191 - src.models.train - INFO - Model metrics: RMSE=1.852, MAE=1.277, R²=0.285
+2025-03-27 12:02:56,191 - src.models.train - INFO - Top features by importance: hits, release_speed_max, walks
+2025-03-27 12:02:56,192 - __main__ - INFO - Saving strikeout model...
+2025-03-27 12:02:56,243 - src.models.train - INFO - Model saved to models\strikeout_model.pkl
+2025-03-27 12:02:56,243 - __main__ - INFO - Selecting features for ERA model...
+2025-03-27 12:02:56,243 - __main__ - INFO - Selected 5 features for ERA model: ['babip', 'whip', 'lob_pct', 'bb_per_9', 'war']
+2025-03-27 12:02:56,243 - __main__ - INFO - Training ERA prediction model...
+2025-03-27 12:02:56,243 - src.models.train - INFO - Training ERA prediction model with 5 features
+2025-03-27 12:02:56,243 - src.models.train - INFO - Training years: (2019, 2020, 2021, 2022), Testing years: (2023, 2024)
+2025-03-27 12:02:56,247 - src.models.train - INFO - Using 0 rows after dropping NA values
+2025-03-27 12:02:56,248 - src.models.train - INFO - Training set: 0 rows, Test set: 0 rows
+2025-03-27 12:20:47,689 - __main__ - INFO - Loading pitcher data...
+2025-03-27 12:20:47,689 - src.data.db - INFO - Retrieving pitcher data from database...
+2025-03-27 12:20:48,194 - src.data.db - WARNING - No pitch mix data found in the database
+2025-03-27 12:20:48,195 - src.data.db - INFO - Retrieved 104453 rows of pitcher data with 27 columns
+2025-03-27 12:20:48,254 - src.data.db - INFO - Null value counts in key columns:
+team          104453
+era           104453
+k_per_9       104453
+bb_per_9      104453
+k_bb_ratio    104453
+whip          104453
+babip         104453
+lob_pct       104453
+fip           104453
+xfip          104453
+war           104453
+dtype: int64
+2025-03-27 12:20:48,254 - __main__ - INFO - Selecting features for strikeout model...
+2025-03-27 12:20:48,254 - __main__ - INFO - Selected 5 features for strikeout model: ['zone_rate', 'hits', 'walks', 'release_speed_max', 'swinging_strike_pct']
+2025-03-27 12:20:48,254 - __main__ - INFO - Training strikeout prediction model with years (2019, 2020, 2021, 2022) for training and (2023, 2024) for testing...
+2025-03-27 12:20:48,254 - src.models.train - INFO - Training strikeout prediction model with 5 features
+2025-03-27 12:20:48,254 - src.models.train - INFO - Training years: (2019, 2020, 2021, 2022), Testing years: (2023, 2024)
+2025-03-27 12:20:48,257 - src.models.train - INFO - Using 104453 rows after dropping NA values
+2025-03-27 12:20:48,259 - src.models.train - INFO - Training set: 63310 rows, Test set: 41143 rows
+2025-03-27 12:20:51,085 - src.models.train - INFO - Model metrics: RMSE=1.852, MAE=1.277, R²=0.285
+2025-03-27 12:20:51,085 - src.models.train - INFO - Top features by importance: hits, release_speed_max, walks
+2025-03-27 12:20:51,086 - __main__ - INFO - Saving strikeout model...
+2025-03-27 12:20:51,138 - src.models.train - INFO - Model saved to models\strikeout_model.pkl
+2025-03-27 12:20:51,138 - __main__ - INFO - Selecting features for earned runs model...
+2025-03-27 12:20:51,138 - __main__ - INFO - Selected 9 features for earned runs model: ['hits', 'walks', 'home_runs', 'strikeouts', 'release_speed_mean', 'release_spin_rate_mean', 'zone_rate', 'swinging_strike_pct', 'called_strike_pct']
+2025-03-27 12:20:51,138 - __main__ - INFO - Training earned runs prediction model...
+2025-03-27 12:20:51,139 - src.models.train - INFO - Training earned runs prediction model with 9 features
+2025-03-27 12:20:51,139 - src.models.train - INFO - Training years: (2019, 2020, 2021, 2022), Testing years: (2023, 2024)
+2025-03-27 12:20:51,139 - src.models.train - INFO - Creating proxy earned runs values from available features
+2025-03-27 12:20:51,147 - src.models.train - INFO - Using 104453 rows after dropping NA values
+2025-03-27 12:20:51,151 - src.models.train - INFO - Training set: 63310 rows, Test set: 41143 rows
+2025-03-27 12:20:54,959 - src.models.train - INFO - Model metrics: RMSE=0.014, MAE=0.000, R²=1.000
+2025-03-27 12:20:54,959 - src.models.train - INFO - Rounded metrics: RMSE=0.016, MAE=0.000
+2025-03-27 12:20:54,959 - src.models.train - INFO - Top features by importance: home_runs, hits, walks
+2025-03-27 12:20:54,960 - __main__ - INFO - Saving earned runs model...
+2025-03-27 12:20:54,962 - src.models.train - INFO - Model saved to models\earned_runs_model.pkl
+2025-03-27 12:20:54,962 - __main__ - INFO - Model training complete!
