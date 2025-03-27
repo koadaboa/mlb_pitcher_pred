@@ -2,8 +2,9 @@
 import pandas as pd
 import numpy as np
 import logging
-import re
 from collections import defaultdict
+
+from src.data.utils import normalize_name  # Use the new utils module
 
 logger = logging.getLogger(__name__)
 
@@ -280,78 +281,182 @@ def normalize_name(name):
     
     return name
 
-def merge_traditional_stats(game_level_df, traditional_df):
-    """
-    Merge game-level data with traditional stats based on pitcher ID and season
-    
-    Args:
-        game_level_df (pd.DataFrame): Game-level statcast data
-        traditional_df (pd.DataFrame): Season-level traditional stats
-        
-    Returns:
-        pd.DataFrame: Merged dataset
-    """
+def export_data_to_csv():
+    """Export game stats and traditional stats to separate CSV files"""
     import pandas as pd
+    from pathlib import Path
+    from src.data.db import execute_query
     
-    logger.info(f"Merging {len(game_level_df)} game records with traditional stats")
+    # Create output directory
+    output_dir = Path("data/output")
+    output_dir.mkdir(exist_ok=True, parents=True)
     
-    # Ensure we have the necessary columns
-    if 'pitcher' not in game_level_df.columns or 'season' not in game_level_df.columns:
-        logger.error("Game level data missing required columns for merging")
-        return game_level_df
+    # 1. Export game-level stats
+    logger.info("Exporting game-level stats...")
     
-    # Process traditional stats to prepare for merging
-    if 'IDfg' in traditional_df.columns:
-        # If it's raw traditional data
-        trad_processed = traditional_df.copy()
+    # Join pitchers table to get player names
+    game_query = """
+    SELECT 
+        g.pitcher_id,
+        p.player_name,
+        p.statcast_id,
+        g.game_id,
+        g.game_date,
+        g.season,
+        g.strikeouts,
+        g.hits,
+        g.walks,
+        g.home_runs,
+        g.release_speed_mean,
+        g.release_speed_max,
+        g.release_spin_rate_mean,
+        g.swinging_strike_pct,
+        g.called_strike_pct,
+        g.zone_rate
+    FROM 
+        game_stats g
+    JOIN 
+        pitchers p ON g.pitcher_id = p.pitcher_id
+    ORDER BY 
+        g.game_date, p.player_name
+    """
+    
+    game_stats = execute_query(game_query)
+    
+    # Add pitch mix data if available
+    pitch_mix_query = """
+    SELECT 
+        gs.id as game_stats_id,
+        gs.pitcher_id,
+        gs.game_id,
+        pm.pitch_type,
+        pm.percentage
+    FROM 
+        pitch_mix pm
+    JOIN 
+        game_stats gs ON pm.game_stats_id = gs.id
+    """
+    
+    pitch_mix = execute_query(pitch_mix_query)
+    
+    # If we have pitch mix data, pivot it to add to game stats
+    if not pitch_mix.empty:
+        logger.info(f"Adding {len(pitch_mix)} pitch mix records to game stats...")
         
-        # Rename ID columns
-        trad_processed['traditional_id'] = trad_processed['IDfg']
+        # Create a unique key to join on
+        pitch_mix['join_key'] = pitch_mix['pitcher_id'].astype(str) + '_' + pitch_mix['game_id'].astype(str)
         
-        if 'Season' in trad_processed.columns:
-            trad_processed['season'] = trad_processed['Season']
+        # Pivot to get one column per pitch type
+        pitch_pivot = pitch_mix.pivot_table(
+            index='join_key', 
+            columns='pitch_type', 
+            values='percentage',
+            aggfunc='mean'
+        ).reset_index()
         
-        # Select relevant columns for merging
-        stat_cols = ['ERA', 'FIP', 'xFIP', 'K/9', 'BB/9', 'WHIP', 'BABIP', 'LOB%', 'WAR', 'Team']
-        relevant_cols = ['traditional_id', 'season'] + [col for col in stat_cols if col in trad_processed.columns]
-        trad_processed = trad_processed[relevant_cols]
+        # Rename columns to avoid confusion
+        pitch_types = [col for col in pitch_pivot.columns if col != 'join_key']
+        for pitch in pitch_types:
+            pitch_pivot.rename(columns={pitch: f'pitch_pct_{pitch}'}, inplace=True)
         
-        # Convert column names to lowercase
-        trad_processed.columns = [col.lower() if col != 'LOB%' else 'lob_pct' for col in trad_processed.columns]
+        # Add join key to game stats
+        game_stats['join_key'] = game_stats['pitcher_id'].astype(str) + '_' + game_stats['game_id'].astype(str)
         
-    else:
-        # If it's already processed from the database
-        trad_processed = traditional_df.copy()
+        # Merge
+        game_stats = pd.merge(game_stats, pitch_pivot, on='join_key', how='left')
+        game_stats.drop('join_key', axis=1, inplace=True)
     
-    # Get pitcher mappings from the database
-    from src.data.db import get_db_connection
-    conn = get_db_connection()
-    pitcher_map = pd.read_sql("""
-        SELECT pitcher_id, statcast_id, traditional_id 
-        FROM pitchers 
-        WHERE statcast_id IS NOT NULL AND traditional_id IS NOT NULL
-    """, conn)
-    conn.close()
+    # Save to CSV
+    game_file = output_dir / "game_level_stats.csv"
+    game_stats.to_csv(game_file, index=False)
     
-    if pitcher_map.empty:
-        logger.error("No pitcher ID mappings found in database")
-        return game_level_df
+    logger.info(f"Exported {len(game_stats)} game-level records to {game_file}")
+    logger.info(f"Game stats include {len(game_stats.columns)} columns")
     
-    # Add traditional_id to game_level data using the mapping
-    pitcher_dict = dict(zip(pitcher_map['statcast_id'], pitcher_map['traditional_id']))
-    game_level_df['traditional_id'] = game_level_df['pitcher'].astype(int).map(pitcher_dict)
+    # 2. Export traditional (season-level) stats
+    logger.info("Exporting traditional (season-level) stats...")
     
-    # Merge with traditional stats
-    merged_df = pd.merge(
-        game_level_df,
-        trad_processed,
-        on=['traditional_id', 'season'],
-        how='left'
-    )
+    trad_query = """
+    SELECT 
+        t.pitcher_id,
+        p.player_name,
+        p.statcast_id,
+        p.traditional_id,
+        t.season,
+        t.team,
+        t.era,
+        t.k_per_9,
+        t.bb_per_9,
+        t.k_bb_ratio,
+        t.whip,
+        t.babip,
+        t.lob_pct,
+        t.fip,
+        t.xfip,
+        t.war
+    FROM 
+        traditional_stats t
+    JOIN 
+        pitchers p ON t.pitcher_id = p.pitcher_id
+    ORDER BY 
+        t.season, p.player_name
+    """
     
-    # Report merge stats
-    merged_count = merged_df.dropna(subset=['era']).shape[0]
-    merge_pct = merged_count / len(game_level_df) * 100
-    logger.info(f"Successfully merged traditional stats for {merged_count} games ({merge_pct:.1f}%)")
+    trad_stats = execute_query(trad_query)
+    trad_file = output_dir / "traditional_season_stats.csv"
+    trad_stats.to_csv(trad_file, index=False)
     
-    return merged_df
+    logger.info(f"Exported {len(trad_stats)} traditional stat records to {trad_file}")
+    
+    # 3. Export metadata about the dataset
+    metadata = {
+        "game_stats_count": len(game_stats),
+        "game_stats_seasons": sorted(game_stats['season'].unique().tolist()),
+        "traditional_stats_count": len(trad_stats),
+        "traditional_stats_seasons": sorted(trad_stats['season'].unique().tolist()),
+        "unique_pitchers_in_game_stats": game_stats['pitcher_id'].nunique(),
+        "unique_pitchers_in_traditional_stats": trad_stats['pitcher_id'].nunique(),
+        "unique_pitchers_in_both": len(set(game_stats['pitcher_id']).intersection(set(trad_stats['pitcher_id'])))
+    }
+    
+    # Calculate some statistics for context
+    if not game_stats.empty:
+        metadata["avg_games_per_pitcher"] = len(game_stats) / game_stats['pitcher_id'].nunique()
+        metadata["avg_strikeouts_per_game"] = game_stats['strikeouts'].mean()
+    
+    if not trad_stats.empty:
+        metadata["avg_era"] = trad_stats['era'].mean()
+        metadata["avg_k_per_9"] = trad_stats['k_per_9'].mean()
+    
+    # Save metadata
+    meta_df = pd.DataFrame([metadata])
+    meta_file = output_dir / "dataset_metadata.csv"
+    meta_df.to_csv(meta_file, index=False)
+    
+    logger.info(f"Exported dataset metadata to {meta_file}")
+    
+    # 4. Export mapping between pitchers
+    mapping_query = """
+    SELECT 
+        pitcher_id,
+        player_name,
+        statcast_id,
+        traditional_id
+    FROM 
+        pitchers
+    WHERE 
+        statcast_id IS NOT NULL OR traditional_id IS NOT NULL
+    """
+    
+    pitcher_map = execute_query(mapping_query)
+    map_file = output_dir / "pitcher_id_mapping.csv"
+    pitcher_map.to_csv(map_file, index=False)
+    
+    logger.info(f"Exported {len(pitcher_map)} pitcher mappings to {map_file}")
+    
+    return {
+        "game_stats": game_file,
+        "traditional_stats": trad_file,
+        "metadata": meta_file,
+        "pitcher_mapping": map_file
+    }

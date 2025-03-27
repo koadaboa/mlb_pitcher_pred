@@ -5,8 +5,7 @@ import logging
 from difflib import SequenceMatcher
 from pathlib import Path
 
-from src.data.process import aggregate_to_game_level, normalize_name
-from src.data.player_mapping import get_player_id_map
+from src.data.utils import normalize_name  # Use the new utils module
 
 logger = logging.getLogger(__name__)
 
@@ -239,7 +238,8 @@ def store_statcast_data(statcast_df, force_refresh=False):
         cursor.execute("DELETE FROM game_stats")
         conn.commit()
     
-    # Process statcast data to game level
+    # Process statcast data to game level - import inside function to avoid circular import
+    from src.data.process import aggregate_to_game_level
     game_level = aggregate_to_game_level(statcast_df)
     game_level = game_level.fillna(0)
     
