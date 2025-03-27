@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import logging
 from collections import defaultdict
+import re
 
 from src.data.utils import normalize_name  # Use the new utils module
 
@@ -102,9 +103,32 @@ def aggregate_to_game_level(statcast_df):
                 hits_df = events_df[events_df['events'].isin(hit_events)].groupby(group_cols).size().reset_index(name='hits')
                 if not hits_df.empty:
                     game_level = pd.merge(game_level, hits_df, on=group_cols, how='left')
+
+        # Calculate outs - either directly from the data or estimate
+        if 'outs_on_play' in statcast_df.columns:
+            # If we have direct outs data
+            outs_counts = statcast_df.groupby(group_cols)['outs_on_play'].sum().reset_index(name='outs')
+            if not outs_counts.empty:
+                game_level = pd.merge(game_level, outs_counts, on=group_cols, how='left')
+        else:
+            # Estimate outs based on innings pitched (if available)
+            if 'innings_pitched' in statcast_df.columns:
+                ip_counts = statcast_df.groupby(group_cols)['innings_pitched'].max().reset_index(name='innings_pitched')
+                if not ip_counts.empty:
+                    game_level = pd.merge(game_level, ip_counts, on=group_cols, how='left')
+                    # Convert innings pitched to outs (3 outs per inning)
+                    game_level['outs'] = game_level['innings_pitched'] * 3
+            else:
+                # If no direct outs data, estimate based on pitch count
+                # Assuming average of ~15 pitches per out
+                game_level['outs'] = (game_level['pitch_count'] / 15).round().clip(0, 27)
+                
+        # Ensure outs is present and set to 0 if missing
+        if 'outs' not in game_level.columns:
+            game_level['outs'] = 0
     except Exception as e:
         logger.error(f"Error during aggregation: {e}")
-    
+
     # Fill NAs with zeros
     for col in game_level.columns:
         if col not in group_cols and pd.api.types.is_numeric_dtype(game_level[col]):

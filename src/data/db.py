@@ -5,7 +5,8 @@ import logging
 from difflib import SequenceMatcher
 from pathlib import Path
 
-from src.data.utils import normalize_name  # Use the new utils module
+from src.data.utils import normalize_name
+from src.data.player_mapping import get_player_id_map
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +107,7 @@ def is_table_populated(table_name):
 def init_database():
     """
     Initialize the SQLite database with the necessary tables
+    focusing on strikeout and outs prediction
     """
     logger.info("Initializing SQLite database...")
     
@@ -119,7 +121,9 @@ def init_database():
     CREATE TABLE IF NOT EXISTS pitchers (
         pitcher_id INTEGER PRIMARY KEY,
         player_name TEXT,
-        statcast_id INTEGER
+        normalized_name TEXT,
+        statcast_id INTEGER,
+        traditional_id INTEGER
     )
     ''')
     
@@ -157,6 +161,27 @@ def init_database():
     )
     ''')
     
+    # Keep traditional stats for reference values
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS traditional_stats (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        pitcher_id INTEGER,
+        season INTEGER,
+        team TEXT,
+        era REAL,
+        k_per_9 REAL,
+        bb_per_9 REAL,
+        k_bb_ratio REAL,
+        whip REAL,
+        babip REAL,
+        lob_pct REAL,
+        fip REAL,
+        xfip REAL,
+        war REAL,
+        FOREIGN KEY (pitcher_id) REFERENCES pitchers(pitcher_id)
+    )
+    ''')
+    
     # Features table for ML models
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS prediction_features (
@@ -167,10 +192,16 @@ def init_database():
         season INTEGER,
         last_3_games_strikeouts_avg REAL,
         last_5_games_strikeouts_avg REAL,
-        last_3_games_outs_avg REAL,
-        last_5_games_outs_avg REAL,
+        last_3_games_k9_avg REAL,
+        last_5_games_k9_avg REAL,
+        last_3_games_era_avg REAL,
+        last_5_games_era_avg REAL,
+        last_3_games_fip_avg REAL,
+        last_5_games_fip_avg REAL,
         last_3_games_velo_avg REAL,
         last_5_games_velo_avg REAL,
+        last_3_games_outs_avg REAL,
+        last_5_games_outs_avg REAL,
         last_3_games_swinging_strike_pct_avg REAL,
         last_5_games_swinging_strike_pct_avg REAL,
         days_rest INTEGER,
