@@ -7,3 +7,5 @@ venv/
 mlb_pred.egg-info/
 !src/data/
 !src/
+models/
+!src/models/
