@@ -8,6 +8,9 @@ from pathlib import Path
 import logging
 import json
 import argparse
+from src.data.db import get_pitcher_data
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+from src.models.train import calculate_betting_metrics
 
 logging.basicConfig(
     level=logging.INFO,
@@ -66,9 +69,24 @@ def visualize_feature_importance(models, save_dir, top_n=15):
     all_importances = []
     
     for model_type, model_dict in models.items():
-        importance_df = model_dict['importance'].copy()
-        importance_df['model'] = model_type
-        all_importances.append(importance_df)
+        try:
+            if 'importance' in model_dict:
+                importance_df = model_dict['importance'].copy()
+                importance_df['model'] = model_type
+                all_importances.append(importance_df)
+            elif 'model' in model_dict and hasattr(model_dict['model'], 'feature_importances_'):
+                # Extract feature importance directly from model
+                features = model_dict.get('features', [])
+                if features:
+                    importance = pd.DataFrame({
+                        'feature': features,
+                        'importance': model_dict['model'].feature_importances_
+                    })
+                    importance['model'] = model_type
+                    all_importances.append(importance)
+        except Exception as e:
+            logger.warning(f"Could not extract feature importance for {model_type}: {e}")
+            continue
     
     if not all_importances:
         logger.warning("No feature importance data available")
@@ -128,28 +146,136 @@ def run_comparison(models_dir=None, output_dir=None):
         logger.error("No models loaded, cannot proceed with comparison")
         return
     
+    # Get data for evaluation
+    logger.info("Loading data for evaluation...")
+    pitcher_data = get_pitcher_data()
+    
+    # Define test years
+    test_years = [2023, 2024]
+    test_df = pitcher_data[pitcher_data['season'].isin(test_years)]
+    
+    if test_df.empty:
+        logger.error(f"No test data available for years {test_years}")
+        return
+    
     # Extract metrics for comparison
     comparison_data = []
-    for model_name, model_dict in models.items():
-        metrics = model_dict['metrics']
-        model_type = model_dict.get('model_type', model_name)
-        comparison_data.append({
-            'model': model_name,
-            'model_type': model_type,
-            'RMSE': metrics['rmse'],
-            'MAE': metrics['mae'],
-            'R²': metrics['r2'],
-            'MAPE': metrics.get('mape', np.nan),
-            'Over/Under Accuracy': metrics.get('over_under_accuracy', np.nan),
-            'Within 1 Strikeout': metrics.get('within_1_strikeout', np.nan),
-            'Within 2 Strikeouts': metrics.get('within_2_strikeouts', np.nan),
-            'Within 3 Strikeouts': metrics.get('within_3_strikeouts', np.nan),
-            'Bias': metrics.get('bias', np.nan),
-            'Max Error': metrics.get('max_error', np.nan)
-        })
     
-    # Create comparison DataFrame
+    for model_name, model_dict in models.items():
+        # Check if the model is already evaluated (has metrics)
+        if 'metrics' in model_dict:
+            metrics = model_dict['metrics']
+            model_type = model_dict.get('model_type', model_name)
+            
+            # Add to comparison data
+            comparison_data.append({
+                'model': model_name,
+                'model_type': model_type,
+                'RMSE': metrics['rmse'],
+                'MAE': metrics['mae'],
+                'R²': metrics['r2'],
+                'MAPE': metrics.get('mape', np.nan),
+                'Over/Under Accuracy': metrics.get('over_under_accuracy', np.nan),
+                'Within 1 Strikeout': metrics.get('within_1_strikeout', np.nan),
+                'Within 2 Strikeouts': metrics.get('within_2_strikeouts', np.nan),
+                'Within 3 Strikeouts': metrics.get('within_3_strikeouts', np.nan),
+                'Bias': metrics.get('bias', np.nan),
+                'Max Error': metrics.get('max_error', np.nan)
+            })
+        else:
+            # Model doesn't have metrics yet, evaluate it
+            logger.info(f"Evaluating model: {model_name}")
+            
+            # Extract features and models
+            if 'features' in model_dict:
+                features = model_dict['features']
+            elif 'base_models' in model_dict and len(model_dict['base_models']) > 0:
+                # For ensemble models, use features from first base model
+                features = model_dict['base_models'][0]['features']
+            else:
+                logger.error(f"Cannot determine features for model {model_name}")
+                continue
+            
+            # Prepare test data
+            X_test = test_df[features].copy()
+            y_test = test_df['strikeouts'].copy()
+            
+            # Make predictions based on model type
+            if 'base_models' in model_dict and 'weights' in model_dict:
+                # For weighted ensemble
+                weights = model_dict['weights']
+                base_models = model_dict['base_models']
+                predictions = np.zeros(len(X_test))
+                
+                for base_model in base_models:
+                    base_type = base_model.get('model_type', '')
+                    weight = weights.get(base_type, 1.0 / len(base_models))
+                    model = base_model['model']
+                    pred = model.predict(X_test)
+                    predictions += weight * pred
+                
+                y_pred = predictions
+                
+            elif 'model' in model_dict:
+                # Standard model with 'model' key
+                model = model_dict['model']
+                y_pred = model.predict(X_test)
+            elif 'base_models' in model_dict and hasattr(model_dict, 'predict'):
+                # For other ensemble types with predict method
+                y_pred = model_dict.predict(X_test)
+            else:
+                logger.error(f"Cannot make predictions with model {model_name}")
+                continue
+            
+            # Calculate standard metrics
+            rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+            mae = mean_absolute_error(y_test, y_pred)
+            r2 = r2_score(y_test, y_pred)
+            
+            # Calculate betting metrics
+            betting_metrics = calculate_betting_metrics(y_test, y_pred)
+            
+            # Store metrics in the model dictionary for future use
+            model_dict['metrics'] = {
+                'rmse': rmse,
+                'mae': mae,
+                'r2': r2,
+                **betting_metrics
+            }
+            
+            # Add to comparison data
+            comparison_data.append({
+                'model': model_name,
+                'model_type': model_dict.get('model_type', model_name),
+                'RMSE': rmse,
+                'MAE': mae,
+                'R²': r2,
+                'MAPE': betting_metrics['mape'],
+                'Over/Under Accuracy': betting_metrics['over_under_accuracy'],
+                'Within 1 Strikeout': betting_metrics['within_1_strikeout'],
+                'Within 2 Strikeouts': betting_metrics['within_2_strikeouts'],
+                'Within 3 Strikeouts': betting_metrics['within_3_strikeouts'],
+                'Bias': betting_metrics['bias'],
+                'Max Error': betting_metrics.get('max_error', np.nan)
+            })
+            
+            logger.info(f"{model_name}: RMSE={rmse:.4f}, MAE={mae:.4f}, R²={r2:.4f}, "
+                       f"Within 1 K: {betting_metrics['within_1_strikeout']:.2f}%, "
+                       f"Within 2 K: {betting_metrics['within_2_strikeouts']:.2f}%")
+    
+    # Create results DataFrame
     comparison_df = pd.DataFrame(comparison_data)
+    
+    # Add a simple print of the key metrics
+    print("\n===== MODEL PERFORMANCE SUMMARY =====")
+    print(f"{'Model':<15} {'RMSE':>8} {'MAE':>8} {'Within 1K':>10}")
+    print("-" * 45)
+    for _, row in comparison_df.iterrows():
+        model_name = row['model']
+        rmse = row['RMSE']
+        mae = row['MAE']
+        within_1k = row['Within 1 Strikeout']
+        print(f"{model_name:<15} {rmse:>8.3f} {mae:>8.3f} {within_1k:>10.2f}%")
     
     # Save to CSV
     comparison_df.to_csv(output_dir / "model_comparison.csv", index=False)

@@ -34,6 +34,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Add this to the custom_cv_score function in src/scripts/optimize_models.py
+# Find the section where it calculates the score based on the scorer
+
 def custom_cv_score(model, X, y, n_splits=5, random_state=42, scorer='neg_mean_squared_error'):
     """
     Calculate cross-validation score using KFold
@@ -76,6 +79,8 @@ def custom_cv_score(model, X, y, n_splits=5, random_state=42, scorer='neg_mean_s
             score = -mean_absolute_error(y_val, y_pred)
         elif scorer == 'r2':
             score = r2_score(y_val, y_pred)
+        elif scorer == 'within_1_strikeout':
+            score = np.mean(np.abs(y_val - y_pred) <= 1) * 100
         elif scorer == 'within_2_strikeouts':
             score = np.mean(np.abs(y_val - y_pred) <= 2) * 100
         elif scorer == 'over_under_accuracy':
@@ -314,7 +319,7 @@ def save_best_model(study, X, y, model_type, output_dir):
     # Return the best model
     return model_dict
 
-def optimize_model(model_type, train_years, features=None, n_trials=100, primary_metric='within_2_strikeouts'):
+def optimize_model(model_type, train_years, features=None, n_trials=100, primary_metric='within_1_strikeout'):
     """
     Optimize a model using Optuna
     
@@ -416,7 +421,7 @@ def main():
                         help='Number of optimization trials')
     parser.add_argument('--metric', type=str, 
                         choices=['neg_mean_squared_error', 'neg_mean_absolute_error', 
-                                'r2', 'within_2_strikeouts', 'over_under_accuracy'],
+                                'r2', 'within_1_strikeout', 'within_2_strikeouts', 'over_under_accuracy'],
                         default='within_2_strikeouts',
                         help='Primary metric to optimize')
     

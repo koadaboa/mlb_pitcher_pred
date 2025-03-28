@@ -14,6 +14,9 @@ import lightgbm as lgb
 
 logger = logging.getLogger(__name__)
 
+# Update the calculate_betting_metrics function in src/models/train.py
+# to ensure it includes the within_1_strikeout metric
+
 def calculate_betting_metrics(y_true, y_pred):
     """
     Calculate additional metrics relevant for betting on strikeouts
