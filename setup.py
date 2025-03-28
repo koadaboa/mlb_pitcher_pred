@@ -12,7 +12,9 @@ setup(
         "seaborn",
         "pybaseball",
         "scikit-learn",
-        "tqdm"
+        "tqdm",
+        "xgboost",
+        "lightgbm"
     ],
     python_requires=">=3.7",
 )

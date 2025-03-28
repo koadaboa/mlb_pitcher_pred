@@ -158,3 +158,58 @@ dtype: int64
 2025-03-28 11:03:03,080 - __main__ - INFO - Saving strikeout model...
 2025-03-28 11:03:03,214 - src.models.train - INFO - Model saved to models\strikeout_model.pkl
 2025-03-28 11:03:03,215 - __main__ - INFO - Model training complete!
+2025-03-28 11:13:29,227 - __main__ - INFO - Loading pitcher data...
+2025-03-28 11:13:29,227 - src.data.db - INFO - Retrieving pitcher data from database...
+2025-03-28 11:13:32,460 - src.data.db - INFO - Retrieved 104453 rows of pitcher data with 53 columns
+2025-03-28 11:13:32,460 - src.data.db - INFO - Retrieved 20 enhanced feature columns: last_3_games_strikeouts_std, last_5_games_strikeouts_std, last_3_games_velo_std, last_5_games_velo_std, last_3_games_swinging_strike_pct_std...
+2025-03-28 11:13:32,460 - __main__ - INFO - Selecting features for strikeout model...
+2025-03-28 11:13:32,461 - src.features.selection - INFO - Available columns: ['game_db_id', 'pitcher_id', 'player_name', 'statcast_id', 'game_id', 'game_date', 'season', 'strikeouts', 'hits', 'walks', 'home_runs', 'release_speed_mean', 'release_speed_max', 'release_spin_rate_mean', 'swinging_strike_pct', 'called_strike_pct', 'zone_rate', 'last_3_games_strikeouts_avg', 'last_5_games_strikeouts_avg', 'last_3_games_velo_avg', 'last_5_games_velo_avg', 'last_3_games_swinging_strike_pct_avg', 'last_5_games_swinging_strike_pct_avg', 'days_rest', 'team_changed', 'opponent_team', 'opponent_batting_avg', 'opponent_strikeout_rate', 'opponent_ops', 'last_3_games_strikeouts_std', 'last_5_games_strikeouts_std', 'last_3_games_velo_std', 'last_5_games_velo_std', 'last_3_games_swinging_strike_pct_std', 'last_5_games_swinging_strike_pct_std', 'last_3_games_called_strike_pct_avg', 'last_5_games_called_strike_pct_avg', 'last_3_games_zone_rate_avg', 'last_5_games_zone_rate_avg', 'trend_3_strikeouts', 'trend_5_strikeouts', 'trend_3_release_speed_mean', 'trend_5_release_speed_mean', 'trend_3_swinging_strike_pct', 'trend_5_swinging_strike_pct', 'momentum_3_strikeouts', 'momentum_5_strikeouts', 'momentum_3_release_speed_mean', 'momentum_5_release_speed_mean', 'momentum_3_swinging_strike_pct', 'momentum_5_swinging_strike_pct', 'pitch_entropy', 'prev_game_pitch_entropy']
+2025-03-28 11:13:32,461 - src.features.selection - INFO - Selected 31 features for strikeout model: ['last_3_games_strikeouts_avg', 'last_5_games_strikeouts_avg', 'last_3_games_velo_avg', 'last_5_games_velo_avg', 'last_3_games_swinging_strike_pct_avg', 'last_5_games_swinging_strike_pct_avg', 'days_rest', 'last_3_games_strikeouts_std', 'last_5_games_strikeouts_std', 'last_3_games_velo_std', 'last_5_games_velo_std', 'last_3_games_swinging_strike_pct_std', 'last_5_games_swinging_strike_pct_std', 'trend_3_strikeouts', 'trend_5_strikeouts', 'trend_3_release_speed_mean', 'trend_5_release_speed_mean', 'trend_3_swinging_strike_pct', 'trend_5_swinging_strike_pct', 'momentum_3_strikeouts', 'momentum_5_strikeouts', 'momentum_3_release_speed_mean', 'momentum_5_release_speed_mean', 'momentum_3_swinging_strike_pct', 'momentum_5_swinging_strike_pct', 'pitch_entropy', 'prev_game_pitch_entropy', 'last_3_games_called_strike_pct_avg', 'last_5_games_called_strike_pct_avg', 'last_3_games_zone_rate_avg', 'last_5_games_zone_rate_avg']
+2025-03-28 11:13:32,461 - __main__ - INFO - Selected features for strikeout model: ['last_3_games_strikeouts_avg', 'last_5_games_strikeouts_avg', 'last_3_games_velo_avg', 'last_5_games_velo_avg', 'last_3_games_swinging_strike_pct_avg', 'last_5_games_swinging_strike_pct_avg', 'days_rest', 'last_3_games_strikeouts_std', 'last_5_games_strikeouts_std', 'last_3_games_velo_std', 'last_5_games_velo_std', 'last_3_games_swinging_strike_pct_std', 'last_5_games_swinging_strike_pct_std', 'trend_3_strikeouts', 'trend_5_strikeouts', 'trend_3_release_speed_mean', 'trend_5_release_speed_mean', 'trend_3_swinging_strike_pct', 'trend_5_swinging_strike_pct', 'momentum_3_strikeouts', 'momentum_5_strikeouts', 'momentum_3_release_speed_mean', 'momentum_5_release_speed_mean', 'momentum_3_swinging_strike_pct', 'momentum_5_swinging_strike_pct', 'pitch_entropy', 'prev_game_pitch_entropy', 'last_3_games_called_strike_pct_avg', 'last_5_games_called_strike_pct_avg', 'last_3_games_zone_rate_avg', 'last_5_games_zone_rate_avg']
+2025-03-28 11:13:32,461 - __main__ - INFO - Training rf strikeout prediction model...
+2025-03-28 11:13:32,461 - src.models.train - INFO - Training rf strikeout prediction model with 31 features
+2025-03-28 11:13:32,461 - src.models.train - INFO - Training years: (2019, 2021, 2022), Testing years: (2023, 2024)
+2025-03-28 11:13:32,473 - src.models.train - INFO - Using 104453 rows after dropping NA values
+2025-03-28 11:13:32,482 - src.models.train - INFO - Training set: 63310 rows, Test set: 41143 rows
+2025-03-28 11:13:32,515 - src.models.train - INFO - Tuning hyperparameters for rf model...
+2025-03-28 11:24:39,714 - src.models.train - INFO - Best parameters: {'max_depth': 10, 'min_samples_split': 10, 'n_estimators': 200}
+2025-03-28 11:24:39,714 - src.models.train - INFO - Best score: 2.1744 MSE
+2025-03-28 11:26:36,292 - src.models.train - INFO - Model metrics: RMSE=1.472, MAE=1.057, R²=0.548
+2025-03-28 11:26:36,292 - src.models.train - INFO - Betting metrics: MAPE=39.15%, Over/Under Accuracy=87.47%
+2025-03-28 11:26:36,292 - src.models.train - INFO - Within 2 strikeouts: 87.20%
+2025-03-28 11:26:36,292 - src.models.train - INFO - Top features by importance: momentum_5_strikeouts, last_5_games_strikeouts_avg, days_rest
+2025-03-28 11:26:36,295 - __main__ - INFO - Saving rf model...
+2025-03-28 11:26:36,322 - src.models.train - INFO - Model saved to models\strikeout_rf_model.pkl
+2025-03-28 11:26:36,322 - __main__ - INFO - Training xgboost strikeout prediction model...
+2025-03-28 11:26:36,322 - src.models.train - INFO - Training xgboost strikeout prediction model with 31 features
+2025-03-28 11:26:36,322 - src.models.train - INFO - Training years: (2019, 2021, 2022), Testing years: (2023, 2024)
+2025-03-28 11:26:36,335 - src.models.train - INFO - Using 104453 rows after dropping NA values
+2025-03-28 11:26:36,345 - src.models.train - INFO - Training set: 63310 rows, Test set: 41143 rows
+2025-03-28 11:26:36,379 - src.models.train - INFO - Tuning hyperparameters for xgboost model...
+2025-03-28 11:27:24,988 - src.models.train - INFO - Best parameters: {'learning_rate': 0.1, 'max_depth': 3, 'n_estimators': 100, 'subsample': 0.7}
+2025-03-28 11:27:24,988 - src.models.train - INFO - Best score: 2.1683 MSE
+2025-03-28 11:27:25,116 - src.models.train - INFO - Model metrics: RMSE=1.468, MAE=1.057, R²=0.551
+2025-03-28 11:27:25,116 - src.models.train - INFO - Betting metrics: MAPE=39.05%, Over/Under Accuracy=87.46%
+2025-03-28 11:27:25,116 - src.models.train - INFO - Within 2 strikeouts: 87.35%
+2025-03-28 11:27:25,117 - src.models.train - INFO - Top features by importance: momentum_5_strikeouts, last_5_games_strikeouts_avg, last_3_games_strikeouts_avg
+2025-03-28 11:27:25,121 - __main__ - INFO - Saving xgboost model...
+2025-03-28 11:27:25,123 - src.models.train - INFO - Model saved to models\strikeout_xgboost_model.pkl
+2025-03-28 11:27:25,123 - __main__ - INFO - Training lightgbm strikeout prediction model...
+2025-03-28 11:27:25,123 - src.models.train - INFO - Training lightgbm strikeout prediction model with 31 features
+2025-03-28 11:27:25,123 - src.models.train - INFO - Training years: (2019, 2021, 2022), Testing years: (2023, 2024)
+2025-03-28 11:27:25,138 - src.models.train - INFO - Using 104453 rows after dropping NA values
+2025-03-28 11:27:25,155 - src.models.train - INFO - Training set: 63310 rows, Test set: 41143 rows
+2025-03-28 11:27:25,198 - src.models.train - INFO - Tuning hyperparameters for lightgbm model...
+2025-03-28 11:27:59,170 - src.models.train - INFO - Best parameters: {'learning_rate': 0.1, 'max_depth': 3, 'n_estimators': 200, 'num_leaves': 31}
+2025-03-28 11:27:59,171 - src.models.train - INFO - Best score: 2.1684 MSE
+2025-03-28 11:27:59,397 - src.models.train - INFO - Model metrics: RMSE=1.469, MAE=1.058, R²=0.550
+2025-03-28 11:27:59,397 - src.models.train - INFO - Betting metrics: MAPE=39.33%, Over/Under Accuracy=87.43%
+2025-03-28 11:27:59,397 - src.models.train - INFO - Within 2 strikeouts: 87.31%
+2025-03-28 11:27:59,397 - src.models.train - INFO - Top features by importance: days_rest, last_5_games_strikeouts_avg, trend_5_strikeouts
+2025-03-28 11:27:59,403 - __main__ - INFO - Saving lightgbm model...
+2025-03-28 11:27:59,407 - src.models.train - INFO - Model saved to models\strikeout_lightgbm_model.pkl
+2025-03-28 11:27:59,407 - __main__ - INFO - Comparing models...
+2025-03-28 11:28:00,371 - __main__ - INFO - Model comparison saved to models\comparison
+2025-03-28 11:28:00,372 - __main__ - INFO - Best model based on RMSE: xgboost
+2025-03-28 11:28:00,399 - __main__ - INFO - Copied best model (xgboost) to models\strikeout_model.pkl
+2025-03-28 11:28:00,399 - __main__ - INFO - Model training and comparison complete!
