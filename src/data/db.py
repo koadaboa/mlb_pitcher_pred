@@ -402,18 +402,26 @@ def get_pitcher_data():
     Retrieve joined data from the database for feature engineering
     
     Returns:
-        pandas.DataFrame: Joined data from game_stats
+        pandas.DataFrame: Joined data with all features
     """
     logger.info("Retrieving pitcher data from database...")
     
     conn = get_db_connection()
+    cursor = conn.cursor()
     
-    # Join game_stats with prediction_features
-    query = '''
-    SELECT 
+    # First, get all column names from prediction_features table
+    cursor.execute("PRAGMA table_info(prediction_features)")
+    pf_columns = [row[1] for row in cursor.fetchall()]
+    
+    # Remove columns that would cause duplicates (pitcher_id, game_id, game_date, season)
+    pf_columns = [col for col in pf_columns if col not in ('id', 'pitcher_id', 'game_id', 'game_date', 'season')]
+    
+    # Construct the SELECT part of the query
+    base_columns = """
         g.id as game_db_id,
         g.pitcher_id,
         p.player_name,
+        p.statcast_id,
         g.game_id,
         g.game_date,
         g.season,
@@ -426,15 +434,19 @@ def get_pitcher_data():
         g.release_spin_rate_mean,
         g.swinging_strike_pct,
         g.called_strike_pct,
-        g.zone_rate,
-        f.last_3_games_strikeouts_avg,
-        f.last_5_games_strikeouts_avg,
-        f.last_3_games_velo_avg,
-        f.last_5_games_velo_avg,
-        f.last_3_games_swinging_strike_pct_avg,
-        f.last_5_games_swinging_strike_pct_avg,
-        f.days_rest,
-        f.team_changed
+        g.zone_rate
+    """
+    
+    # Add prediction feature columns
+    feature_columns = ",\n        ".join([f"f.{col}" for col in pf_columns])
+    select_clause = base_columns
+    if feature_columns:
+        select_clause += ",\n        " + feature_columns
+    
+    # Construct the full query
+    query = f"""
+    SELECT 
+        {select_clause}
     FROM 
         game_stats g
     JOIN 
@@ -443,17 +455,66 @@ def get_pitcher_data():
         prediction_features f ON g.pitcher_id = f.pitcher_id AND g.game_id = f.game_id
     ORDER BY
         g.pitcher_id, g.game_date
-    '''
+    """
     
     df = pd.read_sql_query(query, conn)
     
     # Convert game_date to datetime
     df['game_date'] = pd.to_datetime(df['game_date'])
     
-    # Get pitch mix data
-    # [existing pitch mix code...]
+    # Get pitch mix data if pitch_mix_features table exists
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='pitch_mix_features'")
+    has_pitch_mix = cursor.fetchone() is not None
+    
+    if has_pitch_mix:
+        pitch_mix_query = '''
+        SELECT 
+            pf.pitcher_id,
+            pf.game_id,
+            pmf.pitch_type,
+            pmf.percentage
+        FROM 
+            pitch_mix_features pmf
+        JOIN 
+            prediction_features pf ON pmf.prediction_feature_id = pf.id
+        '''
+        
+        try:
+            pitch_mix = pd.read_sql_query(pitch_mix_query, conn)
+            
+            # Add pitch mix data if available
+            if not pitch_mix.empty:
+                # Pivot the pitch mix data
+                pitch_pivot = pitch_mix.pivot_table(
+                    index=['pitcher_id', 'game_id'],
+                    columns='pitch_type',
+                    values='percentage',
+                    fill_value=0
+                ).reset_index()
+                
+                # Fix column names after pivot
+                if isinstance(pitch_pivot.columns, pd.MultiIndex):
+                    pitch_pivot.columns = [
+                        'pitcher_id' if col[0] == 'pitcher_id' else 
+                        'game_id' if col[0] == 'game_id' else
+                        f'prev_game_pitch_pct_{col[1]}' for col in pitch_pivot.columns
+                    ]
+                
+                # Merge with main DataFrame
+                df = pd.merge(df, pitch_pivot, on=['pitcher_id', 'game_id'], how='left')
+                logger.info(f"Added {len(pitch_pivot.columns)-2} pitch mix columns")
+        except Exception as e:
+            logger.warning(f"Error retrieving pitch mix data: {e}")
     
     logger.info(f"Retrieved {len(df)} rows of pitcher data with {len(df.columns)} columns")
+    
+    # Check for enhanced features
+    enhanced_patterns = ['_std', 'trend_', 'momentum_', 'entropy']
+    enhanced_cols = [col for col in df.columns if any(pattern in col for pattern in enhanced_patterns)]
+    if enhanced_cols:
+        logger.info(f"Retrieved {len(enhanced_cols)} enhanced feature columns: {', '.join(enhanced_cols[:5])}...")
+    else:
+        logger.warning("No enhanced feature columns found!")
     
     return df
 
@@ -537,3 +598,75 @@ def examine_data_structure(statcast_data):
             logger.warning(f"  {col}: {pct:.1f}% null")
     
     logger.info("Data structure examination complete")
+
+def update_database_schema():
+    """Update the database schema to support enhanced features"""
+    logger.info("Updating database schema for enhanced features...")
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # Check for existing columns
+    cursor.execute("PRAGMA table_info(prediction_features)")
+    existing_columns = [row[1] for row in cursor.fetchall()]
+    
+    # New columns to add
+    new_columns = [
+        # Standard deviation features
+        ('last_3_games_strikeouts_std', 'REAL'),
+        ('last_5_games_strikeouts_std', 'REAL'),
+        ('last_3_games_velo_std', 'REAL'),
+        ('last_5_games_velo_std', 'REAL'),
+        ('last_3_games_swinging_strike_pct_std', 'REAL'),
+        ('last_5_games_swinging_strike_pct_std', 'REAL'),
+        ('last_3_games_called_strike_pct_avg', 'REAL'),
+        ('last_5_games_called_strike_pct_avg', 'REAL'),
+        ('last_3_games_zone_rate_avg', 'REAL'),
+        ('last_5_games_zone_rate_avg', 'REAL'),
+        
+        # Trend indicators
+        ('trend_3_strikeouts', 'REAL'),
+        ('trend_5_strikeouts', 'REAL'),
+        ('trend_3_release_speed_mean', 'REAL'),
+        ('trend_5_release_speed_mean', 'REAL'),
+        ('trend_3_swinging_strike_pct', 'REAL'),
+        ('trend_5_swinging_strike_pct', 'REAL'),
+        
+        # Momentum indicators
+        ('momentum_3_strikeouts', 'REAL'),
+        ('momentum_5_strikeouts', 'REAL'),
+        ('momentum_3_release_speed_mean', 'REAL'),
+        ('momentum_5_release_speed_mean', 'REAL'),
+        ('momentum_3_swinging_strike_pct', 'REAL'),
+        ('momentum_5_swinging_strike_pct', 'REAL'),
+        
+        # Pitch mix entropy
+        ('pitch_entropy', 'REAL'),
+        ('prev_game_pitch_entropy', 'REAL')
+    ]
+    
+    # Add columns if they don't exist
+    for col_name, col_type in new_columns:
+        if col_name not in existing_columns:
+            try:
+                cursor.execute(f"ALTER TABLE prediction_features ADD COLUMN {col_name} {col_type}")
+                logger.info(f"Added column {col_name} to prediction_features table")
+            except sqlite3.OperationalError as e:
+                logger.warning(f"Could not add column {col_name}: {e}")
+    
+    # Create pitch_mix_features table if it doesn't exist
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS pitch_mix_features (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        prediction_feature_id INTEGER,
+        pitch_type TEXT,
+        percentage REAL,
+        FOREIGN KEY (prediction_feature_id) REFERENCES prediction_features(id)
+    )
+    ''')
+    logger.info("Created pitch_mix_features table if it didn't exist")
+    
+    conn.commit()
+    conn.close()
+    
+    logger.info("Database schema update complete")

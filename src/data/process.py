@@ -50,6 +50,10 @@ def aggregate_to_game_level(statcast_df):
     Aggregate statcast pitch-level data to pitcher-game level
     """
     logger.info("Aggregating statcast data to pitcher-game level...")
+    logger.info(f"Input data shape: {statcast_df.shape}")
+    
+    if 'pitch_type' in statcast_df.columns:
+        logger.info(f"Available columns: {', '.join(statcast_df.columns[:20])}...")
     
     # Basic validation
     if statcast_df.empty:
@@ -100,6 +104,67 @@ def aggregate_to_game_level(statcast_df):
     # Count pitches per game
     pitch_counts = grouped.size().reset_index(name='pitch_count')
     game_level = pitch_counts.copy()
+    
+    # Extract pitch mix data if available
+    if 'pitch_type' in statcast_df.columns:
+        logger.info("Pitch type column found - extracting pitch mix data")
+        
+        # Get unique pitchers and games for logging
+        unique_pitchers = statcast_df['pitcher'].nunique()
+        unique_games = statcast_df['game_id'].nunique()
+        unique_combos = statcast_df.groupby(['pitcher', 'game_id']).ngroups
+        
+        logger.info(f"Unique pitchers: {unique_pitchers}")
+        logger.info(f"Unique games: {unique_games}")
+        logger.info(f"Unique pitcher-game combinations: {unique_combos}")
+        
+        try:
+            # Count pitches per type per game
+            pitch_type_counts = statcast_df.groupby(group_cols + ['pitch_type']).size().reset_index(name='type_count')
+            
+            # Merge with total pitch counts
+            pitch_type_counts = pd.merge(
+                pitch_type_counts, 
+                pitch_counts[group_cols + ['pitch_count']], 
+                on=group_cols,
+                how='left'
+            )
+            
+            # Calculate percentage
+            pitch_type_counts['percentage'] = (pitch_type_counts['type_count'] / pitch_type_counts['pitch_count']) * 100
+            
+            # Get unique pitch types
+            pitch_types = pitch_type_counts['pitch_type'].unique()
+            logger.info(f"Found {len(pitch_types)} unique pitch types: {', '.join(pitch_types)}")
+            
+            # Pivot to wide format (one column per pitch type)
+            pitch_pivot = pitch_type_counts.pivot_table(
+                index=group_cols,
+                columns='pitch_type',
+                values='percentage',
+                fill_value=0
+            ).reset_index()
+            
+            # Fix MultiIndex columns after pivot
+            if isinstance(pitch_pivot.columns, pd.MultiIndex):
+                pitch_pivot.columns = [
+                    col[0] if col[0] in group_cols else f'pitch_pct_{col[1]}' 
+                    for col in pitch_pivot.columns
+                ]
+            else:
+                # Rename pivot columns
+                pitch_types = [col for col in pitch_pivot.columns if col not in group_cols]
+                new_cols = list(group_cols).copy()
+                for col in pitch_types:
+                    new_cols.append(f'pitch_pct_{col}')
+                pitch_pivot.columns = new_cols
+            
+            # Merge with game level data
+            game_level = pd.merge(game_level, pitch_pivot, on=group_cols, how='left')
+            
+        except Exception as e:
+            logger.error(f"Error during pitch mix extraction: {e}")
+            logger.info("Falling back to basic aggregation")
     
     # Try to aggregate metrics
     try:
