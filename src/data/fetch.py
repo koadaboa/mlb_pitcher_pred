@@ -9,7 +9,7 @@ from tqdm import tqdm
 from pathlib import Path
 
 # Import pybaseball library
-from pybaseball import statcast, statcast_pitcher, pitching_stats
+from pybaseball import statcast, statcast_pitcher
 from pybaseball import cache
 
 logger = logging.getLogger(__name__)
@@ -132,33 +132,6 @@ def fetch_season_in_chunks(season, chunk_size=14):
     
     return season_data
 
-def fetch_pitching_stats_safely(season, max_retries=3):
-    """
-    Fetch traditional pitching stats with error handling and rate limiting
-    
-    Args:
-        season (int): MLB season year
-        max_retries (int): Maximum number of retries
-        
-    Returns:
-        pandas.DataFrame: Traditional pitching stats
-    """
-    retries = 0
-    while retries < max_retries:
-        try:
-            logger.info(f"Fetching traditional pitching stats for {season}...")
-            data = pitching_stats(season)
-            time.sleep(RATE_LIMIT_PAUSE)  # Respect rate limits
-            return data
-        except Exception as e:
-            logger.warning(f"Error: {e}")
-            retries += 1
-            logger.info(f"Retrying ({retries}/{max_retries})...")
-            time.sleep(RATE_LIMIT_PAUSE * 2)
-    
-    logger.error(f"Failed to fetch pitching stats for {season} after {max_retries} retries")
-    return pd.DataFrame()
-
 def get_statcast_data(force_refresh=False):
     """
     Fetch statcast data for multiple seasons
@@ -170,7 +143,7 @@ def get_statcast_data(force_refresh=False):
         pandas.DataFrame: Combined statcast data
     """
     # Create data directory if it doesn't exist
-    Path("data").mkdir(exist_ok=True)
+    Path("data").mkdir(exist_ok=True, parents=True)
     
     cache_file = "data/statcast_pitcher_data.pkl"
     
@@ -208,55 +181,5 @@ def get_statcast_data(force_refresh=False):
     with open(cache_file, 'wb') as f:
         pickle.dump(combined_data, f)
     logger.info(f"Saved combined statcast data to {cache_file}")
-    
-    return combined_data
-
-def get_traditional_stats(force_refresh=False):
-    """
-    Fetch traditional pitching stats for multiple seasons
-    
-    Args:
-        force_refresh (bool): Whether to force refresh cached data
-        
-    Returns:
-        pandas.DataFrame: Combined traditional pitching stats
-    """
-    # Create data directory if it doesn't exist
-    Path("data").mkdir(exist_ok=True)
-    
-    cache_file = "data/traditional_pitcher_data.pkl"
-    
-    # Check if we have a recent cached version
-    if not force_refresh and os.path.exists(cache_file):
-        logger.info(f"Loading cached traditional stats from {cache_file}")
-        with open(cache_file, 'rb') as f:
-            return pickle.load(f)
-    
-    all_traditional_data = []
-    
-    for season in SEASONS:
-        season_data = fetch_pitching_stats_safely(season)
-        
-        if not season_data.empty:
-            season_data['Season'] = season
-            all_traditional_data.append(season_data)
-            
-            # Save season data separately as backup
-            season_cache = f"data/traditional_pitcher_{season}.pkl"
-            with open(season_cache, 'wb') as f:
-                pickle.dump(season_data, f)
-            logger.info(f"Saved {season} traditional data to {season_cache}")
-    
-    if not all_traditional_data:
-        logger.warning("No traditional pitching data retrieved")
-        return pd.DataFrame()
-    
-    # Combine all season data
-    combined_data = pd.concat(all_traditional_data, ignore_index=True)
-    
-    # Save combined data
-    with open(cache_file, 'wb') as f:
-        pickle.dump(combined_data, f)
-    logger.info(f"Saved combined traditional data to {cache_file}")
     
     return combined_data

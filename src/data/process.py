@@ -2,20 +2,53 @@
 import pandas as pd
 import numpy as np
 import logging
-from collections import defaultdict
 import re
-
-from src.data.utils import normalize_name  # Use the new utils module
+from collections import defaultdict
 
 logger = logging.getLogger(__name__)
+
+def normalize_name(name):
+    """
+    Normalize player names for better matching
+    
+    Args:
+        name (str): Player name to normalize
+        
+    Returns:
+        str: Normalized player name
+    """
+    if not name or not isinstance(name, str):
+        return ""
+    
+    # Convert to lowercase
+    name = name.lower()
+    
+    # Remove all accented characters
+    name = name.replace('á', 'a').replace('é', 'e').replace('í', 'i').replace('ó', 'o').replace('ú', 'u')
+    name = name.replace('ñ', 'n').replace('ç', 'c').replace('ü', 'u')
+    
+    # Remove suffixes like Jr., Sr., III
+    name = re.sub(r'\b(jr|jr\.|sr|sr\.|iii|ii|iv)\b', '', name)
+    
+    # Remove all punctuation
+    name = re.sub(r'[^\w\s]', '', name)
+    
+    # Remove extra whitespace
+    name = re.sub(r'\s+', ' ', name).strip()
+    
+    # Handle lastname, firstname format
+    if ", " in name:
+        parts = name.split(", ", 1)
+        if len(parts) == 2:
+            last, first = parts
+            name = f"{first} {last}"
+    
+    return name
 
 def aggregate_to_game_level(statcast_df):
     """
     Aggregate statcast pitch-level data to pitcher-game level
     """
-    import numpy as np
-    import pandas as pd
-    
     logger.info("Aggregating statcast data to pitcher-game level...")
     
     # Basic validation
@@ -103,29 +136,25 @@ def aggregate_to_game_level(statcast_df):
                 hits_df = events_df[events_df['events'].isin(hit_events)].groupby(group_cols).size().reset_index(name='hits')
                 if not hits_df.empty:
                     game_level = pd.merge(game_level, hits_df, on=group_cols, how='left')
-
-        # Calculate outs - either directly from the data or estimate
-        if 'outs_on_play' in statcast_df.columns:
-            # If we have direct outs data
-            outs_counts = statcast_df.groupby(group_cols)['outs_on_play'].sum().reset_index(name='outs')
-            if not outs_counts.empty:
-                game_level = pd.merge(game_level, outs_counts, on=group_cols, how='left')
-        else:
-            # Estimate outs based on innings pitched (if available)
-            if 'innings_pitched' in statcast_df.columns:
-                ip_counts = statcast_df.groupby(group_cols)['innings_pitched'].max().reset_index(name='innings_pitched')
-                if not ip_counts.empty:
-                    game_level = pd.merge(game_level, ip_counts, on=group_cols, how='left')
-                    # Convert innings pitched to outs (3 outs per inning)
-                    game_level['outs'] = game_level['innings_pitched'] * 3
-            else:
-                # If no direct outs data, estimate based on pitch count
-                # Assuming average of ~15 pitches per out
-                game_level['outs'] = (game_level['pitch_count'] / 15).round().clip(0, 27)
+        
+        # Swinging strike percentage
+        if 'description' in statcast_df.columns:
+            swinging_descriptions = ['swinging_strike', 'swinging_strike_blocked']
+            swinging_df = statcast_df[statcast_df['description'].isin(swinging_descriptions)]
+            
+            if not swinging_df.empty:
+                total_pitches = grouped.size()
+                swinging_counts = swinging_df.groupby(group_cols).size()
+                swinging_pct = (swinging_counts / total_pitches * 100).reset_index(name='swinging_strike_pct')
+                game_level = pd.merge(game_level, swinging_pct, on=group_cols, how='left')
+            
+            # Called strike percentage
+            called_strike_df = statcast_df[statcast_df['description'] == 'called_strike']
+            if not called_strike_df.empty:
+                called_counts = called_strike_df.groupby(group_cols).size()
+                called_pct = (called_counts / total_pitches * 100).reset_index(name='called_strike_pct')
+                game_level = pd.merge(game_level, called_pct, on=group_cols, how='left')
                 
-        # Ensure outs is present and set to 0 if missing
-        if 'outs' not in game_level.columns:
-            game_level['outs'] = 0
     except Exception as e:
         logger.error(f"Error during aggregation: {e}")
 
@@ -143,170 +172,8 @@ def aggregate_to_game_level(statcast_df):
     logger.info(f"Aggregated data to {len(game_level)} pitcher-game records with {len(game_level.columns)} columns")
     return game_level
 
-def process_traditional_stats(trad_df):
-    """
-    Process traditional pitching stats to prepare for merging
-    
-    Args:
-        trad_df (pandas.DataFrame): Traditional pitching stats
-        
-    Returns:
-        pandas.DataFrame: Processed traditional pitching stats
-    """
-    logger.info("Processing traditional pitching stats...")
-    logger.info(f"Input shape: {trad_df.shape} with columns: {', '.join(trad_df.columns[:10])}...")
-    
-    # Common column name variations to handle different data sources
-    column_mappings = {
-        'Season': ['season', 'SEASON', 'year', 'YEAR'],
-        'Name': ['name', 'NAME', 'player_name', 'PLAYER_NAME', 'PlayerName', 'full_name'],
-        'IDfg': ['playerid', 'PLAYERID', 'player_id', 'mlbam_id', 'mlbam', 'MLBAM_ID', 'FG_ID', 'fg_id']
-    }
-    
-    # Try to standardize column names
-    for standard_name, alternatives in column_mappings.items():
-        if standard_name not in trad_df.columns:
-            for alt in alternatives:
-                if alt in trad_df.columns:
-                    trad_df[standard_name] = trad_df[alt]
-                    logger.info(f"Mapped column {alt} to {standard_name}")
-                    break
-    
-    # Check if required columns exist now
-    required_cols = ['Season', 'Name']
-    missing_cols = [col for col in required_cols if col not in trad_df.columns]
-    
-    if missing_cols:
-        logger.error(f"Still missing required columns after mapping: {missing_cols}")
-        return pd.DataFrame()
-    
-    # We also need a player ID column - check if we have one
-    id_col = None
-    for col in ['IDfg', 'playerid', 'PLAYERID', 'player_id', 'mlbam_id', 'mlbam']:
-        if col in trad_df.columns:
-            id_col = col
-            break
-    
-    if id_col is None:
-        logger.error("No player ID column found in traditional stats")
-        return pd.DataFrame()
-    
-    # Create a pitcher_id column from the ID column
-    trad_df['pitcher_id'] = trad_df[id_col]
-    
-    # Process columns for easier merging
-    if 'Name' in trad_df.columns:
-        trad_df['Name'] = trad_df['Name'].astype(str).str.strip()
-    
-    # Map column names to our standard format
-    stat_mappings = {
-        'ERA': ['era', 'ERA', 'earned_run_avg'],
-        'K/9': ['k_per_9', 'so9', 'so/9', 'k9', 'strikeouts_per_9'],
-        'BB/9': ['bb_per_9', 'bb9', 'bb/9', 'walks_per_9'],
-        'K/BB': ['k_bb_ratio', 'so_bb', 'so/bb', 'k/bb', 'strikeout_to_walk'],
-        'WHIP': ['whip', 'WHIP', 'walks_hits_per_ip'],
-        'BABIP': ['babip', 'BABIP', 'batting_avg_on_balls_in_play'],
-        'LOB%': ['lob_pct', 'lob%', 'LOB%', 'left_on_base_pct'],
-        'FIP': ['fip', 'FIP', 'fielding_independent_pitching'],
-        'xFIP': ['xfip', 'xFIP', 'expected_fielding_independent_pitching'],
-        'WAR': ['war', 'WAR', 'wins_above_replacement'],
-        'Team': ['team', 'TEAM', 'team_name', 'TEAM_NAME', 'organization']
-    }
-    
-    # Standardize stat column names
-    processed_df = trad_df.copy()
-    for standard_name, alternatives in stat_mappings.items():
-        if standard_name not in processed_df.columns:
-            for alt in alternatives:
-                if alt in processed_df.columns:
-                    processed_df[standard_name] = processed_df[alt]
-                    logger.info(f"Mapped stat column {alt} to {standard_name}")
-                    break
-    
-    # Ensure the required columns exist
-    required_stats = ['ERA', 'Team']
-    for stat in required_stats:
-        if stat not in processed_df.columns:
-            logger.warning(f"Required stat {stat} not found in traditional stats")
-            processed_df[stat] = np.nan
-    
-    # Convert percentage strings to floats if needed
-    pct_cols = ['LOB%', 'BABIP']
-    for col in pct_cols:
-        if col in processed_df.columns and processed_df[col].dtype == 'object':
-            processed_df[col] = processed_df[col].astype(str).str.rstrip('%').astype('float') / 100
-    
-    # Ensure numeric data types
-    numeric_cols = ['ERA', 'K/9', 'BB/9', 'K/BB', 'WHIP', 'BABIP', 'LOB%', 'FIP', 'xFIP', 'WAR']
-    for col in numeric_cols:
-        if col in processed_df.columns:
-            processed_df[col] = pd.to_numeric(processed_df[col], errors='coerce')
-    
-    # Standardize column names to lowercase for database consistency
-    column_standardization = {
-        'Name': 'player_name',
-        'Season': 'season',
-        'Team': 'team',
-        'ERA': 'era', 
-        'K/9': 'k_per_9', 
-        'BB/9': 'bb_per_9',
-        'K/BB': 'k_bb_ratio', 
-        'WHIP': 'whip',
-        'BABIP': 'babip',
-        'LOB%': 'lob_pct',
-        'FIP': 'fip',
-        'xFIP': 'xfip',
-        'WAR': 'war'
-    }
-    
-    # Rename columns
-    for old_name, new_name in column_standardization.items():
-        if old_name in processed_df.columns:
-            processed_df.rename(columns={old_name: new_name}, inplace=True)
-    
-    logger.info(f"Processed {len(processed_df)} traditional stat records with {len(processed_df.columns)} columns")
-    return processed_df
-
-def normalize_name(name):
-    """
-    Normalize player names for better matching
-    
-    Args:
-        name (str): Player name to normalize
-        
-    Returns:
-        str: Normalized player name
-    """
-    if not name or not isinstance(name, str):
-        return ""
-    
-    # Convert to lowercase
-    name = name.lower()
-    
-    # Remove all accented characters
-    name = name.replace('á', 'a').replace('é', 'e').replace('í', 'i').replace('ó', 'o').replace('ú', 'u')
-    name = name.replace('ñ', 'n').replace('ç', 'c').replace('ü', 'u')
-    
-    # Remove suffixes like Jr., Sr., III
-    name = re.sub(r'\b(jr|jr\.|sr|sr\.|iii|ii|iv)\b', '', name)
-    
-    # Remove all punctuation
-    name = re.sub(r'[^\w\s]', '', name)
-    
-    # Remove extra whitespace
-    name = re.sub(r'\s+', ' ', name).strip()
-    
-    # Handle lastname, firstname format
-    if ", " in name:
-        parts = name.split(", ", 1)
-        if len(parts) == 2:
-            last, first = parts
-            name = f"{first} {last}"
-    
-    return name
-
 def export_data_to_csv():
-    """Export game stats and traditional stats to separate CSV files"""
+    """Export game stats to CSV file"""
     import pandas as pd
     from pathlib import Path
     from src.data.db import execute_query
@@ -315,7 +182,7 @@ def export_data_to_csv():
     output_dir = Path("data/output")
     output_dir.mkdir(exist_ok=True, parents=True)
     
-    # 1. Export game-level stats
+    # Export game-level stats
     logger.info("Exporting game-level stats...")
     
     # Join pitchers table to get player names
@@ -397,60 +264,14 @@ def export_data_to_csv():
     logger.info(f"Exported {len(game_stats)} game-level records to {game_file}")
     logger.info(f"Game stats include {len(game_stats.columns)} columns")
     
-    # 2. Export traditional (season-level) stats
-    logger.info("Exporting traditional (season-level) stats...")
-    
-    trad_query = """
-    SELECT 
-        t.pitcher_id,
-        p.player_name,
-        p.statcast_id,
-        p.traditional_id,
-        t.season,
-        t.team,
-        t.era,
-        t.k_per_9,
-        t.bb_per_9,
-        t.k_bb_ratio,
-        t.whip,
-        t.babip,
-        t.lob_pct,
-        t.fip,
-        t.xfip,
-        t.war
-    FROM 
-        traditional_stats t
-    JOIN 
-        pitchers p ON t.pitcher_id = p.pitcher_id
-    ORDER BY 
-        t.season, p.player_name
-    """
-    
-    trad_stats = execute_query(trad_query)
-    trad_file = output_dir / "traditional_season_stats.csv"
-    trad_stats.to_csv(trad_file, index=False)
-    
-    logger.info(f"Exported {len(trad_stats)} traditional stat records to {trad_file}")
-    
-    # 3. Export metadata about the dataset
+    # Export metadata about the dataset
     metadata = {
         "game_stats_count": len(game_stats),
         "game_stats_seasons": sorted(game_stats['season'].unique().tolist()),
-        "traditional_stats_count": len(trad_stats),
-        "traditional_stats_seasons": sorted(trad_stats['season'].unique().tolist()),
         "unique_pitchers_in_game_stats": game_stats['pitcher_id'].nunique(),
-        "unique_pitchers_in_traditional_stats": trad_stats['pitcher_id'].nunique(),
-        "unique_pitchers_in_both": len(set(game_stats['pitcher_id']).intersection(set(trad_stats['pitcher_id'])))
+        "avg_games_per_pitcher": len(game_stats) / game_stats['pitcher_id'].nunique() if game_stats['pitcher_id'].nunique() > 0 else 0,
+        "avg_strikeouts_per_game": game_stats['strikeouts'].mean() if 'strikeouts' in game_stats.columns else 0
     }
-    
-    # Calculate some statistics for context
-    if not game_stats.empty:
-        metadata["avg_games_per_pitcher"] = len(game_stats) / game_stats['pitcher_id'].nunique()
-        metadata["avg_strikeouts_per_game"] = game_stats['strikeouts'].mean()
-    
-    if not trad_stats.empty:
-        metadata["avg_era"] = trad_stats['era'].mean()
-        metadata["avg_k_per_9"] = trad_stats['k_per_9'].mean()
     
     # Save metadata
     meta_df = pd.DataFrame([metadata])
@@ -459,17 +280,16 @@ def export_data_to_csv():
     
     logger.info(f"Exported dataset metadata to {meta_file}")
     
-    # 4. Export mapping between pitchers
+    # Export mapping between pitchers
     mapping_query = """
     SELECT 
         pitcher_id,
         player_name,
-        statcast_id,
-        traditional_id
+        statcast_id
     FROM 
         pitchers
     WHERE 
-        statcast_id IS NOT NULL OR traditional_id IS NOT NULL
+        statcast_id IS NOT NULL
     """
     
     pitcher_map = execute_query(mapping_query)
@@ -480,7 +300,6 @@ def export_data_to_csv():
     
     return {
         "game_stats": game_file,
-        "traditional_stats": trad_file,
         "metadata": meta_file,
         "pitcher_mapping": map_file
     }

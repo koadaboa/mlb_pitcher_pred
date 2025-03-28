@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 def process_data(force_refresh=False):
     """
-    Process raw data into analysis-ready format
+    Process raw data into analysis-ready format for strikeout prediction
     
     Args:
         force_refresh (bool): Whether to force refresh existing data

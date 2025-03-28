@@ -13,8 +13,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Import necessary functions
-from src.data.fetch import get_statcast_data, get_traditional_stats
-from src.data.db import init_database, store_statcast_data, store_traditional_stats, update_pitcher_mapping
+from src.data.fetch import get_statcast_data
+from src.data.db import init_database, store_statcast_data
 
 def fetch_and_store_data(force_refresh=False):
     """Fetch and store data from external sources"""
@@ -31,22 +31,10 @@ def fetch_and_store_data(force_refresh=False):
         logger.error("No statcast data available. Exiting.")
         return False
     
-    # 2. Fetch traditional pitching stats
-    logger.info("Fetching traditional pitching stats...")
-    traditional_data = get_traditional_stats(force_refresh=force_refresh)
-    if traditional_data.empty:
-        logger.warning("No traditional pitching data available. Continuing with statcast data only.")
-    
-    # 3. Store raw data in the database
+    # 2. Store raw data in the database
     logger.info("Storing raw data in database...")
     try:
         store_statcast_data(statcast_data, force_refresh=force_refresh)
-        
-        if not traditional_data.empty:
-            store_traditional_stats(traditional_data, force_refresh=force_refresh)
-        
-        # 4. Update pitcher ID mappings
-        update_pitcher_mapping()
         
         logger.info("Data acquisition completed successfully!")
         return True

@@ -1,4 +1,4 @@
-# Feature engineering functions for pitcher prediction models
+# Feature engineering functions for pitcher strikeout prediction model
 import pandas as pd
 import numpy as np
 import logging
@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 def create_prediction_features(force_refresh=False):
     """
-    Create and store prediction features in the database
+    Create and store prediction features for strikeout prediction in the database
     
     Args:
         force_refresh (bool): Whether to force refresh existing features
@@ -59,18 +59,6 @@ def create_prediction_features(force_refresh=False):
             # by only using past data for each observation
             pitcher_data[f'last_{window}_games_strikeouts_avg'] = pitcher_data['strikeouts'].rolling(
                 window=window, min_periods=1).mean().shift(1)
-
-            pitcher_data[f'last_{window}_games_outs_avg'] = pitcher_data['outs'].rolling(
-                window=window, min_periods=1).mean().shift(1)
-            
-            pitcher_data[f'last_{window}_games_k9_avg'] = pitcher_data['k_per_9'].rolling(
-                window=window, min_periods=1).mean().shift(1)
-            
-            pitcher_data[f'last_{window}_games_era_avg'] = pitcher_data['era'].rolling(
-                window=window, min_periods=1).mean().shift(1)
-            
-            pitcher_data[f'last_{window}_games_fip_avg'] = pitcher_data['fip'].rolling(
-                window=window, min_periods=1).mean().shift(1)
             
             pitcher_data[f'last_{window}_games_velo_avg'] = pitcher_data['release_speed_mean'].rolling(
                 window=window, min_periods=1).mean().shift(1)
@@ -83,9 +71,8 @@ def create_prediction_features(force_refresh=False):
         pitcher_data['days_rest'] = (pitcher_data['game_date'] - pitcher_data['prev_game_date']).dt.days
         pitcher_data['days_rest'] = pitcher_data['days_rest'].fillna(5)  # Default to 5 days for first appearance
         
-        # Create team changed flag
-        pitcher_data['team_changed'] = pitcher_data['team'].shift(1) != pitcher_data['team']
-        pitcher_data['team_changed'] = pitcher_data['team_changed'].fillna(False).astype(int)
+        # Create team changed flag (dummy - no team info in our schema)
+        pitcher_data['team_changed'] = 0
         
         # Add to features dataset
         features.append(pitcher_data)
@@ -116,12 +103,6 @@ def create_prediction_features(force_refresh=False):
                         SET 
                             last_3_games_strikeouts_avg = ?,
                             last_5_games_strikeouts_avg = ?,
-                            last_3_games_k9_avg = ?,
-                            last_5_games_k9_avg = ?,
-                            last_3_games_era_avg = ?,
-                            last_5_games_era_avg = ?,
-                            last_3_games_fip_avg = ?,
-                            last_5_games_fip_avg = ?,
                             last_3_games_velo_avg = ?,
                             last_5_games_velo_avg = ?,
                             last_3_games_swinging_strike_pct_avg = ?,
@@ -132,12 +113,6 @@ def create_prediction_features(force_refresh=False):
                     ''', (
                         row['last_3_games_strikeouts_avg'],
                         row['last_5_games_strikeouts_avg'],
-                        row['last_3_games_k9_avg'],
-                        row['last_5_games_k9_avg'],
-                        row['last_3_games_era_avg'],
-                        row['last_5_games_era_avg'],
-                        row['last_3_games_fip_avg'],
-                        row['last_5_games_fip_avg'],
                         row['last_3_games_velo_avg'],
                         row['last_5_games_velo_avg'],
                         row['last_3_games_swinging_strike_pct_avg'],
@@ -152,13 +127,10 @@ def create_prediction_features(force_refresh=False):
                         INSERT INTO prediction_features (
                             pitcher_id, game_id, game_date, season,
                             last_3_games_strikeouts_avg, last_5_games_strikeouts_avg,
-                            last_3_games_k9_avg, last_5_games_k9_avg,
-                            last_3_games_era_avg, last_5_games_era_avg,
-                            last_3_games_fip_avg, last_5_games_fip_avg,
                             last_3_games_velo_avg, last_5_games_velo_avg,
                             last_3_games_swinging_strike_pct_avg, last_5_games_swinging_strike_pct_avg,
                             days_rest, team_changed
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''', (
                         row['pitcher_id'],
                         row['game_id'],
@@ -166,12 +138,6 @@ def create_prediction_features(force_refresh=False):
                         row['season'],
                         row['last_3_games_strikeouts_avg'],
                         row['last_5_games_strikeouts_avg'],
-                        row['last_3_games_k9_avg'],
-                        row['last_5_games_k9_avg'],
-                        row['last_3_games_era_avg'],
-                        row['last_5_games_era_avg'],
-                        row['last_3_games_fip_avg'],
-                        row['last_5_games_fip_avg'],
                         row['last_3_games_velo_avg'],
                         row['last_5_games_velo_avg'],
                         row['last_3_games_swinging_strike_pct_avg'],
