@@ -4,7 +4,8 @@ import numpy as np
 import logging
 import sqlite3
 from pathlib import Path
-
+import pybaseball
+from pybaseball import team_batting_stats
 from src.data.db import get_db_connection, get_pitcher_data
 
 logger = logging.getLogger(__name__)
@@ -158,6 +159,9 @@ def create_enhanced_features(df):
     - Trend indicators
     - Momentum indicators
     - Pitch mix features from previous games
+    - Opponent features (new)
+    - Context-specific features (new)
+    - Advanced volatility metrics (new)
     
     Args:
         df (pandas.DataFrame): DataFrame with pitcher data
@@ -171,6 +175,9 @@ def create_enhanced_features(df):
         logger.warning("No data available for feature engineering.")
         return pd.DataFrame()
     
+    # Add opponent features (new function)
+    df = add_opponent_features(df)
+    
     # Create a dataframe to store the features
     features = []
     
@@ -180,7 +187,7 @@ def create_enhanced_features(df):
         pitcher_data = pitcher_data.sort_values('game_date')
         
         # Create rolling window features
-        for window in [3, 5]:
+        for window in [3, 5, 10]:  # Added larger window
             # ------ AVERAGES ------
             for metric in ['strikeouts', 'release_speed_mean', 'swinging_strike_pct', 
                           'called_strike_pct', 'zone_rate']:
@@ -216,6 +223,28 @@ def create_enhanced_features(df):
                         window=window, min_periods=1).apply(
                             lambda x: np.sum(x * weights[-len(x):]) / np.sum(weights[-len(x):]), raw=True
                         ).shift(1)
+            
+            # ------ NEW: STREAK INDICATORS ------
+            if 'strikeouts' in pitcher_data.columns:
+                pitcher_data[f'increasing_so_streak_{window}'] = (
+                    pitcher_data['strikeouts'].rolling(window=window, min_periods=2)
+                    .apply(lambda x: (np.diff(x) > 0).sum() / (len(x)-1) * 100)
+                    .shift(1)
+                )
+            
+            # ------ NEW: VOLATILITY MEASURE ------
+            if all(col in pitcher_data.columns for col in [f'last_{window}_games_strikeouts_std', f'last_{window}_games_strikeouts_avg']):
+                pitcher_data[f'strikeout_volatility_{window}'] = (
+                    pitcher_data[f'last_{window}_games_strikeouts_std'] / 
+                    pitcher_data[f'last_{window}_games_strikeouts_avg'].clip(lower=0.1)  # Avoid division by zero
+                ).shift(1)
+            
+            # ------ NEW: RECOVERY PATTERN ------
+            if all(col in pitcher_data.columns for col in ['strikeouts', f'last_{window}_games_strikeouts_avg']):
+                pitcher_data[f'post_poor_performance_{window}'] = (
+                    pitcher_data['strikeouts'].shift(1) < 
+                    pitcher_data[f'last_{window}_games_strikeouts_avg'].shift(1)
+                ).astype(int)
         
         # ------ PREVIOUS GAME PITCH MIX ------
         pitch_mix_cols = [col for col in pitcher_data.columns if col.startswith('pitch_pct_')]
@@ -234,6 +263,37 @@ def create_enhanced_features(df):
             
             pitcher_data['pitch_entropy'] = pitcher_data.apply(calc_entropy, axis=1)
             pitcher_data['prev_game_pitch_entropy'] = pitcher_data['pitch_entropy'].shift(1)
+            
+            # ------ NEW: PITCH MIX CHANGE ------
+            # Calculate cosine similarity between current and previous pitch mix
+            if len(pitch_mix_cols) > 0:
+                from scipy.spatial.distance import cosine
+                
+                def pitch_similarity(current, previous):
+                    if pd.isna(previous).any() or pd.isna(current).any():
+                        return np.nan
+                    
+                    current_vec = [current[col] for col in pitch_mix_cols]
+                    previous_vec = [previous[col] for col in pitch_mix_cols]
+                    
+                    # If all zeros, return 1 (perfect similarity)
+                    if sum(current_vec) == 0 or sum(previous_vec) == 0:
+                        return 1.0
+                        
+                    return 1.0 - cosine(current_vec, previous_vec)
+                
+                # Calculate similarity for each row with the previous row
+                pitch_similarities = []
+                
+                for i in range(len(pitcher_data)):
+                    if i == 0:
+                        pitch_similarities.append(np.nan)
+                    else:
+                        current = pitcher_data.iloc[i]
+                        previous = pitcher_data.iloc[i-1]
+                        pitch_similarities.append(pitch_similarity(current, previous))
+                
+                pitcher_data['pitch_mix_similarity'] = pitch_similarities
         
         # Calculate days of rest
         pitcher_data['prev_game_date'] = pitcher_data['game_date'].shift(1)
@@ -258,3 +318,59 @@ def create_enhanced_features(df):
     else:
         logger.warning("No features created.")
         return pd.DataFrame()
+
+# Add to create_enhanced_features in src/features/engineering.py
+def add_opponent_features(df):
+    """Add opponent team-specific features"""
+    if 'opponent_team_id' not in df.columns:
+        logger.warning("No opponent_team_id column found for opponent features")
+        return df
+    
+    # Get unique combinations of opponent and season
+    opponent_seasons = df[['opponent_team_id', 'season']].drop_duplicates()
+    
+    # Fetch opponent team stats
+    try:
+        team_stats = pybaseball.team_batting_stats(min(df['season']), max(df['season']))
+        
+        # Process team stats by season
+        team_stats_by_season = {}
+        for season in df['season'].unique():
+            season_stats = team_stats[team_stats['Season'] == season]
+            # Create lookup dictionary
+            team_stats_by_season[season] = season_stats.set_index('Team').to_dict('index')
+        
+        # Add opponent features
+        df['opponent_strikeout_rate'] = df.apply(
+            lambda row: team_stats_by_season.get(row['season'], {}).get(
+                row['opponent_team_id'], {}).get('K%', 0),
+            axis=1
+        )
+        
+        df['opponent_walk_rate'] = df.apply(
+            lambda row: team_stats_by_season.get(row['season'], {}).get(
+                row['opponent_team_id'], {}).get('BB%', 0),
+            axis=1
+        )
+        
+        df['opponent_ops'] = df.apply(
+            lambda row: team_stats_by_season.get(row['season'], {}).get(
+                row['opponent_team_id'], {}).get('OPS', 0),
+            axis=1
+        )
+        
+        # Calculate normalized features (how this opponent compares to average)
+        for season in df['season'].unique():
+            season_mask = df['season'] == season
+            season_avg_k = df.loc[season_mask, 'opponent_strikeout_rate'].mean()
+            if season_avg_k > 0:
+                df.loc[season_mask, 'opponent_k_vs_avg'] = (
+                    df.loc[season_mask, 'opponent_strikeout_rate'] / season_avg_k
+                )
+        
+        logger.info(f"Added opponent features for {len(df)} records")
+        
+    except Exception as e:
+        logger.error(f"Error adding opponent features: {e}")
+    
+    return df

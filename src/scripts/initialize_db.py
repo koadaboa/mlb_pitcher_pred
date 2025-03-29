@@ -2,6 +2,7 @@
 import logging
 import os
 from pathlib import Path
+import argparse
 
 # Set up logging
 logging.basicConfig(
@@ -41,4 +42,9 @@ def setup_database(clear_existing=False):
         return False
 
 if __name__ == "__main__":
-    setup_database(clear_existing=False)
+    parser = argparse.ArgumentParser(description='Initialize the database structure')
+    parser.add_argument('--force-refresh', action='store_true', 
+                        help='Clear existing database before initialization')
+    args = parser.parse_args()
+    
+    setup_database(clear_existing=args.force_refresh)

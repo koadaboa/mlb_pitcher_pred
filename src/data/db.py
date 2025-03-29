@@ -99,6 +99,7 @@ def is_table_populated(table_name):
     
     return count > 0
 
+# Update the init_database function in src/data/db.py
 def init_database():
     """
     Initialize the SQLite database with the necessary tables
@@ -111,6 +112,30 @@ def init_database():
     
     # Create tables
     
+    # Teams table
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS teams (
+        team_id TEXT PRIMARY KEY,
+        team_name TEXT,
+        team_abbrev TEXT
+    )
+    ''')
+    
+    # Game context table
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS game_context (
+        game_id TEXT PRIMARY KEY,
+        game_date TEXT,
+        season INTEGER,
+        home_team_id TEXT,
+        away_team_id TEXT,
+        stadium TEXT,
+        day_night TEXT,
+        FOREIGN KEY (home_team_id) REFERENCES teams(team_id),
+        FOREIGN KEY (away_team_id) REFERENCES teams(team_id)
+    )
+    ''')
+    
     # Pitchers table
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS pitchers (
@@ -122,26 +147,36 @@ def init_database():
     ''')
     
     # Game-level Statcast data
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS game_stats (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        pitcher_id INTEGER,
-        game_id TEXT,
-        game_date TEXT,
-        season INTEGER,
-        strikeouts INTEGER,
-        hits INTEGER,
-        walks INTEGER,
-        home_runs INTEGER,
-        release_speed_mean REAL,
-        release_speed_max REAL,
-        release_spin_rate_mean REAL,
-        swinging_strike_pct REAL,
-        called_strike_pct REAL,
-        zone_rate REAL,
-        FOREIGN KEY (pitcher_id) REFERENCES pitchers(pitcher_id)
-    )
-    ''')
+    # Check if opponent_team_id column exists
+    cursor.execute("PRAGMA table_info(game_stats)")
+    columns = cursor.fetchall()
+    column_names = [col[1] for col in columns]
+    
+    if not columns:  # Table doesn't exist
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS game_stats (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pitcher_id INTEGER,
+            game_id TEXT,
+            game_date TEXT,
+            season INTEGER,
+            opponent_team_id TEXT,
+            strikeouts INTEGER,
+            hits INTEGER,
+            walks INTEGER,
+            home_runs INTEGER,
+            release_speed_mean REAL,
+            release_speed_max REAL,
+            release_spin_rate_mean REAL,
+            swinging_strike_pct REAL,
+            called_strike_pct REAL,
+            zone_rate REAL,
+            FOREIGN KEY (pitcher_id) REFERENCES pitchers(pitcher_id),
+            FOREIGN KEY (opponent_team_id) REFERENCES teams(team_id)
+        )
+        ''')
+    elif 'opponent_team_id' not in column_names:  # Table exists but needs column
+        cursor.execute('ALTER TABLE game_stats ADD COLUMN opponent_team_id TEXT')
     
     # Pitch mix table
     cursor.execute('''
@@ -164,10 +199,13 @@ def init_database():
         season INTEGER,
         last_3_games_strikeouts_avg REAL,
         last_5_games_strikeouts_avg REAL,
+        last_10_games_strikeouts_avg REAL,
         last_3_games_velo_avg REAL,
         last_5_games_velo_avg REAL,
+        last_10_games_velo_avg REAL,
         last_3_games_swinging_strike_pct_avg REAL,
         last_5_games_swinging_strike_pct_avg REAL,
+        last_10_games_swinging_strike_pct_avg REAL,
         days_rest INTEGER,
         team_changed BOOLEAN,
         FOREIGN KEY (pitcher_id) REFERENCES pitchers(pitcher_id)
@@ -670,3 +708,160 @@ def update_database_schema():
     conn.close()
     
     logger.info("Database schema update complete")
+
+# Add these functions to src/data/db.py
+
+def store_game_context(game_context_df):
+    """Store game context information in the database"""
+    if game_context_df.empty:
+        logger.warning("No game context data to store")
+        return
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # First, ensure teams exist
+    teams_to_add = set()
+    if 'home_team' in game_context_df.columns:
+        teams_to_add.update(game_context_df['home_team'].dropna().unique())
+    if 'away_team' in game_context_df.columns:
+        teams_to_add.update(game_context_df['away_team'].dropna().unique())
+    
+    for team in teams_to_add:
+        cursor.execute(
+            "INSERT OR IGNORE INTO teams (team_id, team_name) VALUES (?, ?)",
+            (team, team)
+        )
+    
+    # Insert game context records
+    inserted = 0
+    for _, row in game_context_df.iterrows():
+        try:
+            # Convert timestamp to string if needed
+            game_date = row.get('game_date', '')
+            if hasattr(game_date, 'strftime'):
+                game_date = game_date.strftime('%Y-%m-%d')
+                
+            cursor.execute(
+                """
+                INSERT OR REPLACE INTO game_context 
+                (game_id, game_date, season, home_team_id, away_team_id, stadium, day_night)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    row.get('game_id', ''),
+                    game_date,
+                    row.get('season', 0),
+                    row.get('home_team', ''),
+                    row.get('away_team', ''),
+                    row.get('stadium', ''),
+                    row.get('day_night', '')
+                )
+            )
+            inserted += 1
+        except Exception as e:
+            logger.error(f"Error inserting game context: {e}")
+            continue
+    
+    conn.commit()
+    conn.close()
+    logger.info(f"Stored {inserted} game context records")
+
+def store_team_data(team_data_df):
+    """Store team data in the database"""
+    if team_data_df.empty:
+        logger.warning("No team data to store")
+        return
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # Create team stats table if it doesn't exist
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS team_stats (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        team_id TEXT,
+        season INTEGER,
+        strikeout_rate REAL,
+        walk_rate REAL,
+        batting_avg REAL,
+        ops REAL,
+        FOREIGN KEY (team_id) REFERENCES teams(team_id)
+    )
+    ''')
+    
+    # Insert team stats records
+    inserted = 0
+    for _, row in team_data_df.iterrows():
+        try:
+            # First ensure team exists
+            cursor.execute(
+                "INSERT OR IGNORE INTO teams (team_id, team_name) VALUES (?, ?)",
+                (row['team_id'], row['team_id'])
+            )
+            
+            # Insert stats
+            cursor.execute(
+                """
+                INSERT OR REPLACE INTO team_stats 
+                (team_id, season, strikeout_rate, walk_rate, batting_avg, ops)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    row['team_id'],
+                    row['season'],
+                    row.get('strikeout_rate', 0),
+                    row.get('walk_rate', 0),
+                    row.get('batting_avg', 0),
+                    row.get('ops', 0)
+                )
+            )
+            inserted += 1
+        except Exception as e:
+            logger.error(f"Error inserting team stats: {e}")
+            continue
+    
+    conn.commit()
+    conn.close()
+    logger.info(f"Stored {inserted} team stat records")
+
+def store_opponent_data(opponent_df):
+    """Store opponent mapping data in the database"""
+    if opponent_df.empty:
+        logger.warning("No opponent data to store")
+        return
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    updated = 0
+    for _, row in opponent_df.iterrows():
+        try:
+            # Get pitcher_id from statcast_id
+            cursor.execute(
+                "SELECT pitcher_id FROM pitchers WHERE statcast_id = ?",
+                (row['pitcher'],)
+            )
+            result = cursor.fetchone()
+            
+            if not result:
+                logger.warning(f"No pitcher_id found for statcast_id {row['pitcher']}")
+                continue
+                
+            pitcher_id = result[0]
+            
+            # Update game_stats with opponent_team_id
+            cursor.execute(
+                "UPDATE game_stats SET opponent_team_id = ? WHERE pitcher_id = ? AND game_id = ?",
+                (row['opponent_team_id'], pitcher_id, row['game_id'])
+            )
+            
+            if cursor.rowcount > 0:
+                updated += 1
+        except Exception as e:
+            logger.error(f"Error storing opponent data: {e}")
+            continue
+    
+    conn.commit()
+    conn.close()
+    logger.info(f"Updated opponent data for {updated} game records")

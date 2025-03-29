@@ -368,3 +368,103 @@ def export_data_to_csv():
         "metadata": meta_file,
         "pitcher_mapping": map_file
     }
+
+# Extract game context from statcast data
+def extract_game_context(statcast_df):
+    """Extract game context information from statcast data"""
+    if statcast_df.empty:
+        return pd.DataFrame()
+    
+    # Fields we need from statcast data
+    context_fields = ['game_date', 'game_pk', 'home_team', 'away_team', 
+                     'stadium', 'game_type', 'home_score', 'away_score']
+    
+    # Check if fields exist
+    missing = [f for f in context_fields if f not in statcast_df.columns]
+    if missing:
+        logger.warning(f"Missing context fields: {missing}")
+        # Use available fields
+        context_fields = [f for f in context_fields if f in statcast_df.columns]
+    
+    if not context_fields:
+        return pd.DataFrame()
+    
+    # Group by game to get unique game context
+    game_context = statcast_df[context_fields].drop_duplicates('game_pk')
+    
+    # Add season information
+    if 'game_date' in game_context.columns:
+        game_context['season'] = pd.to_datetime(game_context['game_date']).dt.year
+    
+    # Rename columns to match database schema
+    game_context = game_context.rename(columns={
+        'game_pk': 'game_id',
+        'game_type': 'day_night'  # This may need adjustment
+    })
+    
+    return game_context
+
+def map_opponents_to_games(statcast_df, pitcher_team_map):
+    """Map opponent teams to pitcher game records"""
+    logger.info("Starting opponent mapping process...")
+    
+    # Fields needed
+    needed_fields = ['pitcher', 'game_pk', 'home_team', 'away_team']
+    
+    # Check if fields exist
+    if not all(field in statcast_df.columns for field in needed_fields):
+        logger.warning(f"Missing required fields for opponent mapping")
+        return pd.DataFrame()
+    
+    # Process in batches to avoid memory issues
+    batch_size = 5000
+    total_rows = len(statcast_df)
+    pitcher_games = pd.DataFrame()
+    
+    for i in range(0, total_rows, batch_size):
+        logger.info(f"Processing batch {i//batch_size + 1} of {total_rows//batch_size + 1}...")
+        batch = statcast_df.iloc[i:i+batch_size]
+        
+        # Group by pitcher and game
+        batch_games = batch[needed_fields].drop_duplicates(['pitcher', 'game_pk'])
+        pitcher_games = pd.concat([pitcher_games, batch_games], ignore_index=True)
+    
+    logger.info(f"Processing {len(pitcher_games)} unique pitcher-game combinations...")
+    
+    # Prepare for opponents
+    pitcher_games['opponent_team_id'] = None
+    
+    # Process in smaller batches
+    processed = 0
+    for i in range(0, len(pitcher_games), 1000):
+        batch = pitcher_games.iloc[i:i+1000].copy()
+        
+        # Determine opponent for each record
+        for idx, row in batch.iterrows():
+            pitcher_id = row['pitcher']
+            pitcher_team = pitcher_team_map.get(pitcher_id)
+            
+            if not pitcher_team:
+                continue
+                
+            # If pitcher is on home team, opponent is away team
+            if pitcher_team == row['home_team']:
+                batch.at[idx, 'opponent_team_id'] = row['away_team']
+            # If pitcher is on away team, opponent is home team
+            elif pitcher_team == row['away_team']:
+                batch.at[idx, 'opponent_team_id'] = row['home_team']
+        
+        # Update original dataframe
+        pitcher_games.iloc[i:i+1000] = batch
+        
+        processed += len(batch)
+        logger.info(f"Processed {processed}/{len(pitcher_games)} opponent mappings...")
+    
+    # Filter to records with valid opponent
+    result = pitcher_games[pitcher_games['opponent_team_id'].notna()]
+    result = result[['pitcher', 'game_pk', 'opponent_team_id']].rename(
+        columns={'game_pk': 'game_id'}
+    )
+    
+    logger.info(f"Mapped {len(result)} pitcher-game combinations to opponents")
+    return result

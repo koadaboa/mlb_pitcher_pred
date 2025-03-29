@@ -183,3 +183,41 @@ def get_statcast_data(force_refresh=False):
     logger.info(f"Saved combined statcast data to {cache_file}")
     
     return combined_data
+
+# Fetch team for mapping against opponent
+def fetch_team_data():
+    """Fetch team data from MLB API or pybaseball"""
+    logger.info("Starting team data fetch...")
+    try:
+        team_data = pd.DataFrame()
+        for season in SEASONS:
+            logger.info(f"Fetching team stats for season {season}...")
+            try:
+                # Add timeout
+                season_data = pybaseball.team_batting_stats(season, season)
+                season_data['season'] = season
+                team_data = pd.concat([team_data, season_data])
+                logger.info(f"Successfully fetched team stats for {season}")
+                time.sleep(2)  # Rate limiting
+            except Exception as e:
+                logger.error(f"Error fetching team stats for season {season}: {e}")
+                continue
+        
+        # Extract key team metrics
+        if not team_data.empty:
+            logger.info(f"Processing {len(team_data)} team records...")
+            team_metrics = team_data[['Team', 'season', 'K%', 'BB%', 'AVG', 'OPS']]
+            team_metrics = team_metrics.rename(columns={
+                'Team': 'team_id',
+                'K%': 'strikeout_rate',
+                'BB%': 'walk_rate',
+                'AVG': 'batting_avg',
+                'OPS': 'ops'
+            })
+            return team_metrics
+        else:
+            logger.warning("No team data fetched")
+            return pd.DataFrame()
+    except Exception as e:
+        logger.error(f"Error in team data fetch: {e}")
+        return pd.DataFrame()

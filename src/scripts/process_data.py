@@ -1,10 +1,11 @@
-# src/scripts/data_processing.py
+# src/scripts/process_data.py
 import logging
 import pandas as pd
 from pathlib import Path
+import argparse
 
 from src.data.fetch import get_statcast_data
-from src.features.engineering import create_prediction_features
+from src.features.engineering import create_enhanced_features, create_prediction_features
 from src.data.process import export_data_to_csv
 
 logging.basicConfig(level=logging.INFO)
@@ -29,4 +30,9 @@ def process_data(force_refresh=False):
     return True
 
 if __name__ == "__main__":
-    process_data(force_refresh=False)
+    parser = argparse.ArgumentParser(description='Process baseball data for analysis')
+    parser.add_argument('--force-refresh', action='store_true', 
+                        help='Force refresh of features')
+    args = parser.parse_args()
+    
+    process_data(force_refresh=args.force_refresh)
