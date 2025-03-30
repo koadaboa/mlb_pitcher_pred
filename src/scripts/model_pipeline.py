@@ -157,7 +157,7 @@ def _train_models(model_types=None, train_years=None, test_years=None, tune_hype
     logger.info("Model training complete")
     return models
 
-def _optimize_models(model_type='xgboost', train_years=None, n_trials=100, metric='within_1_strikeout'):
+def _optimize_models(model_type='xgboost', train_years=None, n_trials=50, metric='within_1_strikeout'):
     """
     Optimize models using Bayesian optimization
     

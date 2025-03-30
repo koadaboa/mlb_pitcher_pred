@@ -675,7 +675,27 @@ def update_database_schema():
         
         # Pitch mix entropy
         ('pitch_entropy', 'REAL'),
-        ('prev_game_pitch_entropy', 'REAL')
+        ('prev_game_pitch_entropy', 'REAL'),
+        
+        # NEW: Pitcher-specific baseline features
+        ('career_so_avg', 'REAL'),
+        ('career_so_std', 'REAL'),
+        ('career_so_per_batter', 'REAL'),
+        ('career_so_consistency', 'REAL'),
+        ('prev_so_deviation', 'REAL'),
+        ('so_deviation_3g_avg', 'REAL'),
+        ('so_deviation_5g_avg', 'REAL'),
+        ('is_home_game', 'INTEGER'),
+        ('home_away_so_exp', 'REAL'),
+        
+        # NEW: Enhanced matchup features
+        ('opponent_whiff_rate', 'REAL'),
+        ('opponent_chase_rate', 'REAL'),
+        ('opponent_zone_contact_rate', 'REAL'),
+        ('opponent_k_vs_avg', 'REAL'),
+        ('opponent_whiff_vs_avg', 'REAL'),
+        ('matchup_advantage', 'REAL'),
+        ('recency_weighted_matchup', 'REAL')
     ]
     
     # Add columns if they don't exist

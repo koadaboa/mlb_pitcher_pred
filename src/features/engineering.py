@@ -1,6 +1,8 @@
 # Feature engineering functions for pitcher strikeout prediction model
 import pandas as pd
 import numpy as np
+import datetime
+import sqlite3
 from pathlib import Path
 import pybaseball
 from src.data.db import get_db_connection, get_pitcher_data
@@ -44,6 +46,22 @@ def create_prediction_features(force_refresh=False):
     conn = get_db_connection()
     cursor = conn.cursor()
     
+    # Check for existing columns
+    cursor.execute("PRAGMA table_info(prediction_features)")
+    existing_columns = [row[1] for row in cursor.fetchall()]
+    
+    # Find opponent-specific columns we need to add
+    opponent_columns = [col for col in enhanced_df.columns if col.startswith('so_vs_')]
+    new_opponent_columns = [col for col in opponent_columns if col not in existing_columns]
+    
+    # Add any new opponent-specific columns
+    for col in new_opponent_columns:
+        try:
+            cursor.execute(f"ALTER TABLE prediction_features ADD COLUMN {col} REAL")
+            logger.info(f"Added opponent-specific column {col} to prediction_features table")
+        except sqlite3.OperationalError as e:
+            logger.warning(f"Could not add column {col}: {e}")
+    
     # Clear existing features if force_refresh
     if force_refresh:
         cursor.execute("DELETE FROM prediction_features")
@@ -61,56 +79,62 @@ def create_prediction_features(force_refresh=False):
             )
             existing = cursor.fetchone()
             
-            # List of standard features we want to store
-            std_features = [
-                'last_3_games_strikeouts_avg', 'last_5_games_strikeouts_avg',
-                'last_3_games_velo_avg', 'last_5_games_velo_avg',
-                'last_3_games_swinging_strike_pct_avg', 'last_5_games_swinging_strike_pct_avg',
-                'last_3_games_called_strike_pct_avg', 'last_5_games_called_strike_pct_avg', 
-                'last_3_games_zone_rate_avg', 'last_5_games_zone_rate_avg',
-                'days_rest', 'team_changed'
-            ]
+            # Get all available columns excluding database system columns
+            feature_cols = [col for col in row.index if col in existing_columns]
             
-            # List of new features we're adding
-            new_features = [
-                'last_3_games_strikeouts_std', 'last_5_games_strikeouts_std',
-                'last_3_games_velo_std', 'last_5_games_velo_std',
-                'last_3_games_swinging_strike_pct_std', 'last_5_games_swinging_strike_pct_std',
-                'trend_3_strikeouts', 'trend_5_strikeouts',
-                'trend_3_release_speed_mean', 'trend_5_release_speed_mean',
-                'trend_3_swinging_strike_pct', 'trend_5_swinging_strike_pct',
-                'momentum_3_strikeouts', 'momentum_5_strikeouts', 
-                'momentum_3_release_speed_mean', 'momentum_5_release_speed_mean',
-                'momentum_3_swinging_strike_pct', 'momentum_5_swinging_strike_pct',
-                'pitch_entropy', 'prev_game_pitch_entropy'
-            ]
+            # Convert values to SQLite-compatible types
+            feature_vals = []
+            for col in feature_cols:
+                val = row.get(col)
+                
+                # Convert pandas Timestamp to string
+                if isinstance(val, pd.Timestamp):
+                    val = val.strftime('%Y-%m-%d')
+                # Convert numpy types to Python types
+                elif isinstance(val, np.integer):
+                    val = int(val)
+                elif isinstance(val, np.floating):
+                    val = float(val)
+                elif isinstance(val, np.bool_):
+                    val = bool(val)
+                elif val is None or pd.isna(val):
+                    val = None
+                
+                feature_vals.append(val)
             
-            # Get values for standard features
-            std_values = [row.get(feature, 0) for feature in std_features]
+            # Skip if no features to update
+            if not feature_cols:
+                continue
             
-            # Get values for new features
-            new_values = [row.get(feature, 0) for feature in new_features]
-            
-            # Combine all feature values
-            all_features = std_features + new_features
-            all_values = std_values + new_values
+            # Handle game_date properly
+            game_date = row.get('game_date')
+            if isinstance(game_date, (pd.Timestamp, datetime.datetime)):
+                game_date_str = game_date.strftime('%Y-%m-%d')
+            else:
+                # If not a datetime, convert to string directly
+                game_date_str = str(game_date)
             
             if existing:
                 # Update existing record
-                set_clause = ", ".join([f"{feat} = ?" for feat in all_features])
+                set_clause = ", ".join([f"{col} = ?" for col in feature_cols])
                 sql = f"UPDATE prediction_features SET {set_clause} WHERE id = ?"
-                cursor.execute(sql, all_values + [existing[0]])
+                cursor.execute(sql, feature_vals + [existing[0]])
             else:
                 # Insert new record
-                columns = ["pitcher_id", "game_id", "game_date", "season"] + all_features
+                columns = ["pitcher_id", "game_id", "game_date", "season"] + feature_cols
                 placeholders = ", ".join(["?"] * len(columns))
                 
+                # Convert core values to proper types
+                pitcher_id = int(row['pitcher_id']) if not pd.isna(row['pitcher_id']) else None
+                game_id = str(row['game_id']) if not pd.isna(row['game_id']) else None
+                season = int(row['season']) if not pd.isna(row['season']) else None
+                
                 values = [
-                    row['pitcher_id'],
-                    row['game_id'],
-                    row['game_date'].strftime('%Y-%m-%d'),
-                    row['season']
-                ] + all_values
+                    pitcher_id,
+                    game_id,
+                    game_date_str,
+                    season
+                ] + feature_vals
                 
                 sql = f"INSERT INTO prediction_features ({', '.join(columns)}) VALUES ({placeholders})"
                 cursor.execute(sql, values)
@@ -127,7 +151,7 @@ def create_prediction_features(force_refresh=False):
                 # Insert new pitch mix features
                 for col in prev_pitch_mix_cols:
                     pitch_type = col.replace('prev_game_pitch_pct_', '')
-                    percentage = row[col]
+                    percentage = float(row[col]) if not pd.isna(row[col]) else 0.0
                     
                     if percentage > 0:
                         cursor.execute(
@@ -143,7 +167,7 @@ def create_prediction_features(force_refresh=False):
                 logger.info(f"Processed {features_inserted} features so far...")
                 
         except Exception as e:
-            logger.error(f"Error inserting features for game {row['game_id']}: {e}")
+            logger.error(f"Error inserting features for game {row.get('game_id', 0)}: {e}")
             continue
     
     conn.commit()
@@ -176,7 +200,7 @@ def create_enhanced_features(df):
     
     for pitcher_id, pitcher_data in df.groupby('pitcher_id'):
         # Sort by game date
-        pitcher_data = pitcher_data.sort_values('game_date')
+        pitcher_data = pitcher_data.sort_values('game_date').reset_index(drop=True)
         
         # Add feature groups sequentially
         pitcher_data = _add_rolling_window_features(pitcher_data)
@@ -186,11 +210,19 @@ def create_enhanced_features(df):
         pitcher_data = _add_pitch_mix_features(pitcher_data)
         pitcher_data = _add_rest_day_features(pitcher_data)
         
+        # Add new enhanced features
+        pitcher_data = _add_pitcher_specific_baselines(pitcher_data)
+        pitcher_data = _add_enhanced_matchup_features(pitcher_data)
+        
         # Add to features dataset
         features.append(pitcher_data)
     
-    # Combine all pitcher features
+    # Combine all pitcher features with reset index to avoid issues
     if features:
+        # Make sure to reset indices to avoid duplicates
+        for i in range(len(features)):
+            features[i] = features[i].reset_index(drop=True)
+            
         all_features = pd.concat(features, ignore_index=True)
         all_features = all_features.fillna(0)
         logger.info(f"Created enhanced features for {len(all_features)} game records")
@@ -411,7 +443,281 @@ def _add_rest_day_features(pitcher_data):
     
     return pitcher_data
 
-# Add to create_enhanced_features in src/features/engineering.py
+def _add_pitcher_specific_baselines(pitcher_data):
+    """
+    Add pitcher-specific baseline features to capture individual tendencies
+    
+    Args:
+        pitcher_data (pandas.DataFrame): Data for a single pitcher
+        
+    Returns:
+        pandas.DataFrame: Data with pitcher-specific baseline features added
+    """
+    # Ensure we have a clean index
+    pitcher_data = pitcher_data.reset_index(drop=True)
+    
+    # Ensure game_date is a datetime object
+    if 'game_date' in pitcher_data.columns:
+        if not pd.api.types.is_datetime64_any_dtype(pitcher_data['game_date']):
+            try:
+                pitcher_data['game_date'] = pd.to_datetime(pitcher_data['game_date'])
+            except:
+                logger.warning("Could not convert game_date to datetime, baseline features may be affected")
+    
+    # Calculate career statistics for this pitcher (before current game)
+    career_stats = []
+    
+    for i in range(len(pitcher_data)):
+        current_date = pitcher_data.iloc[i]['game_date']
+        
+        # Handle non-datetime objects
+        if not isinstance(current_date, pd.Timestamp) and not isinstance(current_date, datetime.datetime):
+            # Use row index as a proxy for chronological order if date is invalid
+            prior_games = pitcher_data.iloc[:i]
+        else:
+            prior_games = pitcher_data[pitcher_data['game_date'] < current_date]
+        
+        if prior_games.empty:
+            # No prior games, use zeros
+            career_stats.append({
+                'career_so_avg': 0,
+                'career_so_std': 0,
+                'career_so_per_batter': 0,
+                'career_so_consistency': 0
+            })
+        else:
+            # Calculate career averages before current game
+            career_so_avg = prior_games['strikeouts'].mean()
+            career_so_std = prior_games['strikeouts'].std() if len(prior_games) > 1 else 0
+            
+            # Calculate more advanced metrics if data is available
+            if 'pitch_count' in prior_games.columns:
+                batters_faced = prior_games['pitch_count'] / 3.8  # Approximate batters faced
+                so_per_batter = prior_games['strikeouts'] / batters_faced
+                career_so_per_batter = so_per_batter.mean()
+            else:
+                career_so_per_batter = 0
+            
+            # Calculate consistency score (lower std relative to mean = more consistent)
+            if career_so_avg > 0:
+                career_so_consistency = 1 - (career_so_std / (career_so_avg + 1))
+            else:
+                career_so_consistency = 0
+            
+            career_stats.append({
+                'career_so_avg': career_so_avg,
+                'career_so_std': career_so_std,
+                'career_so_per_batter': career_so_per_batter,
+                'career_so_consistency': career_so_consistency
+            })
+    
+    # Create a new DataFrame for all the new columns
+    new_columns = pd.DataFrame(career_stats, index=range(len(pitcher_data)))
+    
+    # Calculate deviation from expected strikeouts
+    # This shows how a pitcher performs relative to their own baseline
+    if len(pitcher_data) > 1:
+        # Shift by 1 to avoid data leakage
+        new_columns['prev_so_deviation'] = (
+            (pitcher_data['strikeouts'] - new_columns['career_so_avg']) / 
+            (new_columns['career_so_std'].clip(lower=1))
+        ).shift(1)
+        
+        # Rolling average of deviations (captures hot/cold streaks)
+        for window in [3, 5]:
+            new_columns[f'so_deviation_{window}g_avg'] = (
+                new_columns['prev_so_deviation']
+                .rolling(window=window, min_periods=1)
+                .mean()
+            )
+    
+    # Add home/away splits
+    if 'home_team' in pitcher_data.columns and 'statcast_id' in pitcher_data.columns:
+        pitcher_id = pitcher_data['statcast_id'].iloc[0]
+        
+        # Mark home games (where pitcher's team matches home_team)
+        is_home_game = pitcher_data.apply(
+            lambda row: row.get('home_team', '') == pitcher_data['home_team'].mode().iloc[0], 
+            axis=1
+        ).astype(int)
+        
+        new_columns['is_home_game'] = is_home_game.values
+        
+        # Calculate home/away splits
+        home_so_avg = pitcher_data[is_home_game == 1]['strikeouts'].mean()
+        away_so_avg = pitcher_data[is_home_game == 0]['strikeouts'].mean()
+        
+        # Fill NaN values with overall average
+        overall_avg = pitcher_data['strikeouts'].mean()
+        home_so_avg = home_so_avg if not pd.isna(home_so_avg) else overall_avg
+        away_so_avg = away_so_avg if not pd.isna(away_so_avg) else overall_avg
+        
+        # Add home/away expectations
+        new_columns['home_away_so_exp'] = is_home_game.apply(
+            lambda x: home_so_avg if x == 1 else away_so_avg
+        ).values
+    
+    # Join with original data - create a new DataFrame to avoid issues
+    result = pitcher_data.copy()
+    for col in new_columns.columns:
+        result[col] = new_columns[col].values
+    
+    return result
+
+def _add_enhanced_matchup_features(pitcher_data):
+    """
+    Add enhanced matchup-specific features to capture pitcher vs. opponent dynamics
+    
+    Args:
+        pitcher_data (pandas.DataFrame): Data for a single pitcher
+        
+    Returns:
+        pandas.DataFrame: Data with enhanced matchup features added
+    """
+    # Ensure we have a clean index
+    pitcher_data = pitcher_data.reset_index(drop=True)
+    
+    # Ensure game_date is a datetime object
+    if 'game_date' in pitcher_data.columns:
+        if not pd.api.types.is_datetime64_any_dtype(pitcher_data['game_date']):
+            try:
+                pitcher_data['game_date'] = pd.to_datetime(pitcher_data['game_date'])
+            except:
+                logger.warning("Could not convert game_date to datetime, matchup features may be affected")
+                # Sort by index as a fallback
+                pitcher_data = pitcher_data.sort_index()
+                
+    # Check if opponent data is available
+    if 'opponent_team_id' not in pitcher_data.columns:
+        logger.warning("No opponent team information available for matchup features")
+        return pitcher_data
+    
+    # Get unique opponents faced
+    unique_opponents = pitcher_data['opponent_team_id'].unique()
+    
+    # Create a dictionary to store all the new columns we'll add
+    new_columns = {}
+    
+    # Calculate historical performance vs each opponent
+    for opponent in unique_opponents:
+        # Skip if opponent is missing
+        if pd.isna(opponent):
+            continue
+        
+        # Create column name for this opponent
+        col_name = f"so_vs_{opponent}"
+        
+        # For each game, calculate historical stats vs this opponent
+        historical_stats = []
+        
+        for i in range(len(pitcher_data)):
+            current_date = pitcher_data.iloc[i]['game_date']
+            current_opponent = pitcher_data.iloc[i]['opponent_team_id']
+            
+            # Handle date comparison safely
+            if isinstance(current_date, (pd.Timestamp, datetime.datetime)):
+                # Use date comparison
+                prior_matchups = pitcher_data[
+                    (pitcher_data['game_date'] < current_date) & 
+                    (pitcher_data['opponent_team_id'] == opponent)
+                ]
+            else:
+                # Use index as proxy for chronological order
+                prior_matchups = pitcher_data.iloc[:i][
+                    pitcher_data.iloc[:i]['opponent_team_id'] == opponent
+                ]
+            
+            if current_opponent == opponent:
+                if prior_matchups.empty:
+                    # No prior matchups with this opponent
+                    historical_stats.append(0)
+                else:
+                    # Calculate average strikeouts vs this opponent
+                    historical_stats.append(prior_matchups['strikeouts'].mean())
+            else:
+                # Not playing this opponent in current game
+                historical_stats.append(np.nan)
+        
+        # Store the historical stats for this opponent
+        new_columns[col_name] = historical_stats
+    
+    # Calculate matchup advantage score
+    if 'opponent_strikeout_rate' in pitcher_data.columns:
+        # Higher score = better matchup for strikeouts
+        new_columns['matchup_advantage'] = (
+            pitcher_data['opponent_strikeout_rate'] / 
+            pitcher_data['opponent_strikeout_rate'].mean()
+        ).values
+    
+    # Add recency-weighted matchup feature
+    recency_weighted = np.full(len(pitcher_data), np.nan)
+    
+    for i in range(len(pitcher_data)):
+        current_date = pitcher_data.iloc[i]['game_date']
+        current_opponent = pitcher_data.iloc[i]['opponent_team_id']
+        
+        if pd.isna(current_opponent):
+            continue
+        
+        # Handle date comparison safely
+        if isinstance(current_date, (pd.Timestamp, datetime.datetime)):
+            # Use date comparison
+            prior_matchups = pitcher_data[
+                (pitcher_data['game_date'] < current_date) & 
+                (pitcher_data['opponent_team_id'] == current_opponent)
+            ]
+        else:
+            # Use index as proxy for chronological order
+            prior_matchups = pitcher_data.iloc[:i][
+                pitcher_data.iloc[:i]['opponent_team_id'] == current_opponent
+            ]
+            
+        if prior_matchups.empty:
+            continue
+            
+        # Sort by date if possible
+        if isinstance(current_date, (pd.Timestamp, datetime.datetime)):
+            prior_matchups = prior_matchups.sort_values('game_date', ascending=False)
+            
+            # Calculate days since each matchup
+            days_since = [(current_date - date).days for date in prior_matchups['game_date']]
+        else:
+            # Use row index difference as a proxy for recency
+            days_since = [i - idx for idx in prior_matchups.index]
+        
+        # Apply exponential decay weights based on recency
+        # More recent games have higher weight
+        weights = np.exp(-np.array(days_since) / 365)  # 1-year half-life
+        
+        # Normalize weights
+        weights = weights / weights.sum()
+        
+        # Calculate weighted average
+        weighted_avg = np.sum(prior_matchups['strikeouts'].values * weights)
+        
+        # Store weighted average
+        recency_weighted[i] = weighted_avg
+    
+    # Store the recency weighted matchup data
+    new_columns['recency_weighted_matchup'] = recency_weighted
+    
+    # Fill NaN values with overall average for recency weighted matchup
+    overall_avg = pitcher_data['strikeouts'].mean()
+    if 'recency_weighted_matchup' in new_columns:
+        new_columns['recency_weighted_matchup'] = np.where(
+            np.isnan(new_columns['recency_weighted_matchup']),
+            overall_avg,
+            new_columns['recency_weighted_matchup']
+        )
+    
+    # Add the new columns to the original DataFrame
+    result = pitcher_data.copy()
+    for col, values in new_columns.items():
+        if len(values) == len(result):
+            result[col] = values
+    
+    return result
+
 def add_opponent_features(df):
     """Add opponent team-specific features"""
     if 'opponent_team_id' not in df.columns:
@@ -423,7 +729,7 @@ def add_opponent_features(df):
     
     # Fetch opponent team stats
     try:
-        team_stats = pybaseball.team_batting_stats(min(df['season']), max(df['season']))
+        team_stats = pybaseball.team_batting(min(df['season']), max(df['season']))
         
         # Process team stats by season
         team_stats_by_season = {}
@@ -439,28 +745,44 @@ def add_opponent_features(df):
             axis=1
         )
         
-        df['opponent_walk_rate'] = df.apply(
+        # Add new enhanced opponent features
+        df['opponent_whiff_rate'] = df.apply(
             lambda row: team_stats_by_season.get(row['season'], {}).get(
-                row['opponent_team_id'], {}).get('BB%', 0),
+                row['opponent_team_id'], {}).get('SwStr%', 0),
             axis=1
         )
         
-        df['opponent_ops'] = df.apply(
+        df['opponent_chase_rate'] = df.apply(
             lambda row: team_stats_by_season.get(row['season'], {}).get(
-                row['opponent_team_id'], {}).get('OPS', 0),
+                row['opponent_team_id'], {}).get('O-Swing%', 0),
+            axis=1
+        )
+        
+        df['opponent_zone_contact_rate'] = df.apply(
+            lambda row: team_stats_by_season.get(row['season'], {}).get(
+                row['opponent_team_id'], {}).get('Z-Contact%', 0),
             axis=1
         )
         
         # Calculate normalized features (how this opponent compares to average)
         for season in df['season'].unique():
             season_mask = df['season'] == season
+            
+            # Strikeout rate vs average
             season_avg_k = df.loc[season_mask, 'opponent_strikeout_rate'].mean()
             if season_avg_k > 0:
                 df.loc[season_mask, 'opponent_k_vs_avg'] = (
                     df.loc[season_mask, 'opponent_strikeout_rate'] / season_avg_k
                 )
+            
+            # Whiff rate vs average
+            season_avg_whiff = df.loc[season_mask, 'opponent_whiff_rate'].mean()
+            if season_avg_whiff > 0:
+                df.loc[season_mask, 'opponent_whiff_vs_avg'] = (
+                    df.loc[season_mask, 'opponent_whiff_rate'] / season_avg_whiff
+                )
         
-        logger.info(f"Added opponent features for {len(df)} records")
+        logger.info(f"Added enhanced opponent features for {len(df)} records")
         
     except Exception as e:
         logger.error(f"Error adding opponent features: {e}")

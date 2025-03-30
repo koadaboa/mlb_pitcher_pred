@@ -69,6 +69,31 @@ def select_features_for_strikeout_model(df):
         'last_5_games_zone_rate_avg'
     ]
     
+    # NEW: Pitcher-specific baseline features
+    pitcher_baseline_features = [
+        'career_so_avg',
+        'career_so_std',
+        'career_so_per_batter',
+        'career_so_consistency',
+        'prev_so_deviation',
+        'so_deviation_3g_avg',
+        'so_deviation_5g_avg',
+        'is_home_game',
+        'home_away_so_exp'
+    ]
+    
+    # NEW: Enhanced matchup features
+    matchup_features = [
+        'opponent_strikeout_rate',
+        'opponent_whiff_rate',
+        'opponent_chase_rate',
+        'opponent_zone_contact_rate',
+        'opponent_k_vs_avg',
+        'opponent_whiff_vs_avg',
+        'matchup_advantage',
+        'recency_weighted_matchup'
+    ]
+    
     # If we don't have prediction features, use raw game features
     raw_features = [
         'release_speed_mean',
@@ -86,7 +111,9 @@ def select_features_for_strikeout_model(df):
         trend_features + 
         momentum_features + 
         entropy_features + 
-        additional_features
+        additional_features +
+        pitcher_baseline_features +  # New features
+        matchup_features            # New features
     )
     
     # Check which prediction features are available
@@ -101,6 +128,10 @@ def select_features_for_strikeout_model(df):
     # Add pitch mix features if available
     pitch_mix_cols = [col for col in available_columns if col.startswith('prev_game_pitch_pct_')]
     available_features.extend(pitch_mix_cols)
+    
+    # Add opponent-specific history features
+    opponent_history_cols = [col for col in available_columns if col.startswith('so_vs_')]
+    available_features.extend(opponent_history_cols)
     
     logger.info(f"Selected {len(available_features)} features for strikeout model: {available_features}")
     return available_features
