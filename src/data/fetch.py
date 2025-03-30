@@ -4,22 +4,23 @@ import time
 from datetime import date, timedelta
 import pickle
 import os
-import logging
 from tqdm import tqdm
 from pathlib import Path
+from config import DataConfig
+from src.data.utils import ensure_dir, setup_logger
 
 # Import pybaseball library
 from pybaseball import statcast, team_batting
 from pybaseball import cache
 
-logger = logging.getLogger(__name__)
+logger = setup_logger(__name__)
 
 # Enable pybaseball cache
 cache.enable()
 
 # Global variables
-RATE_LIMIT_PAUSE = 5  # seconds to wait between API calls
-SEASONS = [2019, 2021, 2022, 2023, 2024]
+RATE_LIMIT_PAUSE = DataConfig.RATE_LIMIT_PAUSE  # seconds to wait between API calls
+SEASONS = DataConfig.SEASONS
 
 def fetch_statcast_safely(start_date, end_date, max_retries=3):
     """
@@ -143,7 +144,7 @@ def get_statcast_data(force_refresh=False):
         pandas.DataFrame: Combined statcast data
     """
     # Create data directory if it doesn't exist
-    Path("data").mkdir(exist_ok=True, parents=True)
+    ensure_dir("data")
     
     cache_file = "data/statcast_pitcher_data.pkl"
     

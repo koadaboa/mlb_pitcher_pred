@@ -3,9 +3,6 @@ import optuna
 import pandas as pd
 import numpy as np
 import pickle
-import logging
-import os
-import sys
 import matplotlib.pyplot as plt
 import seaborn as sns
 from pathlib import Path
@@ -23,10 +20,11 @@ from src.data.db import get_pitcher_data
 from src.features.selection import select_features_for_strikeout_model
 from src.models.train import calculate_betting_metrics
 from src.data.utils import setup_logger
+from config import StrikeoutModelConfig
 
 logger = setup_logger(__name__)
 
-def custom_cv_score(model, X, y, n_splits=5, random_state=42, scorer='neg_mean_squared_error'):
+def custom_cv_score(model, X, y, n_splits=5, random_state=StrikeoutModelConfig.RANDOM_STATE, scorer='neg_mean_squared_error'):
     """
     Calculate cross-validation score using KFold
     
@@ -98,7 +96,7 @@ def rf_objective(trial, X, y, primary_metric):
         'min_samples_leaf': trial.suggest_int('min_samples_leaf', 1, 10),
         'max_features': trial.suggest_categorical('max_features', ['sqrt', 'log2', None]),
         'bootstrap': trial.suggest_categorical('bootstrap', [True, False]),
-        'random_state': 42
+        'random_state': StrikeoutModelConfig.RANDOM_STATE
     }
     
     # Create model
@@ -133,7 +131,7 @@ def xgb_objective(trial, X, y, primary_metric):
         'gamma': trial.suggest_float('gamma', 0, 5),
         'reg_alpha': trial.suggest_float('reg_alpha', 0, 5),
         'reg_lambda': trial.suggest_float('reg_lambda', 0, 5),
-        'random_state': 42
+        'random_state': StrikeoutModelConfig.RANDOM_STATE
     }
     
     # Create model
@@ -170,7 +168,7 @@ def lgb_objective(trial, X, y, primary_metric):
         'min_gain_to_split': trial.suggest_float('min_gain_to_split', 0, 5),
         'lambda_l1': trial.suggest_float('lambda_l1', 0, 5),
         'lambda_l2': trial.suggest_float('lambda_l2', 0, 5),
-        'random_state': 42
+        'random_state': StrikeoutModelConfig.RANDOM_STATE
     }
     
     # Create model
@@ -275,11 +273,11 @@ def save_best_model(study, X, y, model_type, output_dir):
     
     # Create model with best parameters
     if model_type == 'rf':
-        model = RandomForestRegressor(**best_params, random_state=42)
+        model = RandomForestRegressor(**best_params, random_state=StrikeoutModelConfig.RANDOM_STATE)
     elif model_type == 'xgboost':
-        model = xgb.XGBRegressor(**best_params, random_state=42)
+        model = xgb.XGBRegressor(**best_params, random_state=StrikeoutModelConfig.RANDOM_STATE)
     elif model_type == 'lightgbm':
-        model = lgb.LGBMRegressor(**best_params, random_state=42)
+        model = lgb.LGBMRegressor(**best_params, random_state=StrikeoutModelConfig.RANDOM_STATE)
     else:
         raise ValueError(f"Unknown model type: {model_type}")
     

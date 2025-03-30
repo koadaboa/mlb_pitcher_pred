@@ -2,9 +2,9 @@
 import pickle
 import pandas as pd
 import numpy as np
-import logging
+from src.data.utils import setup_logger
 
-logger = logging.getLogger(__name__)
+logger = setup_logger(__name__)
 
 def load_model(model_path):
     """

@@ -5,13 +5,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from pathlib import Path
-import logging
 import json
 import argparse
 from src.data.db import get_pitcher_data
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from src.models.train import calculate_betting_metrics
 from src.data.utils import setup_logger
+from config import StrikeoutModelConfig
 
 logger = setup_logger(__name__)
 
@@ -148,7 +148,7 @@ def run_comparison(models_dir=None, output_dir=None):
     pitcher_data = get_pitcher_data()
     
     # Define test years
-    test_years = [2023, 2024]
+    test_years = StrikeoutModelConfig.DEFAULT_TEST_YEARS
     test_df = pitcher_data[pitcher_data['season'].isin(test_years)]
     
     if test_df.empty:

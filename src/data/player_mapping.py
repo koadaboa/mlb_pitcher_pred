@@ -1,10 +1,10 @@
 # src/data/player_mapping.py
-import logging
+from src.data.utils import setup_logger
 import pandas as pd
 from pybaseball import playerid_lookup, playerid_reverse_lookup
 from typing import List, Dict, Optional, Tuple
 
-logger = logging.getLogger(__name__)
+logger = setup_logger(__name__)
 
 def get_player_id_map(statcast_ids: List[int] = None, 
                       fangraphs_ids: List[int] = None) -> pd.DataFrame:

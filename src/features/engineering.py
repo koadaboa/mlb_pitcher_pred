@@ -1,13 +1,13 @@
 # Feature engineering functions for pitcher strikeout prediction model
 import pandas as pd
 import numpy as np
-import logging
-import sqlite3
 from pathlib import Path
 import pybaseball
 from src.data.db import get_db_connection, get_pitcher_data
+from config import StrikeoutModelConfig
+from src.data.utils import setup_logger
 
-logger = logging.getLogger(__name__)
+logger = setup_logger(__name__)
 
 def create_prediction_features(force_refresh=False):
     """
@@ -153,14 +153,8 @@ def create_prediction_features(force_refresh=False):
 
 def create_enhanced_features(df):
     """
-    Create enhanced prediction features including:
-    - Rolling window statistics (mean, std)
-    - Trend indicators
-    - Momentum indicators
-    - Pitch mix features from previous games
-    - Opponent features (new)
-    - Context-specific features (new)
-    - Advanced volatility metrics (new)
+    Create enhanced prediction features including rolling window statistics,
+    trends, momentum indicators, volatility metrics, and pitch mix features.
     
     Args:
         df (pandas.DataFrame): DataFrame with pitcher data
@@ -174,133 +168,23 @@ def create_enhanced_features(df):
         logger.warning("No data available for feature engineering.")
         return pd.DataFrame()
     
-    # Add opponent features (new function)
+    # Add opponent features
     df = add_opponent_features(df)
     
-    # Create a dataframe to store the features
+    # Process each pitcher separately
     features = []
     
-    # Process each pitcher separately
     for pitcher_id, pitcher_data in df.groupby('pitcher_id'):
         # Sort by game date
         pitcher_data = pitcher_data.sort_values('game_date')
         
-        # Create rolling window features
-        for window in [3, 5, 10]:  # Added larger window
-            # ------ AVERAGES ------
-            for metric in ['strikeouts', 'release_speed_mean', 'swinging_strike_pct', 
-                          'called_strike_pct', 'zone_rate']:
-                if metric in pitcher_data.columns:
-                    # Average over window (shifted by 1 to avoid data leakage)
-                    pitcher_data[f'last_{window}_games_{metric}_avg'] = pitcher_data[metric].rolling(
-                        window=window, min_periods=1).mean().shift(1)
-            
-            # ------ STANDARD DEVIATION ------
-            for metric in ['strikeouts', 'release_speed_mean', 'swinging_strike_pct']:
-                if metric in pitcher_data.columns:
-                    # Standard deviation (shifted by 1 to avoid data leakage)
-                    pitcher_data[f'last_{window}_games_{metric}_std'] = pitcher_data[metric].rolling(
-                        window=window, min_periods=2).std().shift(1)
-            
-            # ------ TREND INDICATORS ------
-            for metric in ['strikeouts', 'release_speed_mean', 'swinging_strike_pct']:
-                if metric in pitcher_data.columns:
-                    # Recent window average
-                    recent_avg = pitcher_data[metric].rolling(window=window, min_periods=1).mean().shift(1)
-                    # Previous window average (shifted by window+1 to get the window before the recent one)
-                    prev_avg = pitcher_data[metric].rolling(window=window, min_periods=1).mean().shift(window+1)
-                    # Trend = recent - previous
-                    pitcher_data[f'trend_{window}_{metric}'] = recent_avg - prev_avg
-            
-            # ------ MOMENTUM INDICATORS ------
-            for metric in ['strikeouts', 'release_speed_mean', 'swinging_strike_pct']:
-                if metric in pitcher_data.columns:
-                    # Define weights (more recent games have higher weights)
-                    weights = np.arange(1, window+1)
-                    # Apply weighted average
-                    pitcher_data[f'momentum_{window}_{metric}'] = pitcher_data[metric].rolling(
-                        window=window, min_periods=1).apply(
-                            lambda x: np.sum(x * weights[-len(x):]) / np.sum(weights[-len(x):]), raw=True
-                        ).shift(1)
-            
-            # ------ NEW: STREAK INDICATORS ------
-            if 'strikeouts' in pitcher_data.columns:
-                pitcher_data[f'increasing_so_streak_{window}'] = (
-                    pitcher_data['strikeouts'].rolling(window=window, min_periods=2)
-                    .apply(lambda x: (np.diff(x) > 0).sum() / (len(x)-1) * 100)
-                    .shift(1)
-                )
-            
-            # ------ NEW: VOLATILITY MEASURE ------
-            if all(col in pitcher_data.columns for col in [f'last_{window}_games_strikeouts_std', f'last_{window}_games_strikeouts_avg']):
-                pitcher_data[f'strikeout_volatility_{window}'] = (
-                    pitcher_data[f'last_{window}_games_strikeouts_std'] / 
-                    pitcher_data[f'last_{window}_games_strikeouts_avg'].clip(lower=0.1)  # Avoid division by zero
-                ).shift(1)
-            
-            # ------ NEW: RECOVERY PATTERN ------
-            if all(col in pitcher_data.columns for col in ['strikeouts', f'last_{window}_games_strikeouts_avg']):
-                pitcher_data[f'post_poor_performance_{window}'] = (
-                    pitcher_data['strikeouts'].shift(1) < 
-                    pitcher_data[f'last_{window}_games_strikeouts_avg'].shift(1)
-                ).astype(int)
-        
-        # ------ PREVIOUS GAME PITCH MIX ------
-        pitch_mix_cols = [col for col in pitcher_data.columns if col.startswith('pitch_pct_')]
-        for col in pitch_mix_cols:
-            pitcher_data[f'prev_game_{col}'] = pitcher_data[col].shift(1)
-        
-        # ------ PITCH ENTROPY (DIVERSITY MEASURE) ------
-        if pitch_mix_cols:
-            def calc_entropy(row):
-                # Get non-zero percentages and convert to probabilities
-                probs = [row[col]/100 for col in pitch_mix_cols if row[col] > 0]
-                if not probs:
-                    return 0
-                # Calculate entropy: -sum(p * log2(p))
-                return -sum(p * np.log2(p) for p in probs)
-            
-            pitcher_data['pitch_entropy'] = pitcher_data.apply(calc_entropy, axis=1)
-            pitcher_data['prev_game_pitch_entropy'] = pitcher_data['pitch_entropy'].shift(1)
-            
-            # ------ NEW: PITCH MIX CHANGE ------
-            # Calculate cosine similarity between current and previous pitch mix
-            if len(pitch_mix_cols) > 0:
-                from scipy.spatial.distance import cosine
-                
-                def pitch_similarity(current, previous):
-                    if pd.isna(previous).any() or pd.isna(current).any():
-                        return np.nan
-                    
-                    current_vec = [current[col] for col in pitch_mix_cols]
-                    previous_vec = [previous[col] for col in pitch_mix_cols]
-                    
-                    # If all zeros, return 1 (perfect similarity)
-                    if sum(current_vec) == 0 or sum(previous_vec) == 0:
-                        return 1.0
-                        
-                    return 1.0 - cosine(current_vec, previous_vec)
-                
-                # Calculate similarity for each row with the previous row
-                pitch_similarities = []
-                
-                for i in range(len(pitcher_data)):
-                    if i == 0:
-                        pitch_similarities.append(np.nan)
-                    else:
-                        current = pitcher_data.iloc[i]
-                        previous = pitcher_data.iloc[i-1]
-                        pitch_similarities.append(pitch_similarity(current, previous))
-                
-                pitcher_data['pitch_mix_similarity'] = pitch_similarities
-        
-        # Calculate days of rest
-        pitcher_data['prev_game_date'] = pitcher_data['game_date'].shift(1)
-        pitcher_data['days_rest'] = (pitcher_data['game_date'] - pitcher_data['prev_game_date']).dt.days
-        pitcher_data['days_rest'] = pitcher_data['days_rest'].fillna(5)  # Default to 5 days for first appearance
-        
-        # Create team changed flag
-        pitcher_data['team_changed'] = 0
+        # Add feature groups sequentially
+        pitcher_data = _add_rolling_window_features(pitcher_data)
+        pitcher_data = _add_trend_features(pitcher_data)
+        pitcher_data = _add_momentum_features(pitcher_data)
+        pitcher_data = _add_volatility_features(pitcher_data)
+        pitcher_data = _add_pitch_mix_features(pitcher_data)
+        pitcher_data = _add_rest_day_features(pitcher_data)
         
         # Add to features dataset
         features.append(pitcher_data)
@@ -308,15 +192,224 @@ def create_enhanced_features(df):
     # Combine all pitcher features
     if features:
         all_features = pd.concat(features, ignore_index=True)
-        
-        # Fill NA values
         all_features = all_features.fillna(0)
-        
         logger.info(f"Created enhanced features for {len(all_features)} game records")
         return all_features
     else:
         logger.warning("No features created.")
         return pd.DataFrame()
+
+def _add_rolling_window_features(pitcher_data):
+    """
+    Add rolling window statistics (mean, std) for various metrics
+    
+    Args:
+        pitcher_data (pandas.DataFrame): Data for a single pitcher
+        
+    Returns:
+        pandas.DataFrame: Data with rolling window features added
+    """
+    # Base metrics to calculate rolling window stats for
+    mean_metrics = [
+        'strikeouts', 'release_speed_mean', 'swinging_strike_pct', 
+        'called_strike_pct', 'zone_rate'
+    ]
+    
+    # Metrics that also get standard deviation calculations
+    std_metrics = [
+        'strikeouts', 'release_speed_mean', 'swinging_strike_pct'
+    ]
+    
+    # Calculate for each window size defined in config
+    for window in StrikeoutModelConfig.WINDOW_SIZES:
+        # Calculate mean for all metrics
+        for metric in mean_metrics:
+            if metric in pitcher_data.columns:
+                # Average over window (shifted by 1 to avoid data leakage)
+                pitcher_data[f'last_{window}_games_{metric}_avg'] = pitcher_data[metric].rolling(
+                    window=window, min_periods=1).mean().shift(1)
+        
+        # Calculate standard deviation for selected metrics
+        for metric in std_metrics:
+            if metric in pitcher_data.columns:
+                # Standard deviation (shifted by 1 to avoid data leakage)
+                pitcher_data[f'last_{window}_games_{metric}_std'] = pitcher_data[metric].rolling(
+                    window=window, min_periods=2).std().shift(1)
+    
+    return pitcher_data
+
+def _add_trend_features(pitcher_data):
+    """
+    Add trend indicators showing directional changes over time
+    
+    Args:
+        pitcher_data (pandas.DataFrame): Data for a single pitcher
+        
+    Returns:
+        pandas.DataFrame: Data with trend features added
+    """
+    trend_metrics = [
+        'strikeouts', 'release_speed_mean', 'swinging_strike_pct'
+    ]
+    
+    for window in StrikeoutModelConfig.WINDOW_SIZES:
+        for metric in trend_metrics:
+            if metric in pitcher_data.columns:
+                # Recent window average
+                recent_avg = pitcher_data[metric].rolling(window=window, min_periods=1).mean().shift(1)
+                # Previous window average (shifted by window+1 to get the window before the recent one)
+                prev_avg = pitcher_data[metric].rolling(window=window, min_periods=1).mean().shift(window+1)
+                # Trend = recent - previous
+                pitcher_data[f'trend_{window}_{metric}'] = recent_avg - prev_avg
+                
+        # Add increasing streak indicator (percentage of recent games with increase)
+        if 'strikeouts' in pitcher_data.columns:
+            pitcher_data[f'increasing_so_streak_{window}'] = (
+                pitcher_data['strikeouts'].rolling(window=window, min_periods=2)
+                .apply(lambda x: (np.diff(x) > 0).sum() / (len(x)-1) * 100)
+                .shift(1)
+            )
+    
+    return pitcher_data
+
+def _add_momentum_features(pitcher_data):
+    """
+    Add momentum indicators using weighted averages (recent games more important)
+    
+    Args:
+        pitcher_data (pandas.DataFrame): Data for a single pitcher
+        
+    Returns:
+        pandas.DataFrame: Data with momentum features added
+    """
+    momentum_metrics = [
+        'strikeouts', 'release_speed_mean', 'swinging_strike_pct'
+    ]
+    
+    for window in StrikeoutModelConfig.WINDOW_SIZES:
+        # Define weights (more recent games have higher weights)
+        weights = np.arange(1, window+1)
+        
+        for metric in momentum_metrics:
+            if metric in pitcher_data.columns:
+                # Apply weighted average
+                pitcher_data[f'momentum_{window}_{metric}'] = pitcher_data[metric].rolling(
+                    window=window, min_periods=1).apply(
+                        lambda x: np.sum(x * weights[-len(x):]) / np.sum(weights[-len(x):]), raw=True
+                    ).shift(1)
+    
+    return pitcher_data
+
+def _add_volatility_features(pitcher_data):
+    """
+    Add volatility metrics to measure consistency
+    
+    Args:
+        pitcher_data (pandas.DataFrame): Data for a single pitcher
+        
+    Returns:
+        pandas.DataFrame: Data with volatility features added
+    """
+    for window in StrikeoutModelConfig.WINDOW_SIZES:
+        # Coefficient of variation for strikeouts
+        std_col = f'last_{window}_games_strikeouts_std' 
+        avg_col = f'last_{window}_games_strikeouts_avg'
+        
+        if all(col in pitcher_data.columns for col in [std_col, avg_col]):
+            pitcher_data[f'strikeout_volatility_{window}'] = (
+                pitcher_data[std_col] / 
+                pitcher_data[avg_col].clip(lower=0.1)  # Avoid division by zero
+            ).shift(1)
+        
+        # Recovery pattern after poor performance
+        if all(col in pitcher_data.columns for col in ['strikeouts', avg_col]):
+            pitcher_data[f'post_poor_performance_{window}'] = (
+                pitcher_data['strikeouts'].shift(1) < 
+                pitcher_data[avg_col].shift(1)
+            ).astype(int)
+    
+    return pitcher_data
+
+def _add_pitch_mix_features(pitcher_data):
+    """
+    Add pitch mix features including diversity measures
+    
+    Args:
+        pitcher_data (pandas.DataFrame): Data for a single pitcher
+        
+    Returns:
+        pandas.DataFrame: Data with pitch mix features added
+    """
+    # Identify pitch mix columns
+    pitch_mix_cols = [col for col in pitcher_data.columns if col.startswith('pitch_pct_')]
+    
+    if not pitch_mix_cols:
+        return pitcher_data
+    
+    # Add previous game pitch mix
+    for col in pitch_mix_cols:
+        pitcher_data[f'prev_game_{col}'] = pitcher_data[col].shift(1)
+    
+    # Calculate pitch entropy (diversity measure)
+    def calc_entropy(row):
+        # Get non-zero percentages and convert to probabilities
+        probs = [row[col]/100 for col in pitch_mix_cols if row[col] > 0]
+        if not probs:
+            return 0
+        # Calculate entropy: -sum(p * log2(p))
+        return -sum(p * np.log2(p) for p in probs)
+    
+    pitcher_data['pitch_entropy'] = pitcher_data.apply(calc_entropy, axis=1)
+    pitcher_data['prev_game_pitch_entropy'] = pitcher_data['pitch_entropy'].shift(1)
+    
+    # Calculate pitch mix similarity (how much pitch selection changed)
+    def pitch_similarity(current, previous):
+        if pd.isna(previous).any() or pd.isna(current).any():
+            return np.nan
+        
+        current_vec = [current[col] for col in pitch_mix_cols]
+        previous_vec = [previous[col] for col in pitch_mix_cols]
+        
+        # If all zeros, return 1 (perfect similarity)
+        if sum(current_vec) == 0 or sum(previous_vec) == 0:
+            return 1.0
+            
+        return 1.0 - cosine(current_vec, previous_vec)
+    
+    # Calculate similarity for each row with the previous row
+    pitch_similarities = []
+    
+    for i in range(len(pitcher_data)):
+        if i == 0:
+            pitch_similarities.append(np.nan)
+        else:
+            current = pitcher_data.iloc[i]
+            previous = pitcher_data.iloc[i-1]
+            pitch_similarities.append(pitch_similarity(current, previous))
+    
+    pitcher_data['pitch_mix_similarity'] = pitch_similarities
+    
+    return pitcher_data
+
+def _add_rest_day_features(pitcher_data):
+    """
+    Add features related to rest days between appearances
+    
+    Args:
+        pitcher_data (pandas.DataFrame): Data for a single pitcher
+        
+    Returns:
+        pandas.DataFrame: Data with rest day features added
+    """
+    # Calculate days of rest
+    pitcher_data['prev_game_date'] = pitcher_data['game_date'].shift(1)
+    pitcher_data['days_rest'] = (pitcher_data['game_date'] - pitcher_data['prev_game_date']).dt.days
+    pitcher_data['days_rest'] = pitcher_data['days_rest'].fillna(5)  # Default to 5 days for first appearance
+    
+    # Create team changed flag (placeholder - actual logic would need team info)
+    pitcher_data['team_changed'] = 0
+    
+    return pitcher_data
 
 # Add to create_enhanced_features in src/features/engineering.py
 def add_opponent_features(df):

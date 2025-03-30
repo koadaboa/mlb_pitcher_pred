@@ -9,7 +9,8 @@ class DataConfig:
     CHUNK_SIZE = 14
 
 class StrikeoutModelConfig:
-    RANDOM_STATE = 42
+    RANDOM_STATE = 3
+    WINDOW_SIZES = [3, 5, 10]
     DEFAULT_TRAIN_YEARS = (2019, 2021, 2022)
     DEFAULT_TEST_YEARS = (2023, 2024)
     OPTIMIZATION_METRICS = ["within_1_strikeout", "within_2_strikeouts", "over_under_accuracy"]

@@ -3,10 +3,10 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-import logging
 from pathlib import Path
+from src.data.utils import setup_logger, ensure_dir
 
-logger = logging.getLogger(__name__)
+logger = setup_logger(__name__)
 
 def setup_visualization_environment():
     """Set up the visualization environment with consistent styling"""

@@ -1,34 +1,29 @@
 # Functions for processing data after fetching from external sources
 import pandas as pd
 import numpy as np
-import logging
+from src.data.utils import setup_logger
 import re
 from collections import defaultdict
 
-logger = logging.getLogger(__name__)
+logger = setup_logger(__name__)
 
-def aggregate_to_game_level(statcast_df):
-    """
-    Aggregate statcast pitch-level data to pitcher-game level
-    """
-    logger.info("Aggregating statcast data to pitcher-game level...")
-    logger.info(f"Input data shape: {statcast_df.shape}")
-    
-    if 'pitch_type' in statcast_df.columns:
-        logger.info(f"Available columns: {', '.join(statcast_df.columns[:20])}...")
-    
-    # Basic validation
+# Add helper functions for each processing step
+def _validate_statcast_data(statcast_df):
+    """Validate input statcast data"""
     if statcast_df.empty:
         logger.warning("Empty dataframe provided for aggregation.")
-        return pd.DataFrame()
+        return False
     
-    # Ensure required columns exist
     required_cols = ['game_date', 'pitcher']
     missing = [col for col in required_cols if col not in statcast_df.columns]
     if missing:
         logger.error(f"Missing required columns: {missing}")
-        return pd.DataFrame()
+        return False
     
+    return True
+
+def _prepare_statcast_data(statcast_df):
+    """Prepare statcast data for aggregation"""
     # Convert game_date to datetime
     statcast_df['game_date'] = pd.to_datetime(statcast_df['game_date'], errors='coerce')
     
@@ -46,7 +41,12 @@ def aggregate_to_game_level(statcast_df):
                 statcast_df['game_id'] = statcast_df['game_date'].dt.strftime('%Y%m%d') + '_' + \
                                         statcast_df.groupby(['game_date']).ngroup().astype(str)
     
-    # Define grouping columns
+    return statcast_df
+
+def _get_grouping_columns(statcast_df):
+    """
+    Get the grouping columns for statcast data
+    """
     group_cols = ['pitcher', 'game_id', 'game_date']
     if 'player_name' in statcast_df.columns:
         group_cols.append('player_name')
@@ -56,79 +56,77 @@ def aggregate_to_game_level(statcast_df):
         # Add season column based on year
         statcast_df['season'] = statcast_df['game_date'].dt.year
         group_cols.append('season')
+    return group_cols
+
+def _add_pitch_mix_data(statcast_df, game_level, grouped, group_cols):
+    """
+    Extract pitch mix data from statcast data
+    """
+    logger.info("Pitch type column found - extracting pitch mix data")
         
-    # Log grouping info
-    logger.info(f"Grouping by columns: {group_cols}")
+    # Get unique pitchers and games for logging
+    unique_pitchers = statcast_df['pitcher'].nunique()
+    unique_games = statcast_df['game_id'].nunique()
+    unique_combos = statcast_df.groupby(['pitcher', 'game_id']).ngroups
     
-    # Group by pitcher and game
-    grouped = statcast_df.groupby(group_cols)
+    logger.info(f"Unique pitchers: {unique_pitchers}")
+    logger.info(f"Unique games: {unique_games}")
+    logger.info(f"Unique pitcher-game combinations: {unique_combos}")
     
-    # Count pitches per game
-    pitch_counts = grouped.size().reset_index(name='pitch_count')
-    game_level = pitch_counts.copy()
-    
-    # Extract pitch mix data if available
-    if 'pitch_type' in statcast_df.columns:
-        logger.info("Pitch type column found - extracting pitch mix data")
+    try:
+        # Count pitches per type per game
+        pitch_type_counts = statcast_df.groupby(group_cols + ['pitch_type']).size().reset_index(name='type_count')
         
-        # Get unique pitchers and games for logging
-        unique_pitchers = statcast_df['pitcher'].nunique()
-        unique_games = statcast_df['game_id'].nunique()
-        unique_combos = statcast_df.groupby(['pitcher', 'game_id']).ngroups
+        # Merge with total pitch counts
+        pitch_type_counts = pd.merge(
+            pitch_type_counts, 
+            grouped['pitch_count'].reset_index(), 
+            on=group_cols,
+            how='left'
+        )
         
-        logger.info(f"Unique pitchers: {unique_pitchers}")
-        logger.info(f"Unique games: {unique_games}")
-        logger.info(f"Unique pitcher-game combinations: {unique_combos}")
+        # Calculate percentage
+        pitch_type_counts['percentage'] = (pitch_type_counts['type_count'] / pitch_type_counts['pitch_count']) * 100
         
-        try:
-            # Count pitches per type per game
-            pitch_type_counts = statcast_df.groupby(group_cols + ['pitch_type']).size().reset_index(name='type_count')
-            
-            # Merge with total pitch counts
-            pitch_type_counts = pd.merge(
-                pitch_type_counts, 
-                pitch_counts[group_cols + ['pitch_count']], 
-                on=group_cols,
-                how='left'
-            )
-            
-            # Calculate percentage
-            pitch_type_counts['percentage'] = (pitch_type_counts['type_count'] / pitch_type_counts['pitch_count']) * 100
-            
-            # Get unique pitch types
-            pitch_types = pitch_type_counts['pitch_type'].unique()
-            logger.info(f"Found {len(pitch_types)} unique pitch types: {', '.join(pitch_types)}")
-            
-            # Pivot to wide format (one column per pitch type)
-            pitch_pivot = pitch_type_counts.pivot_table(
-                index=group_cols,
-                columns='pitch_type',
-                values='percentage',
-                fill_value=0
-            ).reset_index()
-            
-            # Fix MultiIndex columns after pivot
-            if isinstance(pitch_pivot.columns, pd.MultiIndex):
-                pitch_pivot.columns = [
-                    col[0] if col[0] in group_cols else f'pitch_pct_{col[1]}' 
-                    for col in pitch_pivot.columns
-                ]
-            else:
-                # Rename pivot columns
-                pitch_types = [col for col in pitch_pivot.columns if col not in group_cols]
-                new_cols = list(group_cols).copy()
-                for col in pitch_types:
-                    new_cols.append(f'pitch_pct_{col}')
-                pitch_pivot.columns = new_cols
-            
-            # Merge with game level data
-            game_level = pd.merge(game_level, pitch_pivot, on=group_cols, how='left')
-            
-        except Exception as e:
-            logger.error(f"Error during pitch mix extraction: {e}")
-            logger.info("Falling back to basic aggregation")
-    
-    # Try to aggregate metrics
+        # Get unique pitch types
+        pitch_types = pitch_type_counts['pitch_type'].unique()
+        logger.info(f"Found {len(pitch_types)} unique pitch types: {', '.join(pitch_types)}")
+        
+        # Pivot to wide format (one column per pitch type)
+        pitch_pivot = pitch_type_counts.pivot_table(
+            index=group_cols,
+            columns='pitch_type',
+            values='percentage',
+            fill_value=0
+        ).reset_index()
+        
+        # Fix MultiIndex columns after pivot
+        if isinstance(pitch_pivot.columns, pd.MultiIndex):
+            pitch_pivot.columns = [
+                col[0] if col[0] in group_cols else f'pitch_pct_{col[1]}' 
+                for col in pitch_pivot.columns
+            ]
+        else:
+            # Rename pivot columns
+            pitch_types = [col for col in pitch_pivot.columns if col not in group_cols]
+            new_cols = list(group_cols).copy()
+            for col in pitch_types:
+                new_cols.append(f'pitch_pct_{col}')
+            pitch_pivot.columns = new_cols
+        
+        # Merge with game level data
+        game_level = pd.merge(game_level, pitch_pivot, on=group_cols, how='left')
+        
+    except Exception as e:
+        logger.error(f"Error during pitch mix extraction: {e}")
+        logger.info("Falling back to basic aggregation")
+        
+    return game_level
+
+def _add_pitch_metrics(statcast_df, game_level, grouped, group_cols):
+    """
+    Add pitch metrics to game level data
+    """
     try:
         # Pitch velocity and spin rate
         metric_cols = ['release_speed', 'release_spin_rate']
@@ -143,6 +141,17 @@ def aggregate_to_game_level(statcast_df):
         if 'zone' in statcast_df.columns:
             zone_rate = grouped['zone'].apply(lambda x: (x > 0).mean()).reset_index(name='zone_rate')
             game_level = pd.merge(game_level, zone_rate, on=group_cols, how='left')
+    except Exception as e:
+        logger.error(f"Error during pitch metrics extraction: {e}")
+        logger.info("Falling back to basic aggregation")
+
+    return game_level
+
+def _add_event_metrics(statcast_df, game_level, grouped, group_cols):
+    """
+    Add event metrics to game level data
+    """
+    try:
         
         # Process events (strikeouts, walks, etc.)
         if 'events' in statcast_df.columns:
@@ -185,6 +194,12 @@ def aggregate_to_game_level(statcast_df):
     except Exception as e:
         logger.error(f"Error during aggregation: {e}")
 
+    return game_level
+
+def _finalize_game_level_data(game_level, group_cols):
+    """
+    Finalize game level data by filling NAs with zeros and removing duplicates
+    """
     # Fill NAs with zeros
     for col in game_level.columns:
         if col not in group_cols and pd.api.types.is_numeric_dtype(game_level[col]):
@@ -195,6 +210,45 @@ def aggregate_to_game_level(statcast_df):
     zero_cols = [col for col in numeric_cols if game_level[col].sum() == 0]
     if zero_cols:
         logger.warning(f"The following columns contain all zeros: {zero_cols}")
+    
+    return game_level
+
+def aggregate_to_game_level(statcast_df):
+    """
+    Aggregate statcast pitch-level data to pitcher-game level
+    """
+    logger.info("Aggregating statcast data to pitcher-game level...")
+    logger.info(f"Input data shape: {statcast_df.shape}")
+    
+    if 'pitch_type' in statcast_df.columns:
+        logger.info(f"Available columns: {', '.join(statcast_df.columns[:20])}...")
+    
+    if not _validate_statcast_data(statcast_df):
+        return pd.DataFrame()
+    
+    statcast_df = _prepare_statcast_data(statcast_df)
+    
+    # Define grouping columns
+    group_cols = _get_grouping_columns(statcast_df)
+        
+    # Log grouping info
+    logger.info(f"Grouping by columns: {group_cols}")
+    
+     # Group by pitcher and game
+    grouped = statcast_df.groupby(group_cols)
+    
+    # Count pitches per game
+    pitch_counts = grouped.size().reset_index(name='pitch_count')
+    game_level = pitch_counts.copy()
+    
+    # Extract pitch mix data if available
+    if 'pitch_type' in statcast_df.columns:
+        game_level = _add_pitch_mix_data(statcast_df, game_level, grouped, group_cols)
+
+    game_level = _add_pitch_metrics(statcast_df, game_level, grouped, group_cols)
+    game_level = _add_event_metrics(statcast_df, game_level, grouped, group_cols)
+
+    game_level = _finalize_game_level_data(game_level, group_cols)
     
     logger.info(f"Aggregated data to {len(game_level)} pitcher-game records with {len(game_level.columns)} columns")
     return game_level

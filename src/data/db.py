@@ -1,15 +1,29 @@
 # Database utilities for the MLB pitcher prediction project
 import sqlite3
 import pandas as pd
-import logging
 from pathlib import Path
-import re
-from src.data.utils import safe_float
+from src.data.utils import safe_float, normalize_name
+from config import DBConfig
+from src.data.utils import setup_logger, ensure_dir
 
-logger = logging.getLogger(__name__)
+logger = setup_logger(__name__)
 
 # Database path
-DB_PATH = "data/pitcher_stats.db"
+DB_PATH = DBConfig.PATH
+
+class DBConnection:
+    """Context manager for database connections"""
+    def __init__(self, db_name=DB_PATH):
+        self.db_name = db_name
+
+    def __enter__(self):
+        ensure_dir(Path(self.db_name).parent)
+        self.conn = sqlite3.connect(self.db_name)
+        return self.conn
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.conn:
+            self.conn.close()
 
 def get_db_connection(db_name=DB_PATH):
     """
@@ -27,24 +41,12 @@ def get_db_connection(db_name=DB_PATH):
     return sqlite3.connect(db_name)
 
 def execute_query(query, params=None):
-    """
-    Execute a query and return results as a DataFrame
-    
-    Args:
-        query (str): SQL query to execute
-        params (dict, optional): Parameters for the query
-        
-    Returns:
-        pandas.DataFrame: Query results
-    """
-    conn = get_db_connection()
-    try:
+    """Execute a query and return results as a DataFrame"""
+    with DBConnection() as conn:
         if params:
             return pd.read_sql_query(query, conn, params=params)
         else:
             return pd.read_sql_query(query, conn)
-    finally:
-        conn.close()
 
 def execute_update(query, params=None):
     """
@@ -240,7 +242,7 @@ def store_statcast_data(statcast_df, force_refresh=False):
         conn.commit()
     
     # Process statcast data to game level - import inside function to avoid circular import
-    from src.data.process import aggregate_to_game_level, normalize_name
+    from src.data.process import aggregate_to_game_level
     game_level = aggregate_to_game_level(statcast_df)
     game_level = game_level.fillna(0)
     

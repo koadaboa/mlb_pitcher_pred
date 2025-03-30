@@ -3,7 +3,6 @@ import pickle
 import pandas as pd
 import numpy as np
 import os
-import logging
 import argparse
 import json
 from pathlib import Path
@@ -16,6 +15,7 @@ from sklearn.linear_model import Ridge
 from src.data.db import get_pitcher_data
 from src.models.train import calculate_betting_metrics
 from src.data.utils import setup_logger
+from config import StrikeoutModelConfig
 
 logger = setup_logger(__name__)
 
@@ -168,7 +168,7 @@ class StackingEnsemble:
         meta_features = np.zeros((len(X), len(self.base_models)))
         
         # Use a simple holdout approach for simplicity
-        X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
+        X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=StrikeoutModelConfig.RANDOM_STATE)
         
         for i, model_dict in enumerate(self.base_models):
             model = model_dict['model']
@@ -269,7 +269,7 @@ def evaluate_models(models, data, test_years, ensemble_types=['weighted', 'stack
     X_all = test_df[models[0]['features']].copy()
     y_all = test_df['strikeouts'].copy()
     
-    X_val, X_test, y_val, y_test = train_test_split(X_all, y_all, test_size=0.5, random_state=42)
+    X_val, X_test, y_val, y_test = train_test_split(X_all, y_all, test_size=0.5, random_state=StrikeoutModelConfig.RANDOM_STATE)
     
     logger.info(f"Split test data into {len(X_val)} validation and {len(X_test)} test rows")
     
