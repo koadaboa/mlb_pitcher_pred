@@ -11,12 +11,9 @@ import argparse
 from src.data.db import get_pitcher_data
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from src.models.train import calculate_betting_metrics
+from src.data.utils import setup_logger
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+logger = setup_logger(__name__)
 
 def load_models(models_dir):
     """

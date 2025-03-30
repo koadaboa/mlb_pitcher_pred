@@ -15,17 +15,9 @@ from sklearn.linear_model import Ridge
 
 from src.data.db import get_pitcher_data
 from src.models.train import calculate_betting_metrics
+from src.data.utils import setup_logger
 
-# Set up logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler("ensemble.log"),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
+logger = setup_logger(__name__)
 
 def load_optimized_models(model_paths):
     """

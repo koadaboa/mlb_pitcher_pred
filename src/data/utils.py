@@ -1,8 +1,8 @@
 # src/data/utils.py
 import re
 import logging
-
-logger = logging.getLogger(__name__)
+from pathlib import Path
+import pandas as pd
 
 def normalize_name(name):
     """
@@ -41,3 +41,40 @@ def normalize_name(name):
             name = f"{first} {last}"
     
     return name
+
+def setup_logger(name, log_file=None, level=logging.INFO):
+    """Set up a logger with consistent formatting"""
+    logger = logging.getLogger(name)
+    logger.setLevel(level)
+    
+    # Create formatter
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    
+    # Add console handler
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+    
+    # Add file handler if log_file is specified
+    if log_file:
+        Path(log_file).parent.mkdir(exist_ok=True, parents=True)
+        file_handler = logging.FileHandler(log_file)
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
+    
+    return logger
+
+def safe_float(value, default=0.0):
+    """Safely convert a value to float, handling NA values"""
+    if pd.isna(value):
+        return default
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return default
+
+def ensure_dir(path):
+    """Ensure a directory exists and return Path object"""
+    p = Path(path)
+    p.mkdir(exist_ok=True, parents=True)
+    return p

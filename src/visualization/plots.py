@@ -101,83 +101,6 @@ def create_velocity_strikeout_plot(df, viz_dir):
     logger.info("Created velocity vs strikeouts visualization")
     return True
 
-def create_era_distribution_plot(df, viz_dir):
-    """
-    Create distribution plot of ERA
-    
-    Args:
-        df (pandas.DataFrame): Dataset with ERA data
-        viz_dir (pathlib.Path): Directory to save visualization
-    """
-    # Check for ERA column with different possible names
-    era_col = None
-    for possible_col in ['era', 'ERA', 'era_x', 'era_y']:
-        if possible_col in df.columns:
-            era_col = possible_col
-            break
-    
-    if not era_col:
-        logger.warning("No ERA column found for visualization")
-        return False
-    
-    logger.info(f"Using '{era_col}' column for ERA visualizations")
-    plt.figure()
-    # Limit to reasonable ERA values (0-10) to avoid extreme outliers
-    era_data = df[df[era_col] < 10]
-    sns.histplot(era_data[era_col], bins=20, kde=True)
-    plt.title('Distribution of ERA')
-    plt.xlabel('ERA')
-    plt.ylabel('Frequency')
-    plt.savefig(viz_dir / 'era_distribution.png')
-    plt.close()
-    logger.info("Created ERA distribution visualization")
-    return True
-
-def create_era_correlations_plot(df, viz_dir, top_n=10):
-    """
-    Create correlation plot for ERA with other features
-    
-    Args:
-        df (pandas.DataFrame): Dataset with ERA data
-        viz_dir (pathlib.Path): Directory to save visualization
-        top_n (int): Number of top correlations (both positive and negative) to display
-    """
-    # Check for ERA column with different possible names
-    era_col = None
-    for possible_col in ['era', 'ERA', 'era_x', 'era_y']:
-        if possible_col in df.columns:
-            era_col = possible_col
-            break
-    
-    if not era_col:
-        logger.warning("No ERA column found for correlation visualization")
-        return False
-    
-    plt.figure(figsize=(14, 10))
-    numeric_cols = df.select_dtypes(include=[np.number]).columns
-    
-    if era_col in numeric_cols:
-        try:
-            era_corr = df[numeric_cols].corr()[era_col].sort_values()
-            
-            # Plot top correlations (both positive and negative)
-            top_count = min(top_n, len(era_corr) // 2)
-            if top_count > 0:
-                top_era_corr = pd.concat([era_corr.iloc[:top_count], era_corr.iloc[-top_count:]])
-                sns.barplot(x=top_era_corr.values, y=top_era_corr.index)
-                plt.title('Features Most Correlated with ERA')
-                plt.tight_layout()
-                plt.savefig(viz_dir / 'era_correlations.png')
-                plt.close()
-                logger.info("Created ERA correlations visualization")
-                return True
-        except Exception as e:
-            logger.error(f"Error creating ERA correlations plot: {e}")
-    else:
-        logger.warning(f"Column '{era_col}' not found in numeric columns for correlation")
-    
-    return False
-
 def create_pitch_mix_visualization(df, viz_dir, top_n=10):
     """
     Create pitch mix visualization for top strikeout pitchers
@@ -225,7 +148,7 @@ def create_pitch_mix_visualization(df, viz_dir, top_n=10):
     
     return False
 
-def create_features_importance_plot(model, feature_names, viz_dir, model_type='strikeout'):
+def create_features_importance_plot(model, feature_names, viz_dir):
     """
     Create feature importance visualization for a trained model
     
@@ -233,7 +156,6 @@ def create_features_importance_plot(model, feature_names, viz_dir, model_type='s
         model: Trained ML model with feature_importances_ attribute
         feature_names (list): List of feature names
         viz_dir (pathlib.Path): Directory to save visualization
-        model_type (str): Type of model ('strikeout' or 'era')
     """
     if not hasattr(model, 'feature_importances_'):
         logger.warning("Model doesn't have feature_importances_ attribute")
@@ -254,15 +176,15 @@ def create_features_importance_plot(model, feature_names, viz_dir, model_type='s
     plt.barh(range(top_n), top_importances, align='center')
     plt.yticks(range(top_n), top_features)
     plt.xlabel('Feature Importance')
-    plt.title(f'Top Features for {model_type.capitalize()} Prediction')
+    plt.title('Top Features for Strikeout Prediction')
     plt.tight_layout()
-    plt.savefig(viz_dir / f'{model_type}_feature_importance.png')
+    plt.savefig(viz_dir / 'strikeout_feature_importance.png')
     plt.close()
     
-    logger.info(f"Created feature importance visualization for {model_type} model")
+    logger.info("Created feature importance visualization for strikeout model")
     return True
 
-def create_predictions_vs_actual_plot(y_true, y_pred, viz_dir, model_type='strikeout'):
+def create_predictions_vs_actual_plot(y_true, y_pred, viz_dir):
     """
     Create scatter plot of predicted vs actual values
     
@@ -270,7 +192,6 @@ def create_predictions_vs_actual_plot(y_true, y_pred, viz_dir, model_type='strik
         y_true (array-like): Actual values
         y_pred (array-like): Predicted values
         viz_dir (pathlib.Path): Directory to save visualization
-        model_type (str): Type of model ('strikeout' or 'era')
     """
     plt.figure(figsize=(10, 8))
     
@@ -283,13 +204,13 @@ def create_predictions_vs_actual_plot(y_true, y_pred, viz_dir, model_type='strik
     
     plt.xlabel('Actual')
     plt.ylabel('Predicted')
-    plt.title(f'Predicted vs Actual {model_type.capitalize()}')
+    plt.title('Predicted vs Actual Strikeouts')
     plt.grid(True)
     plt.tight_layout()
-    plt.savefig(viz_dir / f'{model_type}_predictions.png')
+    plt.savefig(viz_dir / 'strikeout_predictions.png')
     plt.close()
     
-    logger.info(f"Created predictions vs actual plot for {model_type} model")
+    logger.info("Created predictions vs actual plot for strikeout model")
     return True
 
 def create_visualizations(df):
@@ -319,15 +240,7 @@ def create_visualizations(df):
     if create_velocity_strikeout_plot(df, viz_dir):
         created_count += 1
     
-    # 4. ERA distribution
-    if create_era_distribution_plot(df, viz_dir):
-        created_count += 1
-    
-    # 5. Correlation between metrics and ERA
-    if create_era_correlations_plot(df, viz_dir):
-        created_count += 1
-    
-    # 6. Pitch Mix visualization for top strikeout pitchers
+    # 4. Pitch Mix visualization for top strikeout pitchers
     if create_pitch_mix_visualization(df, viz_dir):
         created_count += 1
     

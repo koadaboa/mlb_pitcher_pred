@@ -1,18 +1,13 @@
 # src/scripts/update_features.py
-import logging
 import os
 from pathlib import Path
 
 from src.data.db import get_db_connection, update_database_schema
 from src.features.engineering import create_enhanced_features, create_prediction_features
 from src.data.process import export_data_to_csv
+from src.data.utils import setup_logger
 
-# Set up logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-)
-logger = logging.getLogger(__name__)
+logger = setup_logger(__name__)
 
 def update_features(force_refresh=False):
     """

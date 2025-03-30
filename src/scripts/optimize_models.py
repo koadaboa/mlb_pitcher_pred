@@ -22,20 +22,9 @@ import lightgbm as lgb
 from src.data.db import get_pitcher_data
 from src.features.selection import select_features_for_strikeout_model
 from src.models.train import calculate_betting_metrics
+from src.data.utils import setup_logger
 
-# Set up logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler("optimization.log"),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
-
-# Add this to the custom_cv_score function in src/scripts/optimize_models.py
-# Find the section where it calculates the score based on the scorer
+logger = setup_logger(__name__)
 
 def custom_cv_score(model, X, y, n_splits=5, random_state=42, scorer='neg_mean_squared_error'):
     """

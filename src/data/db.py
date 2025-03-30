@@ -4,20 +4,12 @@ import pandas as pd
 import logging
 from pathlib import Path
 import re
+from src.data.utils import safe_float
 
 logger = logging.getLogger(__name__)
 
 # Database path
 DB_PATH = "data/pitcher_stats.db"
-
-def safe_float(value, default=0.0):
-    """Safely convert a value to float, handling NA values"""
-    if pd.isna(value):
-        return default
-    try:
-        return float(value)
-    except (ValueError, TypeError):
-        return default
 
 def get_db_connection(db_name=DB_PATH):
     """

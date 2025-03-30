@@ -1,5 +1,4 @@
-# src/scripts/train_models.py
-import logging
+
 import os
 from pathlib import Path
 import pandas as pd
@@ -10,18 +9,9 @@ import seaborn as sns
 from src.data.db import get_pitcher_data
 from src.features.selection import select_features_for_strikeout_model
 from src.models.train import train_strikeout_model, save_model
-from src.visualization.plots import create_visualizations
+from src.data.utils import setup_logger
 
-# Set up logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler("pitcher_models.log"),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
+logger = setup_logger(__name__)
 
 def compare_models(models_dict, save_dir=None):
     """
