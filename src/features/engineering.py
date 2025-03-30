@@ -5,7 +5,6 @@ import logging
 import sqlite3
 from pathlib import Path
 import pybaseball
-from pybaseball import team_batting_stats
 from src.data.db import get_db_connection, get_pitcher_data
 
 logger = logging.getLogger(__name__)

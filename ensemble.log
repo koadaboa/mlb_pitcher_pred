@@ -54,3 +54,39 @@
 2025-03-28 14:39:46,416 - __main__ - INFO - Ensemble saved to models\ensemble\best_ensemble_model.pkl
 2025-03-28 14:39:46,521 - __main__ - INFO - Ensemble saved to models\strikeout_ensemble_model.pkl
 2025-03-28 14:39:46,521 - __main__ - INFO - Ensemble evaluation complete!
+2025-03-29 18:05:23,352 - __main__ - INFO - Loaded model from models\optimization\lightgbm_20250328_134059\optimized_lightgbm_model.pkl
+2025-03-29 18:05:23,375 - __main__ - INFO - Loaded model from models\optimization\lightgbm_20250328_143539\optimized_lightgbm_model.pkl
+2025-03-29 18:05:23,406 - __main__ - INFO - Loaded model from models\optimization\lightgbm_20250329_162905\optimized_lightgbm_model.pkl
+2025-03-29 18:05:23,419 - __main__ - INFO - Loaded model from models\optimization\rf_20250328_114909\optimized_rf_model.pkl
+2025-03-29 18:05:23,534 - __main__ - INFO - Loaded model from models\optimization\rf_20250328_142317\optimized_rf_model.pkl
+2025-03-29 18:05:23,592 - __main__ - INFO - Loaded model from models\optimization\rf_20250329_152114\optimized_rf_model.pkl
+2025-03-29 18:05:23,742 - __main__ - INFO - Loaded model from models\optimization\xgboost_20250328_133840\optimized_xgboost_model.pkl
+2025-03-29 18:05:23,778 - __main__ - INFO - Loaded model from models\optimization\xgboost_20250328_143144\optimized_xgboost_model.pkl
+2025-03-29 18:05:23,865 - __main__ - INFO - Loaded model from models\optimization\xgboost_20250329_163148\optimized_xgboost_model.pkl
+2025-03-29 18:05:23,865 - __main__ - INFO - Loading data...
+2025-03-29 18:05:23,865 - src.data.db - INFO - Retrieving pitcher data from database...
+2025-03-29 18:05:26,972 - src.data.db - INFO - Retrieved 104453 rows of pitcher data with 54 columns
+2025-03-29 18:05:26,972 - src.data.db - INFO - Retrieved 20 enhanced feature columns: last_3_games_strikeouts_std, last_5_games_strikeouts_std, last_3_games_velo_std, last_5_games_velo_std, last_3_games_swinging_strike_pct_std...
+2025-03-29 18:05:26,980 - __main__ - INFO - Evaluating models on 41143 rows from years [2023, 2024]
+2025-03-29 18:05:27,005 - __main__ - INFO - Split test data into 20571 validation and 20572 test rows
+2025-03-29 18:05:27,091 - __main__ - INFO - lightgbm: RMSE=1.5031, MAE=1.1097, R²=0.5278, Within 2 K: 88.38%, Over/Under: 87.55%
+2025-03-29 18:05:27,134 - __main__ - INFO - lightgbm: RMSE=1.4810, MAE=1.0574, R²=0.5415, Within 2 K: 87.20%, Over/Under: 87.57%
+2025-03-29 18:05:27,216 - __main__ - INFO - lightgbm: RMSE=1.4756, MAE=1.0584, R²=0.5449, Within 2 K: 87.16%, Over/Under: 87.52%
+2025-03-29 18:05:27,321 - __main__ - INFO - rf: RMSE=1.4927, MAE=1.0910, R²=0.5342, Within 2 K: 88.08%, Over/Under: 87.41%
+2025-03-29 18:05:27,845 - __main__ - INFO - rf: RMSE=1.4762, MAE=1.0848, R²=0.5445, Within 2 K: 88.13%, Over/Under: 87.12%
+2025-03-29 18:05:28,113 - __main__ - INFO - rf: RMSE=1.4697, MAE=1.0572, R²=0.5485, Within 2 K: 87.16%, Over/Under: 87.43%
+2025-03-29 18:05:28,125 - __main__ - INFO - xgboost: RMSE=1.4962, MAE=1.0847, R²=0.5321, Within 2 K: 88.16%, Over/Under: 87.36%
+2025-03-29 18:05:28,140 - __main__ - INFO - xgboost: RMSE=1.4957, MAE=1.0662, R²=0.5324, Within 2 K: 86.42%, Over/Under: 87.54%
+2025-03-29 18:05:28,161 - __main__ - INFO - xgboost: RMSE=1.4827, MAE=1.0629, R²=0.5405, Within 2 K: 86.98%, Over/Under: 87.42%
+2025-03-29 18:05:28,161 - __main__ - INFO - Created weighted ensemble with equal weighting: {'lightgbm': 0.1111111111111111, 'rf': 0.1111111111111111, 'xgboost': 0.1111111111111111}
+2025-03-29 18:05:29,241 - __main__ - INFO - Created weighted ensemble with inverse_error weighting: {'lightgbm': np.float64(0.33356682920226555), 'rf': np.float64(0.335049767877058), 'xgboost': np.float64(0.33138340292067653)}
+2025-03-29 18:05:30,322 - __main__ - INFO - Created weighted ensemble with betting_accuracy weighting: {'lightgbm': np.float64(0.33361214115110455), 'rf': np.float64(0.33308240629733926), 'xgboost': np.float64(0.33330545255155625)}
+2025-03-29 18:05:56,683 - __main__ - INFO - Created stacking ensemble
+2025-03-29 18:05:57,675 - __main__ - INFO - weighted_ensemble_equal: RMSE=1.4747, MAE=1.0643, R²=0.5454, Within 2 K: 87.71%, Over/Under: 87.31%
+2025-03-29 18:05:58,661 - __main__ - INFO - weighted_ensemble_inverse_error: RMSE=5.2777, MAE=4.0657, R²=-4.8222, Within 2 K: 24.64%, Over/Under: 26.70%
+2025-03-29 18:05:59,638 - __main__ - INFO - weighted_ensemble_betting_accuracy: RMSE=5.2776, MAE=4.0656, R²=-4.8219, Within 2 K: 24.64%, Over/Under: 26.70%
+2025-03-29 18:06:00,620 - __main__ - INFO - stacking_ensemble: RMSE=1.5389, MAE=1.1170, R²=0.5050, Within 2 K: 85.37%, Over/Under: 86.05%
+2025-03-29 18:06:00,621 - __main__ - INFO - Best ensemble: weighted_ensemble_equal with RMSE=1.4747
+2025-03-29 18:06:01,921 - __main__ - INFO - Ensemble saved to models\ensemble\best_ensemble_model.pkl
+2025-03-29 18:06:02,043 - __main__ - INFO - Ensemble saved to models\strikeout_ensemble_model.pkl
+2025-03-29 18:06:02,043 - __main__ - INFO - Ensemble evaluation complete!

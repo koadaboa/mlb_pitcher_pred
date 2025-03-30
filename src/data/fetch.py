@@ -9,7 +9,7 @@ from tqdm import tqdm
 from pathlib import Path
 
 # Import pybaseball library
-from pybaseball import statcast, statcast_pitcher
+from pybaseball import statcast, team_batting
 from pybaseball import cache
 
 logger = logging.getLogger(__name__)
@@ -194,7 +194,7 @@ def fetch_team_data():
             logger.info(f"Fetching team stats for season {season}...")
             try:
                 # Add timeout
-                season_data = pybaseball.team_batting_stats(season, season)
+                season_data = team_batting(season, season)
                 season_data['season'] = season
                 team_data = pd.concat([team_data, season_data])
                 logger.info(f"Successfully fetched team stats for {season}")

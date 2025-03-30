@@ -463,6 +463,7 @@ def get_pitcher_data():
         g.game_id,
         g.game_date,
         g.season,
+        g.opponent_team_id,
         g.strikeouts,
         g.hits,
         g.walks,

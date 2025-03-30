@@ -466,5 +466,8 @@ def map_opponents_to_games(statcast_df, pitcher_team_map):
         columns={'game_pk': 'game_id'}
     )
     
+    # Add this line to convert game_id to string
+    result['game_id'] = result['game_id'].astype(str)
+    
     logger.info(f"Mapped {len(result)} pitcher-game combinations to opponents")
     return result
