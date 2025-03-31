@@ -53,7 +53,12 @@ def custom_cv_score(model, X, y, n_splits=5, random_state=StrikeoutModelConfig.R
         model.fit(X_train, y_train)
         
         # Make predictions
-        y_pred = model.predict(X_val)
+        if isinstance(X_val, pd.DataFrame):
+            y_pred = model.predict(X_val)
+        else:
+            # Convert to DataFrame with proper column names if it's not already
+            X_val_df = pd.DataFrame(X_val, columns=features)
+            y_pred = model.predict(X_val_df)
         predictions.extend(y_pred)
         actuals.extend(y_val)
         
@@ -311,6 +316,43 @@ def optimize_model(train_years, features=None, n_trials=100, primary_metric='wit
     best_model = save_best_model(study, X, y, output_dir)
     
     return study, best_model, output_dir
+
+def lgb_objective(trial, X, y, primary_metric):
+    """Optuna objective for LightGBM with focus on 1-strikeout precision"""
+    
+    # Define hyperparameters to optimize - refined ranges for strikeout precision
+    params = {
+        'n_estimators': trial.suggest_int('n_estimators', 100, 500),
+        'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.1, log=True),  # Lower max value
+        'num_leaves': trial.suggest_int('num_leaves', 20, 100),  # Lower for better generalization
+        'max_depth': trial.suggest_int('max_depth', 3, 10),
+        'min_data_in_leaf': trial.suggest_int('min_data_in_leaf', 30, 100),  # Higher min values
+        'feature_fraction': trial.suggest_float('feature_fraction', 0.7, 0.9),  # More focused range
+        'bagging_fraction': trial.suggest_float('bagging_fraction', 0.7, 0.9),
+        'bagging_freq': trial.suggest_int('bagging_freq', 1, 7),
+        'min_gain_to_split': trial.suggest_float('min_gain_to_split', 0, 3),
+        'lambda_l1': trial.suggest_float('lambda_l1', 0, 3),
+        'lambda_l2': trial.suggest_float('lambda_l2', 0, 3),
+        'random_state': StrikeoutModelConfig.RANDOM_STATE
+    }
+    
+    # Create model
+    model = lgb.LGBMRegressor(**params)
+    
+    # Calculate CV score with emphasis on 1-strikeout precision
+    score, betting_metrics = custom_cv_score(model, X, y, scorer=primary_metric)
+    
+    # Log progress with focus on 1-strikeout precision
+    logger.info(f"Trial {trial.number}: {primary_metric}={score:.4f}, "
+                f"Within 1 K: {betting_metrics['within_1_strikeout']:.2f}%, "
+                f"Within 2 K: {betting_metrics['within_2_strikeouts']:.2f}%, "
+                f"Over/Under: {betting_metrics['over_under_accuracy']:.2f}%")
+    
+    # Store additional metrics in trial user attributes for later analysis
+    trial.set_user_attr('betting_metrics', betting_metrics)
+    trial.set_user_attr('model_type', 'lightgbm')
+    
+    return score
 
 def main():
     """Main function"""

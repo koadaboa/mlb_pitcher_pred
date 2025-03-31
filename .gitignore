@@ -9,3 +9,4 @@ mlb_pred.egg-info/
 !src/
 models/
 !src/models/
+logs/

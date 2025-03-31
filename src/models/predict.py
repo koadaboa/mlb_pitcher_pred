@@ -55,7 +55,11 @@ def predict_strikeouts(model_dict, pitcher_data):
     X = pitcher_data[features]
     
     # Scale features
-    X_scaled = scaler.transform(X)
+    X_scaled = pd.DataFrame(
+    scaler.transform(X),
+    columns=X.columns,
+    index=X.index
+)
     
     # Make predictions
     predictions = model.predict(X_scaled)

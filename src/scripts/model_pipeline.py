@@ -17,11 +17,11 @@ from src.scripts.optimize_models import optimize_model
 from src.scripts.model_comparison import run_comparison
 from config import StrikeoutModelConfig
 
-logger = setup_logger(__name__)
+logger = setup_logger(__name__, log_file = "C:\\Users\\kekoa\\Documents\\DataScience\\mlb_pred\\logs\\model_pipeline.log")
 
 def run_pipeline(command, **kwargs):
     """
-    Run the model pipeline with the specified command
+    Run the model pipeline with the specified command - updated for LightGBM focus
     
     Args:
         command (str): Command to execute (train, optimize, evaluate, all)
@@ -33,31 +33,59 @@ def run_pipeline(command, **kwargs):
     # Create necessary directories
     ensure_dir("models")
     
+    # Extract feature selection method if provided
+    feature_selection_method = kwargs.pop('feature_selection', 'rfecv')
+    
     # Execute the appropriate command
     if command == 'train':
-        return _train_model(**kwargs)
+        # Force model_types to just lightgbm
+        kwargs['model_types'] = ['lightgbm']
+        kwargs['feature_selection'] = feature_selection_method
+        return _train_models(**kwargs)
+    
     elif command == 'optimize':
-        return _optimize_model(**kwargs)
+        # Force model_type to lightgbm
+        kwargs['model_type'] = 'lightgbm'
+        return _optimize_models(**kwargs)
+    
     elif command == 'evaluate':
-        return _evaluate_model(**kwargs)
+        evaluate_kwargs = {}
+        if 'models_dir' in kwargs:
+            evaluate_kwargs['models_dir'] = kwargs['models_dir']
+        if 'output_dir' in kwargs:
+            evaluate_kwargs['output_dir'] = kwargs['output_dir']
+            
+        return _evaluate_model(**evaluate_kwargs)
+    
     elif command == 'all':
-        # Train model first
-        train_kwargs = {k: v for k, v in kwargs.items() if k in 
-                      ['train_years', 'test_years', 'tune_hyperparameters']}
-        model_result = _train_model(**train_kwargs)
+        # Train LightGBM model
+        train_kwargs = {
+            'model_types': ['lightgbm'],
+            'feature_selection': feature_selection_method,
+            **{k: v for k, v in kwargs.items() if k in 
+               ['train_years', 'test_years', 'tune_hyperparameters']}
+        }
+        models_result = _train_models(**train_kwargs)
         
-        # Then optimize it
-        optimize_kwargs = {k: v for k, v in kwargs.items() if k in 
-                         ['train_years', 'n_trials', 'metric']}
-        optimize_result = _optimize_model(**optimize_kwargs)
+        # Optimize LightGBM model
+        optimize_kwargs = {
+            'model_type': 'lightgbm',
+            **{k: v for k, v in kwargs.items() if k in 
+               ['train_years', 'n_trials', 'metric']}
+        }
+        optimize_result = _optimize_models(**optimize_kwargs)
         
-        # Finally evaluate everything
-        evaluate_kwargs = {k: v for k, v in kwargs.items() if k in 
-                         ['models_dir', 'output_dir']}
+        # Evaluate model
+        evaluate_kwargs = {}
+        if 'models_dir' in kwargs:
+            evaluate_kwargs['models_dir'] = kwargs['models_dir']
+        if 'output_dir' in kwargs:
+            evaluate_kwargs['output_dir'] = kwargs['output_dir']
+            
         eval_result = _evaluate_model(**evaluate_kwargs)
         
         return {
-            'training': model_result,
+            'training': models_result,
             'optimization': optimize_result,
             'evaluation': eval_result
         }
@@ -65,19 +93,23 @@ def run_pipeline(command, **kwargs):
         logger.error(f"Unknown command: {command}")
         return None
 
-def _train_model(train_years=None, test_years=None, tune_hyperparameters=True):
+def _train_models(model_types=None, train_years=None, test_years=None, tune_hyperparameters=True, feature_selection='rfecv'):
     """
-    Train a LightGBM model for strikeout prediction
+    Train model with LightGBM focus
     
     Args:
+        model_types (list): Model types to train (will be forced to LightGBM)
         train_years (tuple): Years to use for training
         test_years (tuple): Years to use for testing
         tune_hyperparameters (bool): Whether to tune hyperparameters
+        feature_selection (str): Feature selection method
         
     Returns:
-        dict: Dictionary of trained model
+        dict: Dictionary of trained models
     """
-    # Set defaults
+    # Force to LightGBM only
+    model_types = ['lightgbm']
+        
     if train_years is None:
         train_years = StrikeoutModelConfig.DEFAULT_TRAIN_YEARS
         
@@ -92,42 +124,110 @@ def _train_model(train_years=None, test_years=None, tune_hyperparameters=True):
     logger.info("Loading pitcher data...")
     pitcher_data = get_pitcher_data()
     
-    # Select features for strikeout model
-    logger.info("Selecting features for strikeout model...")
-    so_features = select_features_for_strikeout_model(pitcher_data)
-    logger.info(f"Selected {len(so_features)} features for strikeout model")
+    # Select features using the specified method
+    logger.info(f"Selecting features using {feature_selection} method...")
+    from src.features.selection import select_features_for_model
+    so_features = select_features_for_model(pitcher_data, method=feature_selection)
+    logger.info(f"Selected {len(so_features)} features")
     
     # Train LightGBM model
+    models = {}
     logger.info("Training LightGBM strikeout prediction model...")
+    
     model_dict = train_strikeout_model(
         pitcher_data,
         so_features,
         train_years=train_years,
         test_years=test_years,
+        model_type='lightgbm',
         tune_hyperparameters=tune_hyperparameters
     )
     
     if model_dict is not None:
-        # Save model
+        # Save model to both lightgbm-specific and standard paths
         model_path = models_dir / "strikeout_lightgbm_model.pkl"
         save_model(model_dict, model_path)
         
-        # Also save a copy as the standard model
         standard_path = models_dir / "strikeout_model.pkl"
         save_model(model_dict, standard_path)
         
+        models['lightgbm'] = model_dict
         logger.info(f"Successfully trained and saved LightGBM model")
         
-        return {'lightgbm': model_dict}
-    else:
-        logger.error("Failed to train LightGBM model")
-        return None
+        # Log performance metrics
+        metrics = model_dict.get('metrics', {})
+        logger.info(f"LightGBM model performance:")
+        logger.info(f"  RMSE: {metrics.get('rmse', 'N/A'):.4f}")
+        logger.info(f"  MAE: {metrics.get('mae', 'N/A'):.4f}")
+        logger.info(f"  Within 1 Strikeout: {metrics.get('within_1_strikeout', 'N/A'):.2f}%")
+        logger.info(f"  Within 2 Strikeouts: {metrics.get('within_2_strikeouts', 'N/A'):.2f}%")
 
-def _optimize_model(train_years=None, n_trials=50, metric='within_1_strikeout'):
+         # Get and log feature importance
+        if 'importance' in model_dict:
+            importance_df = model_dict['importance']
+            logger.info("\nTOP 10 FEATURES BY IMPORTANCE:")
+            for i, (feature, importance) in enumerate(zip(
+                importance_df['feature'].iloc[:10], 
+                importance_df['importance'].iloc[:10]
+            )):
+                logger.info(f"  {i+1}. {feature}: {importance:.6f}")
+        elif 'model' in model_dict and hasattr(model_dict['model'], 'feature_importances_'):
+            # If we don't have importance DataFrame but model has feature_importances_
+            model = model_dict['model']
+            features = model_dict.get('features', [])
+            
+            if features and len(features) == len(model.feature_importances_):
+                # Create list of (feature, importance) tuples
+                importances = list(zip(features, model.feature_importances_))
+                # Sort by importance (descending)
+                importances.sort(key=lambda x: x[1], reverse=True)
+                
+                logger.info("\nTOP 10 FEATURES BY IMPORTANCE:")
+                for i, (feature, importance) in enumerate(importances[:10]):
+                    logger.info(f"  {i+1}. {feature}: {importance:.6f}")
+    else:
+        logger.error(f"Failed to train LightGBM model")
+
+    # Save feature information to files
+    feature_info_dir = models_dir / "feature_info"
+    ensure_dir(feature_info_dir)
+
+    # Save selected features
+    with open(feature_info_dir / "selected_features.json", "w") as f:
+        json.dump({
+            "selected_features": so_features,
+            "feature_count": len(so_features),
+            "selection_method": feature_selection,
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }, f, indent=4)
+
+    # Save feature importance if available
+    if 'importance' in model_dict:
+        importance_dict = {
+            feature: float(importance) 
+            for feature, importance in zip(
+                model_dict['importance']['feature'], 
+                model_dict['importance']['importance']
+            )
+        }
+        
+        with open(feature_info_dir / "feature_importance.json", "w") as f:
+            json.dump({
+                "feature_importance": importance_dict,
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }, f, indent=4)
+
+    logger.info(f"Feature information saved to {feature_info_dir}")
+    
+    logger.info("Model training complete")
+    return models
+
+def _optimize_models(model_type='lightgbm', train_years=None, n_trials=100, metric='within_1_strikeout'):
     """
     Optimize LightGBM model using Bayesian optimization
     
     Args:
+        model_type (str): Model type (forced to lightgbm)
         train_years (tuple): Years to use for training
         n_trials (int): Number of optimization trials
         metric (str): Metric to optimize
@@ -135,6 +235,9 @@ def _optimize_model(train_years=None, n_trials=50, metric='within_1_strikeout'):
     Returns:
         dict: Optimization results
     """
+    # Force model_type to lightgbm
+    model_type = 'lightgbm'
+    
     # Set defaults
     if train_years is None:
         train_years = StrikeoutModelConfig.DEFAULT_TRAIN_YEARS
@@ -145,6 +248,7 @@ def _optimize_model(train_years=None, n_trials=50, metric='within_1_strikeout'):
     try:
         # Run optimization
         study, best_model, output_dir = optimize_model(
+            model_type=model_type,
             train_years=train_years,
             n_trials=n_trials,
             primary_metric=metric
@@ -158,8 +262,8 @@ def _optimize_model(train_years=None, n_trials=50, metric='within_1_strikeout'):
             'output_dir': str(output_dir)
         }
         
-        logger.info(f"Optimization for LightGBM completed. Results saved to {output_dir}")
-        return {'lightgbm': results}
+        logger.info(f"Optimization completed. Results saved to {output_dir}")
+        return results
         
     except Exception as e:
         logger.error(f"Error optimizing LightGBM: {e}")
@@ -224,7 +328,7 @@ def _evaluate_model(models_dir=None, output_dir=None):
 
 def main():
     """Main function for command-line execution"""
-    parser = argparse.ArgumentParser(description='MLB model pipeline for strikeout prediction')
+    parser = argparse.ArgumentParser(description='MLB model pipeline for strikeout prediction - LightGBM focus')
     
     # Main command argument
     parser.add_argument('command', choices=['train', 'optimize', 'evaluate', 'all'],
@@ -235,8 +339,13 @@ def main():
                        help='Years to use for training')
     parser.add_argument('--test-years', type=int, nargs='+',
                        help='Years to use for testing')
-    parser.add_argument('--tune-hyperparameters', action='store_true',
-                       help='Whether to tune hyperparameters')
+    parser.add_argument('--tune-hyperparameters', action='store_true', default=True,
+                       help='Whether to tune hyperparameters (default: True)')
+    parser.add_argument('--no-tune', dest='tune_hyperparameters', action='store_false',
+                       help='Skip hyperparameter tuning')
+    parser.add_argument('--feature-selection', type=str, 
+                       choices=['manual', 'rfecv', 'both'], default='rfecv',
+                       help='Feature selection method')
     
     # Optimization arguments
     parser.add_argument('--n-trials', type=int, default=100,
@@ -244,15 +353,21 @@ def main():
     parser.add_argument('--metric', type=str, 
                        choices=['within_1_strikeout', 'within_2_strikeouts', 
                               'over_under_accuracy', 'neg_mean_squared_error'],
+                       default='within_1_strikeout',
                        help='Metric to optimize')
     
     # Evaluation arguments
-    parser.add_argument('--models-dir', type=str,
+    parser.add_argument('--models-dir', type=str, default='models',
                        help='Directory containing model files')
     parser.add_argument('--output-dir', type=str,
                        help='Directory to save results')
     
     args = parser.parse_args()
+    
+    # Print mode information
+    logger.info("Running in LightGBM-focused mode")
+    logger.info(f"Feature selection method: {args.feature_selection}")
+    logger.info(f"Hyperparameter tuning: {'Enabled' if args.tune_hyperparameters else 'Disabled'}")
     
     # Save command separately before converting to dict
     command = args.command 
@@ -261,10 +376,7 @@ def main():
     kwargs = vars(args)
     del kwargs['command']
     
-    # Filter out None values
-    kwargs = {k: v for k, v in kwargs.items() if v is not None}
-    
-    # Run pipeline (use the saved command)
+    # Run pipeline
     result = run_pipeline(command, **kwargs)
     
     if result is not None:
