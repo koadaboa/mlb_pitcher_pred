@@ -9,11 +9,9 @@ from pathlib import Path
 import argparse
 import time
 from datetime import datetime
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.model_selection import KFold, cross_val_score, cross_validate
+from sklearn.model_selection import KFold
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from sklearn.preprocessing import StandardScaler
-import xgboost as xgb
 import lightgbm as lgb
 
 from src.data.db import get_pitcher_data
@@ -85,73 +83,6 @@ def custom_cv_score(model, X, y, n_splits=5, random_state=StrikeoutModelConfig.R
     
     return np.mean(scores), betting_metrics
 
-def rf_objective(trial, X, y, primary_metric):
-    """Optuna objective for RandomForest"""
-    
-    # Define hyperparameters to optimize
-    params = {
-        'n_estimators': trial.suggest_int('n_estimators', 50, 500),
-        'max_depth': trial.suggest_int('max_depth', 5, 30),
-        'min_samples_split': trial.suggest_int('min_samples_split', 2, 20),
-        'min_samples_leaf': trial.suggest_int('min_samples_leaf', 1, 10),
-        'max_features': trial.suggest_categorical('max_features', ['sqrt', 'log2', None]),
-        'bootstrap': trial.suggest_categorical('bootstrap', [True, False]),
-        'random_state': StrikeoutModelConfig.RANDOM_STATE
-    }
-    
-    # Create model
-    model = RandomForestRegressor(**params)
-    
-    # Calculate CV score
-    score, betting_metrics = custom_cv_score(model, X, y, scorer=primary_metric)
-    
-    # Log progress
-    logger.info(f"Trial {trial.number}: {primary_metric}={score:.4f}, "
-                f"Within 2 K: {betting_metrics['within_2_strikeouts']:.2f}%, "
-                f"Over/Under: {betting_metrics['over_under_accuracy']:.2f}%, "
-                f"Params: {params}")
-    
-    # Store additional metrics in trial user attributes for later analysis
-    trial.set_user_attr('betting_metrics', betting_metrics)
-    trial.set_user_attr('model_type', 'rf')
-    
-    return score
-
-def xgb_objective(trial, X, y, primary_metric):
-    """Optuna objective for XGBoost"""
-    
-    # Define hyperparameters to optimize
-    params = {
-        'n_estimators': trial.suggest_int('n_estimators', 50, 500),
-        'max_depth': trial.suggest_int('max_depth', 3, 12),
-        'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.3, log=True),
-        'subsample': trial.suggest_float('subsample', 0.5, 1.0),
-        'colsample_bytree': trial.suggest_float('colsample_bytree', 0.5, 1.0),
-        'min_child_weight': trial.suggest_int('min_child_weight', 1, 10),
-        'gamma': trial.suggest_float('gamma', 0, 5),
-        'reg_alpha': trial.suggest_float('reg_alpha', 0, 5),
-        'reg_lambda': trial.suggest_float('reg_lambda', 0, 5),
-        'random_state': StrikeoutModelConfig.RANDOM_STATE
-    }
-    
-    # Create model
-    model = xgb.XGBRegressor(**params)
-    
-    # Calculate CV score
-    score, betting_metrics = custom_cv_score(model, X, y, scorer=primary_metric)
-    
-    # Log progress
-    logger.info(f"Trial {trial.number}: {primary_metric}={score:.4f}, "
-                f"Within 2 K: {betting_metrics['within_2_strikeouts']:.2f}%, "
-                f"Over/Under: {betting_metrics['over_under_accuracy']:.2f}%, "
-                f"Params: {params}")
-    
-    # Store additional metrics in trial user attributes for later analysis
-    trial.set_user_attr('betting_metrics', betting_metrics)
-    trial.set_user_attr('model_type', 'xgboost')
-    
-    return score
-
 def lgb_objective(trial, X, y, primary_metric):
     """Optuna objective for LightGBM"""
     
@@ -215,25 +146,25 @@ def visualize_optimization_results(study, output_dir):
     # 1. Optimization history plot
     plt.figure(figsize=(10, 6))
     optuna.visualization.matplotlib.plot_optimization_history(study)
-    plt.title(f'Optimization History for {model_type.upper()}')
+    plt.title('Optimization History for LightGBM')
     plt.tight_layout()
-    plt.savefig(output_dir / f"{model_type}_optimization_history.png")
+    plt.savefig(output_dir / "lightgbm_optimization_history.png")
     plt.close()
     
     # 2. Parameter importances
     plt.figure(figsize=(10, 6))
     optuna.visualization.matplotlib.plot_param_importances(study)
-    plt.title(f'Parameter Importances for {model_type.upper()}')
+    plt.title('Parameter Importances for LightGBM')
     plt.tight_layout()
-    plt.savefig(output_dir / f"{model_type}_param_importances.png")
+    plt.savefig(output_dir / "lightgbm_param_importances.png")
     plt.close()
     
     # 3. Parallel coordinate plot
     plt.figure(figsize=(12, 8))
     optuna.visualization.matplotlib.plot_parallel_coordinate(study)
-    plt.title(f'Parallel Coordinate Plot for {model_type.upper()}')
+    plt.title('Parallel Coordinate Plot for LightGBM')
     plt.tight_layout()
-    plt.savefig(output_dir / f"{model_type}_parallel_coordinate.png")
+    plt.savefig(output_dir / "lightgbm_parallel_coordinate.png")
     plt.close()
     
     # 4. Additional metrics progression
@@ -251,13 +182,13 @@ def visualize_optimization_results(study, output_dir):
     plt.title('Over/Under Accuracy Progression')
     
     plt.tight_layout()
-    plt.savefig(output_dir / f"{model_type}_betting_metrics.png")
+    plt.savefig(output_dir / "lightgbm_betting_metrics.png")
     plt.close()
     
     # 5. Save trials dataframe
-    trials_df.to_csv(output_dir / f"{model_type}_trials.csv", index=False)
+    trials_df.to_csv(output_dir / "lightgbm_trials.csv", index=False)
 
-def save_best_model(study, X, y, model_type, output_dir):
+def save_best_model(study, X, y, output_dir):
     """
     Train and save the best model
     
@@ -265,21 +196,13 @@ def save_best_model(study, X, y, model_type, output_dir):
         study (optuna.Study): Completed Optuna study
         X (pandas.DataFrame): Features
         y (pandas.Series): Target
-        model_type (str): Model type ('rf', 'xgboost', or 'lightgbm')
         output_dir (Path): Directory to save model
     """
     # Get best parameters
     best_params = study.best_params
     
     # Create model with best parameters
-    if model_type == 'rf':
-        model = RandomForestRegressor(**best_params, random_state=StrikeoutModelConfig.RANDOM_STATE)
-    elif model_type == 'xgboost':
-        model = xgb.XGBRegressor(**best_params, random_state=StrikeoutModelConfig.RANDOM_STATE)
-    elif model_type == 'lightgbm':
-        model = lgb.LGBMRegressor(**best_params, random_state=StrikeoutModelConfig.RANDOM_STATE)
-    else:
-        raise ValueError(f"Unknown model type: {model_type}")
+    model = lgb.LGBMRegressor(**best_params, random_state=StrikeoutModelConfig.RANDOM_STATE)
     
     # Train model on full dataset
     model.fit(X, y)
@@ -287,7 +210,7 @@ def save_best_model(study, X, y, model_type, output_dir):
     # Create model dictionary
     model_dict = {
         'model': model,
-        'model_type': model_type,
+        'model_type': 'lightgbm',
         'params': best_params,
         'best_value': study.best_value,
         'features': X.columns.tolist(),
@@ -297,21 +220,20 @@ def save_best_model(study, X, y, model_type, output_dir):
     
     # Save model
     output_dir.mkdir(exist_ok=True, parents=True)
-    model_path = output_dir / f"optimized_{model_type}_model.pkl"
+    model_path = output_dir / "optimized_lightgbm_model.pkl"
     with open(model_path, 'wb') as f:
         pickle.dump(model_dict, f)
     
-    logger.info(f"Best {model_type} model saved to {model_path}")
+    logger.info(f"Best LightGBM model saved to {model_path}")
     
     # Return the best model
     return model_dict
 
-def optimize_model(model_type, train_years, features=None, n_trials=100, primary_metric='within_1_strikeout'):
+def optimize_model(train_years, features=None, n_trials=100, primary_metric='within_1_strikeout'):
     """
-    Optimize a model using Optuna
+    Optimize a LightGBM model using Optuna
     
     Args:
-        model_type (str): Model type ('rf', 'xgboost', or 'lightgbm')
         train_years (list): Years to use for training
         features (list, optional): Features to use. If None, will be selected automatically.
         n_trials (int): Number of Optuna trials
@@ -322,7 +244,7 @@ def optimize_model(model_type, train_years, features=None, n_trials=100, primary
     """
     # Set up output directory
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = Path(f"models/optimization/{model_type}_{timestamp}")
+    output_dir = Path(f"models/optimization/lightgbm_{timestamp}")
     output_dir.mkdir(exist_ok=True, parents=True)
     
     # Get data
@@ -347,7 +269,7 @@ def optimize_model(model_type, train_years, features=None, n_trials=100, primary
     y = train_df['strikeouts'].copy()
     
     # Create study
-    study_name = f"{model_type}_optimization_{timestamp}"
+    study_name = f"lightgbm_optimization_{timestamp}"
     storage_url = f"sqlite:///{output_dir}/optimization.db"
     
     # Set direction based on metric (higher is better or lower is better)
@@ -366,18 +288,11 @@ def optimize_model(model_type, train_years, features=None, n_trials=100, primary
     # Store optimization metric in study user attributes
     study.set_user_attr('optimization_metric', primary_metric)
     
-    # Select objective function based on model type
-    if model_type == 'rf':
-        objective = lambda trial: rf_objective(trial, X, y, primary_metric)
-    elif model_type == 'xgboost':
-        objective = lambda trial: xgb_objective(trial, X, y, primary_metric)
-    elif model_type == 'lightgbm':
-        objective = lambda trial: lgb_objective(trial, X, y, primary_metric)
-    else:
-        raise ValueError(f"Unknown model type: {model_type}")
+    # Set objective function
+    objective = lambda trial: lgb_objective(trial, X, y, primary_metric)
     
     # Run optimization
-    logger.info(f"Starting {model_type} optimization with {n_trials} trials...")
+    logger.info(f"Starting LightGBM optimization with {n_trials} trials...")
     logger.info(f"Optimizing for {primary_metric} ({direction})")
     
     start_time = time.time()
@@ -393,15 +308,13 @@ def optimize_model(model_type, train_years, features=None, n_trials=100, primary
     visualize_optimization_results(study, output_dir)
     
     # Save best model
-    best_model = save_best_model(study, X, y, model_type, output_dir)
+    best_model = save_best_model(study, X, y, output_dir)
     
     return study, best_model, output_dir
 
 def main():
     """Main function"""
-    parser = argparse.ArgumentParser(description='Optimize ML models for pitcher strikeout prediction')
-    parser.add_argument('--model', type=str, required=True, choices=['rf', 'xgboost', 'lightgbm', 'all'],
-                        help='Model type to optimize')
+    parser = argparse.ArgumentParser(description='Optimize LightGBM model for pitcher strikeout prediction')
     parser.add_argument('--years', type=int, nargs='+', default=[2019, 2021, 2022],
                         help='Training years to use')
     parser.add_argument('--trials', type=int, default=100,
@@ -409,30 +322,26 @@ def main():
     parser.add_argument('--metric', type=str, 
                         choices=['neg_mean_squared_error', 'neg_mean_absolute_error', 
                                 'r2', 'within_1_strikeout', 'within_2_strikeouts', 'over_under_accuracy'],
-                        default='within_2_strikeouts',
+                        default='within_1_strikeout',
                         help='Primary metric to optimize')
     
     args = parser.parse_args()
     
-    # Run optimization for selected model(s)
-    if args.model == 'all':
-        models = ['rf', 'xgboost', 'lightgbm']
-    else:
-        models = [args.model]
-    
-    for model_type in models:
-        try:
-            study, best_model, output_dir = optimize_model(
-                model_type=model_type,
-                train_years=args.years,
-                n_trials=args.trials,
-                primary_metric=args.metric
-            )
-            logger.info(f"Optimization for {model_type} completed. Results saved to {output_dir}")
-        except Exception as e:
-            logger.error(f"Error optimizing {model_type}: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
+    try:
+        # Run optimization
+        logger.info(f"Optimizing LightGBM model...")
+        study, best_model, output_dir = optimize_model(
+            train_years=args.years,
+            n_trials=args.trials,
+            primary_metric=args.metric
+        )
+        
+        logger.info(f"Optimization for LightGBM completed. Results saved to {output_dir}")
+        
+    except Exception as e:
+        logger.error(f"Error optimizing LightGBM: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
 
 if __name__ == "__main__":
     main()
