@@ -218,26 +218,22 @@ def create_ensemble(models, ensemble_type='weighted', weighting_method='betting_
         dict: Ensemble model dictionary
     """
     if ensemble_type == 'weighted':
-        # Create a function-based ensemble
+        # Explicitly calculate weights rather than leaving them as None
+        X_sample = np.random.rand(10, len(models[0]['features']))
+        dummy_target = np.random.rand(10)
+        
+        # Calculate weights using the specified method
+        weights = get_ensemble_weights(models, X_sample, dummy_target, weighting_method)
+        
+        # Create a function-based ensemble with pre-calculated weights
         ensemble_dict = {
             'model_type': 'weighted_ensemble',
             'base_models': models,
             'weighting_method': weighting_method,
-            # Weights will be calculated during evaluation
-            'weights': None
+            'weights': weights
         }
-        return ensemble_dict
-    
-    elif ensemble_type == 'stacking':
-        # Create a stacking ensemble
-        stacking = StackingEnsemble(models)
         
-        ensemble_dict = {
-            'model_type': 'stacking_ensemble',
-            'model': stacking,
-            'base_models': models,
-            'meta_model': stacking.meta_model
-        }
+        logger.info(f"Created weighted ensemble with weights: {weights}")
         return ensemble_dict
     
     else:

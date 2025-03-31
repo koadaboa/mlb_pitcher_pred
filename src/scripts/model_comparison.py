@@ -11,6 +11,7 @@ from src.data.db import get_pitcher_data
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from src.models.train import calculate_betting_metrics
 from src.data.utils import setup_logger
+from src.scripts.create_ensemble import get_ensemble_weights
 from config import StrikeoutModelConfig
 
 logger = setup_logger(__name__)
@@ -197,19 +198,61 @@ def run_comparison(models_dir=None, output_dir=None):
             X_test = test_df[features].copy()
             y_test = test_df['strikeouts'].copy()
             
-            # Make predictions based on model type
             if 'base_models' in model_dict and 'weights' in model_dict:
                 # For weighted ensemble
                 weights = model_dict['weights']
                 base_models = model_dict['base_models']
                 predictions = np.zeros(len(X_test))
                 
+                # Debug logging
+                logger.info(f"Ensemble evaluation - Base models: {len(base_models)}")
+                
+                # Handle None weights
+                if weights is None:
+                    logger.warning(f"Weights are None for model {model_name} - using equal weights")
+                    # Create equal weights for all base models
+                    weights = {model['model_type']: 1.0/len(base_models) for model in base_models}
+                    # Update the model dict with these weights
+                    model_dict['weights'] = weights
+                
+                # Debug logging
+                logger.info(f"Using weights: {weights}")
+                
+                weight_sum = 0.0
+                prediction_count = 0
+                
+                # Make predictions with base models
                 for base_model in base_models:
-                    base_type = base_model.get('model_type', '')
-                    weight = weights.get(base_type, 1.0 / len(base_models))
-                    model = base_model['model']
-                    pred = model.predict(X_test)
-                    predictions += weight * pred
+                    try:
+                        base_type = base_model.get('model_type', '')
+                        logger.info(f"Processing base model: {base_type}")
+                        
+                        if not base_type:
+                            logger.warning("Base model type is empty - skipping")
+                            continue
+                            
+                        weight = weights.get(base_type, 1.0 / len(base_models))
+                        weight_sum += weight
+                        
+                        if 'model' not in base_model:
+                            logger.warning(f"No model found in base model {base_type}")
+                            continue
+                            
+                        model = base_model['model']
+                        pred = model.predict(X_test)
+                        predictions += weight * pred
+                        prediction_count += 1
+                        
+                        logger.info(f"Added prediction from {base_type} with weight {weight:.4f}")
+                        
+                    except Exception as e:
+                        logger.error(f"Error making prediction with base model {base_type}: {e}")
+                        continue
+                
+                # Normalize weights if they don't sum to 1 and we have predictions
+                if prediction_count > 0 and abs(weight_sum - 1.0) > 0.01:
+                    logger.warning(f"Weights sum to {weight_sum:.4f}, normalizing predictions")
+                    predictions = predictions / weight_sum
                 
                 y_pred = predictions
                 
