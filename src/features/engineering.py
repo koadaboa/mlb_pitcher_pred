@@ -5,7 +5,7 @@ import datetime
 import sqlite3
 from pathlib import Path
 import pybaseball
-from src.data.db import get_db_connection, get_pitcher_data
+from src.data.db import get_pitcher_data, DBConnection
 from config import StrikeoutModelConfig
 from src.data.utils import setup_logger
 
@@ -19,159 +19,153 @@ def create_prediction_features(force_refresh=False):
         force_refresh (bool): Whether to force refresh existing features
     """
     # Check if we need to refresh the data
-    conn = get_db_connection()
-    cursor = conn.cursor()
+    with DBConnection() as conn:
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT COUNT(*) FROM prediction_features")
+        count = cursor.fetchone()[0]
     
-    cursor.execute("SELECT COUNT(*) FROM prediction_features")
-    count = cursor.fetchone()[0]
-    conn.close()
-    
-    if count > 0 and not force_refresh:
-        logger.info("Prediction features table already populated and force_refresh is False. Skipping.")
-        return
-    
-    logger.info("Creating prediction features...")
-    
-    # Get the data from database
-    df = get_pitcher_data()
-    
-    if df.empty:
-        logger.warning("No data available for feature engineering.")
-        return
-    
-    # Apply enhanced feature engineering
-    enhanced_df = create_enhanced_features(df)
-    
-    # Connect to database
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    # Check for existing columns
-    cursor.execute("PRAGMA table_info(prediction_features)")
-    existing_columns = [row[1] for row in cursor.fetchall()]
-    
-    # Find opponent-specific columns we need to add
-    opponent_columns = [col for col in enhanced_df.columns if col.startswith('so_vs_')]
-    new_opponent_columns = [col for col in opponent_columns if col not in existing_columns]
-    
-    # Add any new opponent-specific columns
-    for col in new_opponent_columns:
-        try:
-            cursor.execute(f"ALTER TABLE prediction_features ADD COLUMN {col} REAL")
-            logger.info(f"Added opponent-specific column {col} to prediction_features table")
-        except sqlite3.OperationalError as e:
-            logger.warning(f"Could not add column {col}: {e}")
-    
-    # Clear existing features if force_refresh
-    if force_refresh:
-        cursor.execute("DELETE FROM prediction_features")
-        conn.commit()
-    
-    # Insert into database
-    features_inserted = 0
-    
-    for _, row in enhanced_df.iterrows():
-        try:
-            # Check if this game already has features
-            cursor.execute(
-                "SELECT id FROM prediction_features WHERE pitcher_id = ? AND game_id = ?",
-                (row['pitcher_id'], row['game_id'])
-            )
-            existing = cursor.fetchone()
-            
-            # Get all available columns excluding database system columns
-            feature_cols = [col for col in row.index if col in existing_columns]
-            
-            # Convert values to SQLite-compatible types
-            feature_vals = []
-            for col in feature_cols:
-                val = row.get(col)
+        if count > 0 and not force_refresh:
+            logger.info("Prediction features table already populated and force_refresh is False. Skipping.")
+            return
+        
+        logger.info("Creating prediction features...")
+        
+        # Get the data from database
+        df = get_pitcher_data()
+        
+        if df.empty:
+            logger.warning("No data available for feature engineering.")
+            return
+        
+        # Apply enhanced feature engineering
+        enhanced_df = create_enhanced_features(df)
+        
+        # Check for existing columns
+        cursor.execute("PRAGMA table_info(prediction_features)")
+        existing_columns = [row[1] for row in cursor.fetchall()]
+        
+        # Find opponent-specific columns we need to add
+        opponent_columns = [col for col in enhanced_df.columns if col.startswith('so_vs_')]
+        new_opponent_columns = [col for col in opponent_columns if col not in existing_columns]
+        
+        # Add any new opponent-specific columns
+        for col in new_opponent_columns:
+            try:
+                cursor.execute(f"ALTER TABLE prediction_features ADD COLUMN {col} REAL")
+                logger.info(f"Added opponent-specific column {col} to prediction_features table")
+            except sqlite3.OperationalError as e:
+                logger.warning(f"Could not add column {col}: {e}")
+        
+        # Clear existing features if force_refresh
+        if force_refresh:
+            cursor.execute("DELETE FROM prediction_features")
+            conn.commit()
+        
+        # Insert into database
+        features_inserted = 0
+        
+        for _, row in enhanced_df.iterrows():
+            try:
+                # Check if this game already has features
+                cursor.execute(
+                    "SELECT id FROM prediction_features WHERE pitcher_id = ? AND game_id = ?",
+                    (row['pitcher_id'], row['game_id'])
+                )
+                existing = cursor.fetchone()
                 
-                # Convert pandas Timestamp to string
-                if isinstance(val, pd.Timestamp):
-                    val = val.strftime('%Y-%m-%d')
-                # Convert numpy types to Python types
-                elif isinstance(val, np.integer):
-                    val = int(val)
-                elif isinstance(val, np.floating):
-                    val = float(val)
-                elif isinstance(val, np.bool_):
-                    val = bool(val)
-                elif val is None or pd.isna(val):
-                    val = None
+                # Get all available columns excluding database system columns
+                feature_cols = [col for col in row.index if col in existing_columns]
                 
-                feature_vals.append(val)
-            
-            # Skip if no features to update
-            if not feature_cols:
-                continue
-            
-            # Handle game_date properly
-            game_date = row.get('game_date')
-            if isinstance(game_date, (pd.Timestamp, datetime.datetime)):
-                game_date_str = game_date.strftime('%Y-%m-%d')
-            else:
-                # If not a datetime, convert to string directly
-                game_date_str = str(game_date)
-            
-            if existing:
-                # Update existing record
-                set_clause = ", ".join([f"{col} = ?" for col in feature_cols])
-                sql = f"UPDATE prediction_features SET {set_clause} WHERE id = ?"
-                cursor.execute(sql, feature_vals + [existing[0]])
-            else:
-                # Insert new record
-                columns = ["pitcher_id", "game_id", "game_date", "season"] + feature_cols
-                placeholders = ", ".join(["?"] * len(columns))
-                
-                # Convert core values to proper types
-                pitcher_id = int(row['pitcher_id']) if not pd.isna(row['pitcher_id']) else None
-                game_id = str(row['game_id']) if not pd.isna(row['game_id']) else None
-                season = int(row['season']) if not pd.isna(row['season']) else None
-                
-                values = [
-                    pitcher_id,
-                    game_id,
-                    game_date_str,
-                    season
-                ] + feature_vals
-                
-                sql = f"INSERT INTO prediction_features ({', '.join(columns)}) VALUES ({placeholders})"
-                cursor.execute(sql, values)
-            
-            # Handle pitch mix features in a separate table
-            prev_pitch_mix_cols = [col for col in row.index if col.startswith('prev_game_pitch_pct_')]
-            if prev_pitch_mix_cols:
-                # Create or update pitch mix features
-                feature_id = existing[0] if existing else cursor.lastrowid
-                
-                # Delete existing pitch mix features for this prediction feature
-                cursor.execute("DELETE FROM pitch_mix_features WHERE prediction_feature_id = ?", (feature_id,))
-                
-                # Insert new pitch mix features
-                for col in prev_pitch_mix_cols:
-                    pitch_type = col.replace('prev_game_pitch_pct_', '')
-                    percentage = float(row[col]) if not pd.isna(row[col]) else 0.0
+                # Convert values to SQLite-compatible types
+                feature_vals = []
+                for col in feature_cols:
+                    val = row.get(col)
                     
-                    if percentage > 0:
-                        cursor.execute(
-                            "INSERT INTO pitch_mix_features (prediction_feature_id, pitch_type, percentage) VALUES (?, ?, ?)",
-                            (feature_id, pitch_type, percentage)
-                        )
-            
-            features_inserted += 1
-            
-            # Commit periodically to avoid large transactions
-            if features_inserted % 1000 == 0:
-                conn.commit()
-                logger.info(f"Processed {features_inserted} features so far...")
+                    # Convert pandas Timestamp to string
+                    if isinstance(val, pd.Timestamp):
+                        val = val.strftime('%Y-%m-%d')
+                    # Convert numpy types to Python types
+                    elif isinstance(val, np.integer):
+                        val = int(val)
+                    elif isinstance(val, np.floating):
+                        val = float(val)
+                    elif isinstance(val, np.bool_):
+                        val = bool(val)
+                    elif val is None or pd.isna(val):
+                        val = None
+                    
+                    feature_vals.append(val)
                 
-        except Exception as e:
-            logger.error(f"Error inserting features for game {row.get('game_id', 0)}: {e}")
-            continue
-    
-    conn.commit()
-    conn.close()
+                # Skip if no features to update
+                if not feature_cols:
+                    continue
+                
+                # Handle game_date properly
+                game_date = row.get('game_date')
+                if isinstance(game_date, (pd.Timestamp, datetime.datetime)):
+                    game_date_str = game_date.strftime('%Y-%m-%d')
+                else:
+                    # If not a datetime, convert to string directly
+                    game_date_str = str(game_date)
+                
+                if existing:
+                    # Update existing record
+                    set_clause = ", ".join([f"{col} = ?" for col in feature_cols])
+                    sql = f"UPDATE prediction_features SET {set_clause} WHERE id = ?"
+                    cursor.execute(sql, feature_vals + [existing[0]])
+                else:
+                    # Insert new record
+                    columns = ["pitcher_id", "game_id", "game_date", "season"] + feature_cols
+                    placeholders = ", ".join(["?"] * len(columns))
+                    
+                    # Convert core values to proper types
+                    pitcher_id = int(row['pitcher_id']) if not pd.isna(row['pitcher_id']) else None
+                    game_id = str(row['game_id']) if not pd.isna(row['game_id']) else None
+                    season = int(row['season']) if not pd.isna(row['season']) else None
+                    
+                    values = [
+                        pitcher_id,
+                        game_id,
+                        game_date_str,
+                        season
+                    ] + feature_vals
+                    
+                    sql = f"INSERT INTO prediction_features ({', '.join(columns)}) VALUES ({placeholders})"
+                    cursor.execute(sql, values)
+                
+                # Handle pitch mix features in a separate table
+                prev_pitch_mix_cols = [col for col in row.index if col.startswith('prev_game_pitch_pct_')]
+                if prev_pitch_mix_cols:
+                    # Create or update pitch mix features
+                    feature_id = existing[0] if existing else cursor.lastrowid
+                    
+                    # Delete existing pitch mix features for this prediction feature
+                    cursor.execute("DELETE FROM pitch_mix_features WHERE prediction_feature_id = ?", (feature_id,))
+                    
+                    # Insert new pitch mix features
+                    for col in prev_pitch_mix_cols:
+                        pitch_type = col.replace('prev_game_pitch_pct_', '')
+                        percentage = float(row[col]) if not pd.isna(row[col]) else 0.0
+                        
+                        if percentage > 0:
+                            cursor.execute(
+                                "INSERT INTO pitch_mix_features (prediction_feature_id, pitch_type, percentage) VALUES (?, ?, ?)",
+                                (feature_id, pitch_type, percentage)
+                            )
+                
+                features_inserted += 1
+                
+                # Commit periodically to avoid large transactions
+                if features_inserted % 1000 == 0:
+                    conn.commit()
+                    logger.info(f"Processed {features_inserted} features so far...")
+                    
+            except Exception as e:
+                logger.error(f"Error inserting features for game {row.get('game_id', 0)}: {e}")
+                continue
+        
+        conn.commit()
     
     logger.info(f"Stored prediction features for {features_inserted} game records.")
 

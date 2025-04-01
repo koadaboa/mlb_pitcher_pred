@@ -88,38 +88,3 @@ def get_player_id_map(statcast_ids: List[int] = None,
     except Exception as e:
         logger.error(f"Error retrieving player ID mappings: {e}")
         return pd.DataFrame()
-
-def lookup_player_by_name(last_name: str, first_name: Optional[str] = None) -> pd.DataFrame:
-    """
-    Look up a player's IDs by name
-    
-    Args:
-        last_name: Player's last name
-        first_name: Player's first name (optional)
-        
-    Returns:
-        DataFrame with player's IDs across different systems
-    """
-    try:
-        player_info = playerid_lookup(last_name, first_name)
-        
-        if not player_info.empty:
-            # Rename columns to match our database schema
-            player_info = player_info.rename(columns={
-                'key_mlbam': 'statcast_id', 
-                'key_fangraphs': 'traditional_id',
-                'name_first': 'first_name',
-                'name_last': 'last_name'
-            })
-            
-            # Add full name column
-            player_info['player_name'] = player_info['first_name'] + ' ' + player_info['last_name']
-            
-            return player_info
-        else:
-            logger.warning(f"No player found with name: {first_name} {last_name}")
-            return pd.DataFrame()
-            
-    except Exception as e:
-        logger.error(f"Error looking up player by name: {e}")
-        return pd.DataFrame()

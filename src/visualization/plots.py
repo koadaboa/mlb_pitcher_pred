@@ -212,37 +212,3 @@ def create_predictions_vs_actual_plot(y_true, y_pred, viz_dir):
     
     logger.info("Created predictions vs actual plot for strikeout model")
     return True
-
-def create_visualizations(df):
-    """
-    Create a set of visualizations for the dataset
-    
-    Args:
-        df (pandas.DataFrame): Dataset with pitcher performance data
-    """
-    logger.info("Creating visualizations...")
-    
-    # Set up visualization environment
-    viz_dir = setup_visualization_environment()
-    
-    # Create basic visualizations
-    created_count = 0
-    
-    # 1. Distribution of strikeouts per game
-    if create_strikeout_distribution_plot(df, viz_dir):
-        created_count += 1
-    
-    # 2. Correlation between metrics and strikeouts
-    if create_strikeout_correlations_plot(df, viz_dir):
-        created_count += 1
-    
-    # 3. Velocity vs Strikeouts
-    if create_velocity_strikeout_plot(df, viz_dir):
-        created_count += 1
-    
-    # 4. Pitch Mix visualization for top strikeout pitchers
-    if create_pitch_mix_visualization(df, viz_dir):
-        created_count += 1
-    
-    logger.info(f"Created {created_count} visualizations in {viz_dir}")
-    return viz_dir

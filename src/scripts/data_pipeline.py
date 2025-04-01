@@ -6,14 +6,14 @@ import logging
 import pandas as pd
 
 from src.data.utils import setup_logger, ensure_dir
-from src.data.db import init_database, clear_database, update_database_schema
-from src.data.db import get_db_connection, store_statcast_data, store_game_context
-from src.data.db import store_team_data, store_opponent_data
+from src.data.db import (init_database, clear_database, update_database_schema,
+                         store_statcast_data, store_game_context,
+                         store_team_data, store_opponent_data, DBConnection)
 from src.data.fetch import get_statcast_data, fetch_team_data
 from src.data.process import extract_game_context, map_opponents_to_games
-from src.data.process import export_data_to_csv, aggregate_to_game_level
+from src.data.process import export_data_to_csv
 from src.features.engineering import create_prediction_features
-from config import DataConfig, DBConfig
+from config import DBConfig
 
 logger = setup_logger(__name__)
 
