@@ -39,8 +39,6 @@ def run_pipeline(command, force_refresh=False, skip_statcast=False):
         return _fetch_data(force_refresh, skip_statcast)
     elif command == 'process':
         return _process_data(force_refresh)
-    elif command == 'features':
-        return _create_features(force_refresh)
     elif command == 'export':
         return _export_data()
     elif command == 'all':
@@ -55,10 +53,6 @@ def run_pipeline(command, force_refresh=False, skip_statcast=False):
             
         process_success = _process_data(force_refresh)
         if not process_success:
-            return False
-            
-        features_success = _create_features(force_refresh)
-        if not features_success:
             return False
             
         export_success = _export_data()
@@ -211,30 +205,6 @@ def _process_data(force_refresh=False):
         logger.error(traceback.format_exc())
         return False
 
-def _create_features(force_refresh=False):
-    """
-    Create enhanced features for model training
-    
-    Args:
-        force_refresh (bool): Whether to force refresh existing features
-        
-    Returns:
-        bool: Success status
-    """
-    try:
-        # Create advanced/enhanced prediction features
-        logger.info("Creating enhanced prediction features...")
-        create_prediction_features(force_refresh=force_refresh)
-        
-        logger.info("Feature creation completed successfully!")
-        return True
-        
-    except Exception as e:
-        logger.error(f"Error during feature creation: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        return False
-
 def _export_data():
     """
     Export processed data to CSV files
@@ -262,7 +232,7 @@ def _export_data():
 def main():
     """Main function for command-line execution"""
     parser = argparse.ArgumentParser(description='MLB data pipeline for strikeout prediction')
-    parser.add_argument('command', choices=['setup', 'fetch', 'process', 'features', 'export', 'all'],
+    parser.add_argument('command', choices=['setup', 'fetch', 'process', 'export', 'all'],
                        help='Command to execute')
     parser.add_argument('--force-refresh', action='store_true', 
                        help='Force refresh of cached data')

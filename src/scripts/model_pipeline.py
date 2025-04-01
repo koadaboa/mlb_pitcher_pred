@@ -1,18 +1,14 @@
 import argparse
 from pathlib import Path
 import sys
-import pickle
 import json
-import matplotlib.pyplot as plt
-import numpy as np
-import pandas as pd
-import time
 from datetime import datetime
+import traceback
 
 from src.data.utils import setup_logger, ensure_dir
 from src.data.db import get_pitcher_data
-from src.features.selection import select_features_for_strikeout_model
-from src.models.train import train_strikeout_model, save_model, calculate_betting_metrics
+from src.features.selection import select_features
+from src.models.train import train_strikeout_model, save_model
 from src.scripts.optimize_models import optimize_model
 from src.scripts.model_comparison import run_comparison
 from config import StrikeoutModelConfig
@@ -126,8 +122,8 @@ def _train_models(model_types=None, train_years=None, test_years=None, tune_hype
     
     # Select features using the specified method
     logger.info(f"Selecting features using {feature_selection} method...")
-    from src.features.selection import select_features_for_model
-    so_features = select_features_for_model(pitcher_data, method=feature_selection)
+
+    so_features = select_features(pitcher_data, method=feature_selection)
     logger.info(f"Selected {len(so_features)} features")
     
     # Train LightGBM model
@@ -267,7 +263,7 @@ def _optimize_models(model_type='lightgbm', train_years=None, n_trials=100, metr
         
     except Exception as e:
         logger.error(f"Error optimizing LightGBM: {e}")
-        import traceback
+        
         logger.error(traceback.format_exc())
         return None
 
@@ -387,5 +383,4 @@ def main():
         return 1
 
 if __name__ == "__main__":
-    import sys
     sys.exit(main())

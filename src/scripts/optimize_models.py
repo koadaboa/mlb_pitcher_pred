@@ -15,7 +15,7 @@ from sklearn.preprocessing import StandardScaler
 import lightgbm as lgb
 
 from src.data.db import get_pitcher_data
-from src.features.selection import select_features_for_strikeout_model
+from src.features.selection import select_features
 from src.models.train import calculate_betting_metrics
 from src.data.utils import setup_logger
 from config import StrikeoutModelConfig
@@ -88,111 +88,6 @@ def custom_cv_score(model, X, y, n_splits=5, random_state=StrikeoutModelConfig.R
     
     return np.mean(scores), betting_metrics
 
-def lgb_objective(trial, X, y, primary_metric):
-    """Optuna objective for LightGBM"""
-    
-    # Define hyperparameters to optimize
-    params = {
-        'n_estimators': trial.suggest_int('n_estimators', 50, 500),
-        'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.3, log=True),
-        'num_leaves': trial.suggest_int('num_leaves', 20, 150),
-        'max_depth': trial.suggest_int('max_depth', 3, 12),
-        'min_data_in_leaf': trial.suggest_int('min_data_in_leaf', 10, 100),
-        'feature_fraction': trial.suggest_float('feature_fraction', 0.5, 1.0),
-        'bagging_fraction': trial.suggest_float('bagging_fraction', 0.5, 1.0),
-        'bagging_freq': trial.suggest_int('bagging_freq', 1, 10),
-        'min_gain_to_split': trial.suggest_float('min_gain_to_split', 0, 5),
-        'lambda_l1': trial.suggest_float('lambda_l1', 0, 5),
-        'lambda_l2': trial.suggest_float('lambda_l2', 0, 5),
-        'random_state': StrikeoutModelConfig.RANDOM_STATE
-    }
-    
-    # Create model
-    model = lgb.LGBMRegressor(**params)
-    
-    # Calculate CV score
-    score, betting_metrics = custom_cv_score(model, X, y, scorer=primary_metric)
-    
-    # Log progress
-    logger.info(f"Trial {trial.number}: {primary_metric}={score:.4f}, "
-                f"Within 2 K: {betting_metrics['within_2_strikeouts']:.2f}%, "
-                f"Over/Under: {betting_metrics['over_under_accuracy']:.2f}%, "
-                f"Params: {params}")
-    
-    # Store additional metrics in trial user attributes for later analysis
-    trial.set_user_attr('betting_metrics', betting_metrics)
-    trial.set_user_attr('model_type', 'lightgbm')
-    
-    return score
-
-def visualize_optimization_results(study, output_dir):
-    """
-    Create visualizations for optimization results
-    
-    Args:
-        study (optuna.Study): Completed Optuna study
-        output_dir (Path): Directory to save visualizations
-    """
-    # Create output directory
-    output_dir.mkdir(exist_ok=True, parents=True)
-    
-    # Extract model type from first trial
-    model_type = study.trials[0].user_attrs['model_type']
-    
-    # Extract additional metrics
-    trials_df = study.trials_dataframe()
-    trials_df['within_2_strikeouts'] = [t.user_attrs['betting_metrics']['within_2_strikeouts'] 
-                                        for t in study.trials]
-    trials_df['over_under_accuracy'] = [t.user_attrs['betting_metrics']['over_under_accuracy'] 
-                                       for t in study.trials]
-    trials_df['mape'] = [t.user_attrs['betting_metrics']['mape'] 
-                        for t in study.trials]
-    
-    # 1. Optimization history plot
-    plt.figure(figsize=(10, 6))
-    optuna.visualization.matplotlib.plot_optimization_history(study)
-    plt.title('Optimization History for LightGBM')
-    plt.tight_layout()
-    plt.savefig(output_dir / "lightgbm_optimization_history.png")
-    plt.close()
-    
-    # 2. Parameter importances
-    plt.figure(figsize=(10, 6))
-    optuna.visualization.matplotlib.plot_param_importances(study)
-    plt.title('Parameter Importances for LightGBM')
-    plt.tight_layout()
-    plt.savefig(output_dir / "lightgbm_param_importances.png")
-    plt.close()
-    
-    # 3. Parallel coordinate plot
-    plt.figure(figsize=(12, 8))
-    optuna.visualization.matplotlib.plot_parallel_coordinate(study)
-    plt.title('Parallel Coordinate Plot for LightGBM')
-    plt.tight_layout()
-    plt.savefig(output_dir / "lightgbm_parallel_coordinate.png")
-    plt.close()
-    
-    # 4. Additional metrics progression
-    plt.figure(figsize=(12, 6))
-    plt.subplot(1, 2, 1)
-    plt.plot(trials_df.index, trials_df['within_2_strikeouts'], 'o-')
-    plt.xlabel('Trial')
-    plt.ylabel('Within 2 Strikeouts (%)')
-    plt.title('Within 2 Strikeouts Progression')
-    
-    plt.subplot(1, 2, 2)
-    plt.plot(trials_df.index, trials_df['over_under_accuracy'], 'o-')
-    plt.xlabel('Trial')
-    plt.ylabel('Over/Under Accuracy (%)')
-    plt.title('Over/Under Accuracy Progression')
-    
-    plt.tight_layout()
-    plt.savefig(output_dir / "lightgbm_betting_metrics.png")
-    plt.close()
-    
-    # 5. Save trials dataframe
-    trials_df.to_csv(output_dir / "lightgbm_trials.csv", index=False)
-
 def save_best_model(study, X, y, output_dir):
     """
     Train and save the best model
@@ -259,7 +154,7 @@ def optimize_model(train_years, features=None, n_trials=100, primary_metric='wit
     # Select features if not provided
     if features is None:
         logger.info("Selecting features...")
-        features = select_features_for_strikeout_model(pitcher_data)
+        features = select_features(pitcher_data)
     
     # Filter to training years and prepare data
     train_df = pitcher_data[pitcher_data['season'].isin(train_years)]
