@@ -8,6 +8,7 @@ import pybaseball
 from src.data.db import get_pitcher_data, DBConnection
 from config import StrikeoutModelConfig
 from src.data.utils import setup_logger
+from functools import lru_cache
 
 logger = setup_logger(__name__)
 
@@ -246,24 +247,34 @@ def _add_rolling_window_features(pitcher_data):
         'strikeouts', 'release_speed_mean', 'swinging_strike_pct'
     ]
     
-    # Calculate for each window size defined in config
+    # Use pandas' optimized vectorized operations
     for window in StrikeoutModelConfig.WINDOW_SIZES:
-        # Calculate mean for all metrics
+        # Pre-compute rolling window objects to avoid repeated calculations
+        rolling_windows = {}
+        
         for metric in mean_metrics:
             if metric in pitcher_data.columns:
+                # Calculate once and reuse
+                if metric not in rolling_windows:
+                    rolling_windows[metric] = pitcher_data[metric].rolling(
+                        window=window, min_periods=1)
+                
                 # Average over window (shifted by 1 to avoid data leakage)
-                pitcher_data[f'last_{window}_games_{metric}_avg'] = pitcher_data[metric].rolling(
-                    window=window, min_periods=1).mean().shift(1)
+                pitcher_data[f'last_{window}_games_{metric}_avg'] = rolling_windows[metric].mean().shift(1)
         
         # Calculate standard deviation for selected metrics
         for metric in std_metrics:
             if metric in pitcher_data.columns:
+                # Reuse the rolling window object
+                if metric not in rolling_windows:
+                    rolling_windows[metric] = pitcher_data[metric].rolling(
+                        window=window, min_periods=2)
+                
                 # Standard deviation (shifted by 1 to avoid data leakage)
-                pitcher_data[f'last_{window}_games_{metric}_std'] = pitcher_data[metric].rolling(
-                    window=window, min_periods=2).std().shift(1)
+                pitcher_data[f'last_{window}_games_{metric}_std'] = rolling_windows[metric].std().shift(1)
     
     return pitcher_data
-
+    
 def _add_trend_features(pitcher_data):
     """
     Add trend indicators showing directional changes over time
@@ -438,15 +449,7 @@ def _add_rest_day_features(pitcher_data):
     return pitcher_data
 
 def _add_pitcher_specific_baselines(pitcher_data):
-    """
-    Add pitcher-specific baseline features to capture individual tendencies
-    
-    Args:
-        pitcher_data (pandas.DataFrame): Data for a single pitcher
-        
-    Returns:
-        pandas.DataFrame: Data with pitcher-specific baseline features added
-    """
+    """Add pitcher-specific baseline features to capture individual tendencies"""
     # Ensure we have a clean index
     pitcher_data = pitcher_data.reset_index(drop=True)
     
@@ -458,52 +461,60 @@ def _add_pitcher_specific_baselines(pitcher_data):
             except:
                 logger.warning("Could not convert game_date to datetime, baseline features may be affected")
     
-    # Calculate career statistics for this pitcher (before current game)
-    career_stats = []
+    # Get pitcher ID for cache key
+    pitcher_id = pitcher_data['pitcher_id'].iloc[0] if 'pitcher_id' in pitcher_data.columns else None
     
+    @lru_cache(maxsize=1000)
+    def get_career_stats(pitcher_id, date_str):
+        """Cached function to calculate career statistics up to a given date"""
+        if date_str == "None":
+            # Handle case where date is invalid
+            prior_games_idx = []
+        else:
+            date = pd.to_datetime(date_str)
+            prior_games_idx = pitcher_data.index[pitcher_data['game_date'] < date].tolist()
+        
+        if not prior_games_idx:
+            return 0, 0, 0, 0  # Return zeros for empty prior games
+        
+        prior_games = pitcher_data.iloc[prior_games_idx]
+        
+        career_so_avg = prior_games['strikeouts'].mean()
+        career_so_std = prior_games['strikeouts'].std() if len(prior_games) > 1 else 0
+        
+        # Calculate more advanced metrics if data is available
+        if 'pitch_count' in prior_games.columns:
+            batters_faced = prior_games['pitch_count'] / 3.8  # Approximate batters faced
+            so_per_batter = prior_games['strikeouts'] / batters_faced
+            career_so_per_batter = so_per_batter.mean()
+        else:
+            career_so_per_batter = 0
+        
+        # Calculate consistency score
+        if career_so_avg > 0:
+            career_so_consistency = 1 - (career_so_std / (career_so_avg + 1))
+        else:
+            career_so_consistency = 0
+        
+        return career_so_avg, career_so_std, career_so_per_batter, career_so_consistency
+    
+    # Calculate career stats for each row
+    career_stats = []
     for i in range(len(pitcher_data)):
         current_date = pitcher_data.iloc[i]['game_date']
         
-        # Handle non-datetime objects
-        if not isinstance(current_date, pd.Timestamp) and not isinstance(current_date, datetime.datetime):
-            # Use row index as a proxy for chronological order if date is invalid
-            prior_games = pitcher_data.iloc[:i]
-        else:
-            prior_games = pitcher_data[pitcher_data['game_date'] < current_date]
+        # Convert date to string for cache key (None if not a datetime)
+        date_str = current_date.strftime('%Y-%m-%d') if isinstance(current_date, (pd.Timestamp, datetime.datetime)) else "None"
         
-        if prior_games.empty:
-            # No prior games, use zeros
-            career_stats.append({
-                'career_so_avg': 0,
-                'career_so_std': 0,
-                'career_so_per_batter': 0,
-                'career_so_consistency': 0
-            })
-        else:
-            # Calculate career averages before current game
-            career_so_avg = prior_games['strikeouts'].mean()
-            career_so_std = prior_games['strikeouts'].std() if len(prior_games) > 1 else 0
-            
-            # Calculate more advanced metrics if data is available
-            if 'pitch_count' in prior_games.columns:
-                batters_faced = prior_games['pitch_count'] / 3.8  # Approximate batters faced
-                so_per_batter = prior_games['strikeouts'] / batters_faced
-                career_so_per_batter = so_per_batter.mean()
-            else:
-                career_so_per_batter = 0
-            
-            # Calculate consistency score (lower std relative to mean = more consistent)
-            if career_so_avg > 0:
-                career_so_consistency = 1 - (career_so_std / (career_so_avg + 1))
-            else:
-                career_so_consistency = 0
-            
-            career_stats.append({
-                'career_so_avg': career_so_avg,
-                'career_so_std': career_so_std,
-                'career_so_per_batter': career_so_per_batter,
-                'career_so_consistency': career_so_consistency
-            })
+        # Get cached statistics
+        career_so_avg, career_so_std, career_so_per_batter, career_so_consistency = get_career_stats(pitcher_id, date_str)
+        
+        career_stats.append({
+            'career_so_avg': career_so_avg,
+            'career_so_std': career_so_std,
+            'career_so_per_batter': career_so_per_batter,
+            'career_so_consistency': career_so_consistency
+        })
     
     # Create a new DataFrame for all the new columns
     new_columns = pd.DataFrame(career_stats, index=range(len(pitcher_data)))
@@ -559,16 +570,7 @@ def _add_pitcher_specific_baselines(pitcher_data):
     return result
 
 def _add_enhanced_matchup_features(pitcher_data):
-    """
-    Add enhanced matchup-specific features to capture pitcher vs. opponent dynamics
-    
-    Args:
-        pitcher_data (pandas.DataFrame): Data for a single pitcher
-        
-    Returns:
-        pandas.DataFrame: Data with enhanced matchup features added
-    """
-    # Ensure we have a clean index
+    """Add enhanced matchup-specific features to capture pitcher vs. opponent dynamics"""
     pitcher_data = pitcher_data.reset_index(drop=True)
     
     # Ensure game_date is a datetime object
@@ -577,62 +579,56 @@ def _add_enhanced_matchup_features(pitcher_data):
             try:
                 pitcher_data['game_date'] = pd.to_datetime(pitcher_data['game_date'])
             except:
-                logger.warning("Could not convert game_date to datetime, matchup features may be affected")
-                # Sort by index as a fallback
-                pitcher_data = pitcher_data.sort_index()
-                
-    # Check if opponent data is available
-    if 'opponent_team_id' not in pitcher_data.columns:
-        logger.warning("No opponent team information available for matchup features")
-        return pitcher_data
+                logger.warning("Could not convert game_date to datetime")
     
-    # Get unique opponents faced
+    # Get pitcher ID for cache key
+    pitcher_id = pitcher_data['pitcher_id'].iloc[0] if 'pitcher_id' in pitcher_data.columns else None
+    
+    @lru_cache(maxsize=1000)
+    def get_opponent_stats(pitcher_id, opponent, date_str):
+        """Cached function to calculate stats against a specific opponent up to a date"""
+        if date_str == "None":
+            prior_matchups_idx = []
+        else:
+            date = pd.to_datetime(date_str)
+            prior_matchups_idx = pitcher_data.index[
+                (pitcher_data['game_date'] < date) & 
+                (pitcher_data['opponent_team_id'] == opponent)
+            ].tolist()
+        
+        if not prior_matchups_idx:
+            return 0  # No prior matchups
+        
+        prior_matchups = pitcher_data.iloc[prior_matchups_idx]
+        return prior_matchups['strikeouts'].mean()
+    
+    # Get unique opponents
     unique_opponents = pitcher_data['opponent_team_id'].unique()
     
-    # Create a dictionary to store all the new columns we'll add
+    # Create new columns dict
     new_columns = {}
     
-    # Calculate historical performance vs each opponent
+    # For each opponent
     for opponent in unique_opponents:
-        # Skip if opponent is missing
         if pd.isna(opponent):
             continue
-        
-        # Create column name for this opponent
+            
         col_name = f"so_vs_{opponent}"
-        
-        # For each game, calculate historical stats vs this opponent
         historical_stats = []
         
         for i in range(len(pitcher_data)):
             current_date = pitcher_data.iloc[i]['game_date']
             current_opponent = pitcher_data.iloc[i]['opponent_team_id']
             
-            # Handle date comparison safely
-            if isinstance(current_date, (pd.Timestamp, datetime.datetime)):
-                # Use date comparison
-                prior_matchups = pitcher_data[
-                    (pitcher_data['game_date'] < current_date) & 
-                    (pitcher_data['opponent_team_id'] == opponent)
-                ]
-            else:
-                # Use index as proxy for chronological order
-                prior_matchups = pitcher_data.iloc[:i][
-                    pitcher_data.iloc[:i]['opponent_team_id'] == opponent
-                ]
+            # Convert date to string for cache key
+            date_str = current_date.strftime('%Y-%m-%d') if isinstance(current_date, (pd.Timestamp, datetime.datetime)) else "None"
             
+            # Only calculate for matching opponent
             if current_opponent == opponent:
-                if prior_matchups.empty:
-                    # No prior matchups with this opponent
-                    historical_stats.append(0)
-                else:
-                    # Calculate average strikeouts vs this opponent
-                    historical_stats.append(prior_matchups['strikeouts'].mean())
+                historical_stats.append(get_opponent_stats(pitcher_id, opponent, date_str))
             else:
-                # Not playing this opponent in current game
                 historical_stats.append(np.nan)
-        
-        # Store the historical stats for this opponent
+                
         new_columns[col_name] = historical_stats
     
     # Calculate matchup advantage score

@@ -5,11 +5,17 @@ from pathlib import Path
 from src.data.utils import safe_float, normalize_name
 from config import DBConfig
 from src.data.utils import setup_logger, ensure_dir
+from functools import lru_cache
+import hashlib
+import time
 
 logger = setup_logger(__name__)
 
 # Database path
 DB_PATH = DBConfig.PATH
+
+_cache = {}
+_cache_timeout = 300 # 5 minutes
 
 class DBConnection:
     """Context manager for database connections"""
@@ -242,7 +248,7 @@ def store_statcast_data(statcast_df, force_refresh=False):
         # Insert game stats
         game_stats_ids = {}  # Map to store game_id -> database_id for pitch mix data
         inserted_count = 0
-        
+
         for _, row in game_level.iterrows():
             # Get pitcher_id from mapping
             try:
@@ -382,18 +388,39 @@ def store_statcast_data(statcast_df, force_refresh=False):
     
     logger.info("Statcast data stored in database.")
 
-def get_pitcher_data():
+def get_pitcher_data(force_refresh=False):
     """
-    Retrieve joined data from the database for feature engineering
+    Retrieve joined data from the database for feature engineering with caching
     
+    Args:
+        force_refresh (bool): Whether to force refresh the cache
+        
     Returns:
         pandas.DataFrame: Joined data with all features
     """
+    # Generate cache key based on current database state (mtime of db file)
+    db_path = Path(DBConfig.PATH)
+    if db_path.exists():
+        last_modified = int(db_path.stat().st_mtime)
+        cache_key = f"pitcher_data_{last_modified}"
+    else:
+        cache_key = "pitcher_data_default"
+    
+    current_time = time.time()
+    
+    # Check if we have a valid cached result
+    if not force_refresh and cache_key in _cache:
+        cached_time, cached_data = _cache[cache_key]
+        if current_time - cached_time < _cache_timeout:
+            logger.info(f"Using cached pitcher data ({len(cached_data)} rows)")
+            return cached_data
+    
     logger.info("Retrieving pitcher data from database...")
     
+    # Original database query code...
     with DBConnection() as conn:
         cursor = conn.cursor()
-    
+
         # First, get all column names from prediction_features table
         cursor.execute("PRAGMA table_info(prediction_features)")
         pf_columns = [row[1] for row in cursor.fetchall()]
@@ -493,6 +520,11 @@ def get_pitcher_data():
                 logger.warning(f"Error retrieving pitch mix data: {e}")
     
     logger.info(f"Retrieved {len(df)} rows of pitcher data with {len(df.columns)} columns")
+
+    current_time = time.time()
+    for k in list(_cache.keys()):
+        if current_time - _cache[k][0] > _cache_timeout * 2:
+            del _cache[k]
     
     # Check for enhanced features
     enhanced_patterns = ['_std', 'trend_', 'momentum_', 'entropy']
@@ -501,6 +533,11 @@ def get_pitcher_data():
         logger.info(f"Retrieved {len(enhanced_cols)} enhanced feature columns: {', '.join(enhanced_cols[:5])}...")
     else:
         logger.warning("No enhanced feature columns found!")
+
+    # Cache the result
+    _cache[cache_key] = (current_time, df)
+    
+    logger.info(f"Retrieved and cached {len(df)} rows of pitcher data")
     
     return df
 

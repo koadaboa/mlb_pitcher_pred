@@ -6,23 +6,91 @@ from sklearn.feature_selection import RFECV
 from sklearn.model_selection import KFold, TimeSeriesSplit
 from src.data.utils import setup_logger
 from config import StrikeoutModelConfig
+from functools import lru_cache
+import hashlib
+import time
 
 logger = setup_logger(__name__)
 
-# In src/features/selection.py
+_cache = {}
+_cache_timeout = 300 # 5 minutes
+
+def _dataframe_hash(df, columns=None):
+    """Create a hash of a dataframe for caching purposes"""
+    if columns is None:
+        columns = df.columns.tolist()
+    else:
+        # Extract only valid columns that exist in the dataframe
+        valid_columns = [col for col in columns if isinstance(col, str) and col in df.columns]
+        extra_info = [col for col in columns if not (isinstance(col, str) and col in df.columns)]
+    
+    # Use a subset of the dataframe for hashing (first/last rows)
+    sample_size = min(100, len(df))
+    if len(df) <= sample_size:
+        df_sample = df
+    else:
+        first_half = df.iloc[:sample_size//2]
+        second_half = df.iloc[-sample_size//2:]
+        df_sample = pd.concat([first_half, second_half])
+    
+    # Create hash from dataframe content + extra info
+    data_str = df_sample[valid_columns].to_string()
+    
+    # Add any extra info to the hash
+    if extra_info:
+        data_str += str(extra_info)
+    
+    return hashlib.md5(data_str.encode()).hexdigest()
+
+@lru_cache(maxsize=10)
+def _cached_feature_selection(df_hash, method, n_features):
+    """Cached version of feature selection to be called by the main function"""
+    # Note: The actual implementation is done in the wrapper function
+    # This is just a placeholder for the cache
+    return []
 
 def select_features(df, method='rfecv', n_features=30):
     """
-    Select relevant features for strikeout prediction model using RFECV by default
+    Select relevant features for strikeout prediction model with caching
     
     Args:
         df (pandas.DataFrame): Complete dataset with features
-        method (str): Selection method ('rfecv', 'importance', 'all'), defaults to 'rfecv'
+        method (str): Selection method ('rfecv', 'importance', 'all')
         n_features (int): Number of features to select for importance method
         
     Returns:
         list: Selected features for strikeout model
     """
+    # Check for 'strikeouts' column
+    if 'strikeouts' not in df.columns:
+        logger.warning("No 'strikeouts' column found in dataframe")
+        return []
+    
+    # Generate a hash of the input DataFrame
+    cols_for_hash = list(df.columns)
+    
+    # Add season distribution as separate info, not as a column
+    season_info = None
+    if 'season' in df.columns:
+        season_counts = df['season'].value_counts().to_dict()
+        season_info = f"seasons_{season_counts}"
+    
+    df_hash = _dataframe_hash(df, cols_for_hash)
+    
+    # If we have season info, include it in the hash
+    if season_info:
+        df_hash = hashlib.md5((df_hash + season_info).encode()).hexdigest()
+    
+    # Check if we've already computed this selection
+    try:
+        # Call the cached function (will use cached result if available)
+        cached_result = _cached_feature_selection(df_hash, method, n_features)
+        if cached_result:
+            logger.info(f"Using cached feature selection ({len(cached_result)} features)")
+            return cached_result
+    except Exception as e:
+        logger.warning(f"Error using cached result: {e}, computing features")
+    
     # Check what columns are available
     available_columns = df.columns.tolist()
     logger.info(f"Available columns: {len(available_columns)}")
@@ -157,7 +225,6 @@ def select_features(df, method='rfecv', n_features=30):
     if method == 'importance':
         # Feature selection based on importance
         import lightgbm as lgb
-        from config import StrikeoutModelConfig
         
         # Create LightGBM model
         model = lgb.LGBMRegressor(
@@ -279,6 +346,8 @@ def select_features(df, method='rfecv', n_features=30):
         if feature in available_columns and feature not in selected_features:
             selected_features.append(feature)
             logger.info(f"Added baseline feature: {feature}")
+
+    _cached_feature_selection.__wrapped__(df_hash, method, n_features, _result=selected_features)
     
     logger.info(f"Selected {len(selected_features)} features for strikeout model")
     return selected_features
