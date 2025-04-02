@@ -57,7 +57,7 @@ def custom_cv_score(model, X, y, n_splits=5, random_state=StrikeoutModelConfig.R
             y_pred = model.predict(X_val)
         else:
             # Convert to DataFrame with proper column names if it's not already
-            X_val_df = pd.DataFrame(X_val, columns=features)
+            X_val_df = pd.DataFrame(X_val, columns=X.columns)
             y_pred = model.predict(X_val_df)
         predictions.extend(y_pred)
         actuals.extend(y_val)
@@ -124,12 +124,61 @@ def save_best_model(study, X, y, output_dir):
     with open(model_path, 'wb') as f:
         pickle.dump(model_dict, f)
     
+    # Also save as the standard model name
+    standard_path = output_dir / "strikeout_model.pkl"
+    with open(standard_path, 'wb') as f:
+        pickle.dump(model_dict, f)
+    
     logger.info(f"Best LightGBM model saved to {model_path}")
     
     # Return the best model
     return model_dict
 
-def optimize_model(train_years, features=None, n_trials=100, primary_metric='within_1_strikeout'):
+def visualize_optimization_results(study, output_dir):
+    """
+    Create visualizations of optimization results
+    
+    Args:
+        study (optuna.Study): Completed Optuna study
+        output_dir (Path): Directory to save visualizations
+    """
+    # Create visualization directory
+    viz_dir = output_dir / "visualizations"
+    viz_dir.mkdir(exist_ok=True, parents=True)
+    
+    try:
+        # 1. Plot optimization history
+        plt.figure(figsize=(12, 8))
+        optuna.visualization.matplotlib.plot_optimization_history(study)
+        plt.tight_layout()
+        plt.savefig(viz_dir / "optimization_history.png")
+        plt.close()
+        
+        # 2. Plot parameter importances
+        plt.figure(figsize=(12, 8))
+        optuna.visualization.matplotlib.plot_param_importances(study)
+        plt.tight_layout()
+        plt.savefig(viz_dir / "param_importances.png")
+        plt.close()
+        
+        # 3. Plot score vs. key parameters (if enough trials)
+        if len(study.trials) >= 20:
+            plt.figure(figsize=(15, 10))
+            important_params = ['n_estimators', 'learning_rate', 'num_leaves', 'max_depth']
+            for i, param in enumerate(important_params):
+                plt.subplot(2, 2, i+1)
+                optuna.visualization.matplotlib.plot_slice(study, params=[param])
+                plt.title(f"Score vs. {param}")
+            plt.tight_layout()
+            plt.savefig(viz_dir / "score_vs_parameters.png")
+            plt.close()
+        
+        logger.info(f"Optimization visualizations saved to {viz_dir}")
+    
+    except Exception as e:
+        logger.error(f"Error creating optimization visualizations: {e}")
+
+def optimize_model(train_years, features=None, n_trials=100, primary_metric='within_1_strikeout', **kwargs):
     """
     Optimize a LightGBM model using Optuna
     
@@ -138,6 +187,7 @@ def optimize_model(train_years, features=None, n_trials=100, primary_metric='wit
         features (list, optional): Features to use. If None, will be selected automatically.
         n_trials (int): Number of Optuna trials
         primary_metric (str): Primary metric to optimize
+        **kwargs: Additional keyword arguments (ignored)
         
     Returns:
         optuna.Study: Completed Optuna study
@@ -173,7 +223,7 @@ def optimize_model(train_years, features=None, n_trials=100, primary_metric='wit
     storage_url = f"sqlite:///{output_dir}/optimization.db"
     
     # Set direction based on metric (higher is better or lower is better)
-    if primary_metric in ['within_2_strikeouts', 'over_under_accuracy', 'r2']:
+    if primary_metric in ['within_1_strikeout', 'within_2_strikeouts', 'over_under_accuracy', 'r2']:
         direction = 'maximize'
     else:  # 'neg_mean_squared_error', 'neg_mean_absolute_error'
         direction = 'maximize'  # These are already negated
@@ -245,7 +295,6 @@ def lgb_objective(trial, X, y, primary_metric):
     
     # Store additional metrics in trial user attributes for later analysis
     trial.set_user_attr('betting_metrics', betting_metrics)
-    trial.set_user_attr('model_type', 'lightgbm')
     
     return score
 
@@ -261,6 +310,9 @@ def main():
                                 'r2', 'within_1_strikeout', 'within_2_strikeouts', 'over_under_accuracy'],
                         default='within_1_strikeout',
                         help='Primary metric to optimize')
+    # Add test_years parameter for compatibility with model_pipeline.py
+    parser.add_argument('--test-years', type=int, nargs='+', 
+                        help='Testing years (not used in optimization but added for compatibility)')
     
     args = parser.parse_args()
     
@@ -273,7 +325,7 @@ def main():
             primary_metric=args.metric
         )
         
-        logger.info(f"Optimization for LightGBM completed. Results saved to {output_dir}")
+        logger.info(f"Optimization completed. Results saved to {output_dir}")
         
     except Exception as e:
         logger.error(f"Error optimizing LightGBM: {e}")

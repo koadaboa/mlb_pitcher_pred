@@ -23,28 +23,28 @@ def load_models(models_dir):
         models_dir (Path): Directory containing model files
         
     Returns:
-        dict: Dictionary of loaded model
+        dict: Dictionary with loaded model
     """
     models = {}
     
-    # Look for model files (standard, optimized, or regular)
+    # Look for model files
     model_files = []
-    for pattern in ["strikeout_model.pkl", "optimized_lightgbm_model.pkl", "strikeout_lightgbm_model.pkl"]:
+    for pattern in ["strikeout_model.pkl", "optimized_lightgbm_model.pkl"]:
         model_files.extend(list(models_dir.glob(pattern)))
     
     if not model_files:
         logger.error(f"No LightGBM model files found in {models_dir}")
         return {}
     
+    # Load the first model found
     for model_file in model_files:
         try:
             with open(model_file, 'rb') as f:
                 model_dict = pickle.load(f)
-                if model_dict['model_type'] == 'lightgbm':
-                    models['lightgbm'] = model_dict
-                    logger.info(f"Loaded LightGBM model from {model_file}")
-                    # Only need one model
-                    break
+                models['lightgbm'] = model_dict
+                logger.info(f"Loaded LightGBM model from {model_file}")
+                # Only need one model
+                break
         except Exception as e:
             logger.error(f"Error loading model from {model_file}: {e}")
     
@@ -119,76 +119,76 @@ def run_comparison(models_dir=None, output_dir=None):
     # Extract metrics for evaluation
     comparison_data = []
     
-    for model_name, model_dict in models.items():
-        # Check if the model is already evaluated (has metrics)
-        if 'metrics' in model_dict:
-            metrics = model_dict['metrics']
-            
-            # Add to comparison data
-            comparison_data.append({
-                'model': model_name,
-                'model_type': model_dict.get('model_type', model_name),
-                'RMSE': metrics['rmse'],
-                'MAE': metrics['mae'],
-                'R²': metrics['r2'],
-                'MAPE': metrics.get('mape', np.nan),
-                'Over/Under Accuracy': metrics.get('over_under_accuracy', np.nan),
-                'Within 1 Strikeout': metrics.get('within_1_strikeout', np.nan),
-                'Within 2 Strikeouts': metrics.get('within_2_strikeouts', np.nan),
-                'Within 3 Strikeouts': metrics.get('within_3_strikeouts', np.nan),
-                'Bias': metrics.get('bias', np.nan),
-                'Max Error': metrics.get('max_error', np.nan)
-            })
-        else:
-            # Model doesn't have metrics yet, evaluate it
-            logger.info(f"Evaluating model: {model_name}")
-            
-            # Extract features and model
-            features = model_dict['features']
-            
-            # Prepare test data
-            X_test = test_df[features].copy()
-            y_test = test_df['strikeouts'].copy()
-            
-            # Make predictions
-            model = model_dict['model']
-            y_pred = model.predict(X_test)
-            
-            # Calculate standard metrics
-            rmse = np.sqrt(mean_squared_error(y_test, y_pred))
-            mae = mean_absolute_error(y_test, y_pred)
-            r2 = r2_score(y_test, y_pred)
-            
-            # Calculate betting metrics
-            betting_metrics = calculate_betting_metrics(y_test, y_pred)
-            
-            # Store metrics in the model dictionary for future use
-            model_dict['metrics'] = {
-                'rmse': rmse,
-                'mae': mae,
-                'r2': r2,
-                **betting_metrics
-            }
-            
-            # Add to comparison data
-            comparison_data.append({
-                'model': model_name,
-                'model_type': model_dict.get('model_type', model_name),
-                'RMSE': rmse,
-                'MAE': mae,
-                'R²': r2,
-                'MAPE': betting_metrics['mape'],
-                'Over/Under Accuracy': betting_metrics['over_under_accuracy'],
-                'Within 1 Strikeout': betting_metrics['within_1_strikeout'],
-                'Within 2 Strikeouts': betting_metrics['within_2_strikeouts'],
-                'Within 3 Strikeouts': betting_metrics['within_3_strikeouts'],
-                'Bias': betting_metrics['bias'],
-                'Max Error': betting_metrics.get('max_error', np.nan)
-            })
-            
-            logger.info(f"{model_name}: RMSE={rmse:.4f}, MAE={mae:.4f}, R²={r2:.4f}, "
-                       f"Within 1 K: {betting_metrics['within_1_strikeout']:.2f}%, "
-                       f"Within 2 K: {betting_metrics['within_2_strikeouts']:.2f}%")
+    # Evaluate the LightGBM model
+    model_dict = models['lightgbm']
+    
+    # Check if the model is already evaluated (has metrics)
+    if 'metrics' in model_dict:
+        metrics = model_dict['metrics']
+        
+        # Add to comparison data
+        comparison_data.append({
+            'model': 'lightgbm',
+            'RMSE': metrics['rmse'],
+            'MAE': metrics['mae'],
+            'R²': metrics['r2'],
+            'MAPE': metrics.get('mape', np.nan),
+            'Over/Under Accuracy': metrics.get('over_under_accuracy', np.nan),
+            'Within 1 Strikeout': metrics.get('within_1_strikeout', np.nan),
+            'Within 2 Strikeouts': metrics.get('within_2_strikeouts', np.nan),
+            'Within 3 Strikeouts': metrics.get('within_3_strikeouts', np.nan),
+            'Bias': metrics.get('bias', np.nan),
+            'Max Error': metrics.get('max_error', np.nan)
+        })
+    else:
+        # Model doesn't have metrics yet, evaluate it
+        logger.info("Evaluating model...")
+        
+        # Extract features and model
+        features = model_dict['features']
+        
+        # Prepare test data
+        X_test = test_df[features].copy()
+        y_test = test_df['strikeouts'].copy()
+        
+        # Make predictions
+        model = model_dict['model']
+        y_pred = model.predict(X_test)
+        
+        # Calculate standard metrics
+        rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+        mae = mean_absolute_error(y_test, y_pred)
+        r2 = r2_score(y_test, y_pred)
+        
+        # Calculate betting metrics
+        betting_metrics = calculate_betting_metrics(y_test, y_pred)
+        
+        # Store metrics in the model dictionary for future use
+        model_dict['metrics'] = {
+            'rmse': rmse,
+            'mae': mae,
+            'r2': r2,
+            **betting_metrics
+        }
+        
+        # Add to comparison data
+        comparison_data.append({
+            'model': 'lightgbm',
+            'RMSE': rmse,
+            'MAE': mae,
+            'R²': r2,
+            'MAPE': betting_metrics['mape'],
+            'Over/Under Accuracy': betting_metrics['over_under_accuracy'],
+            'Within 1 Strikeout': betting_metrics['within_1_strikeout'],
+            'Within 2 Strikeouts': betting_metrics['within_2_strikeouts'],
+            'Within 3 Strikeouts': betting_metrics['within_3_strikeouts'],
+            'Bias': betting_metrics['bias'],
+            'Max Error': betting_metrics.get('max_error', np.nan)
+        })
+        
+        logger.info(f"LightGBM: RMSE={rmse:.4f}, MAE={mae:.4f}, R²={r2:.4f}, "
+                   f"Within 1 K: {betting_metrics['within_1_strikeout']:.2f}%, "
+                   f"Within 2 K: {betting_metrics['within_2_strikeouts']:.2f}%")
     
     # Create results DataFrame
     comparison_df = pd.DataFrame(comparison_data)
@@ -208,36 +208,37 @@ def run_comparison(models_dir=None, output_dir=None):
     comparison_df.to_csv(output_dir / "model_evaluation.csv", index=False)
     
     # Create visualizations
-    # 1. Error metrics bar chart
-    plt.figure(figsize=(10, 6))
-    metrics_to_plot = ['RMSE', 'MAE', 'MAPE']
-    melted_df = pd.melt(comparison_df, id_vars=['model'], value_vars=metrics_to_plot)
-    sns.barplot(x='variable', y='value', data=melted_df)
-    plt.title('Error Metrics')
-    plt.ylabel('Value (lower is better)')
-    plt.tight_layout()
-    plt.savefig(output_dir / "error_metrics.png")
-    plt.close()
+    # Feature importance visualization
+    visualize_feature_importance(models['lightgbm'], output_dir)
     
-    # 2. Accuracy metrics bar chart
-    plt.figure(figsize=(10, 6))
-    accuracy_metrics = ['R²', 'Over/Under Accuracy', 'Within 1 Strikeout', 
-                      'Within 2 Strikeouts', 'Within 3 Strikeouts']
-    melted_df = pd.melt(comparison_df, id_vars=['model'], value_vars=accuracy_metrics)
-    sns.barplot(x='variable', y='value', data=melted_df)
-    plt.title('Accuracy Metrics')
-    plt.ylabel('Value (higher is better)')
-    plt.tight_layout()
-    plt.savefig(output_dir / "accuracy_metrics.png")
-    plt.close()
+    # Create predictions vs actual plot
+    plt.figure(figsize=(10, 8))
     
-    # 3. Feature importance visualization
-    if 'lightgbm' in models:
-        visualize_feature_importance(models['lightgbm'], output_dir)
+    # Get predicted and actual values
+    features = models['lightgbm']['features']
+    model = models['lightgbm']['model']
+    X_test = test_df[features].copy()
+    y_test = test_df['strikeouts'].copy()
+    y_pred = model.predict(X_test)
+    
+    plt.scatter(y_test, y_pred, alpha=0.5)
+    
+    # Add perfect prediction line
+    min_val = min(min(y_test), min(y_pred))
+    max_val = max(max(y_test), max(y_pred))
+    plt.plot([min_val, max_val], [min_val, max_val], 'r--')
+    
+    plt.xlabel('Actual')
+    plt.ylabel('Predicted')
+    plt.title('Predicted vs Actual Strikeouts')
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig(output_dir / 'strikeout_predictions.png')
+    plt.close()
     
     # Save evaluation results as JSON
     with open(output_dir / "model_evaluation.json", 'w') as f:
-        json.dump(comparison_data[0], f, indent=4)  # Only one model
+        json.dump(comparison_data[0], f, indent=4)
     
     logger.info(f"Model evaluation complete. Results saved to {output_dir}")
     return comparison_df, None
