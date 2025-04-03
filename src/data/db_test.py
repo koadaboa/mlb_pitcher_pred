@@ -57,7 +57,8 @@ def create_database_schema():
         logger.info("Creating database schema...")
 
         # Drop existing tables to ensure clean schema
-        cursor.execute("DROP TABLE IF EXISTS *")
+        cursor.execute("DROP TABLE IF EXISTS teams")
+        cursor.execute("DROP TABLE IF EXISTS pitcher_ids")
 
         # Simple version without comments
         cursor.execute('''
