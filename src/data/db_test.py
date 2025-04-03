@@ -13,11 +13,10 @@ from src.data.db import DBConnection
 
 logger = setup_logger(__name__)
 
-# Database path test - not same from DBConfig yet
-DB_PATH = "data/strikeout_prediction.db"
-
 _cache = {}
 _cache_timeout = 300 # 5 minutes
+
+DB_PATH = DBConfig.PATH
 
 def execute_query(query, params=None):
     """Execute a query and return results as a DataFrame"""
@@ -46,7 +45,7 @@ def is_table_populated(table_name):
     return count > 0
 
 def create_database_schema():
-    """Create the database schema for the strikeout prediction project"""
+    """ create database tables """ 
     ensure_dir(Path(DB_PATH).parent)
     
     # Connect to database
@@ -59,18 +58,30 @@ def create_database_schema():
         # Drop existing tables to ensure clean schema
         cursor.execute("DROP TABLE IF EXISTS teams")
         cursor.execute("DROP TABLE IF EXISTS pitcher_ids")
+        cursor.execute("DROP TABLE IF EXISTS games")
+        cursor.execute("DROP TABLE IF EXISTS statcast_pitches")
+        cursor.execute("DROP TABLE IF EXISTS game_stats")
+        cursor.execute("DROP TABLE IF EXISTS pitch_mix")
+        cursor.execute("DROP TABLE IF EXISTS team_batting_stats")
+        cursor.execute("DROP TABLE IF EXISTS batter_profiles")
+        cursor.execute("DROP TABLE IF EXISTS sequence_patterns")
+        cursor.execute("DROP TABLE IF EXISTS prediction_features")
+        cursor.execute("DROP TABLE IF EXISTS starter_probability")
 
-        # Simple version without comments
+        # 1. Pitcher ID Mapping table (to handle different ID systems)
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS pitcher_ids (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             key_mlbam INTEGER UNIQUE,
             key_fangraphs INTEGER,
             name TEXT,
-            is_starter INTEGER
+            is_starter INTEGER,
+            first_seen_date TEXT,
+            last_seen_date TEXT
         )
         ''')
         
+        # 2. Teams table
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS teams (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -80,281 +91,254 @@ def create_database_schema():
         )
         ''')
         
-        # # 1. Pitcher ID Mapping table (to handle different ID systems)
-        # cursor.execute('''
-        # CREATE TABLE IF NOT EXISTS pitcher_ids (
-        #     id INTEGER PRIMARY KEY AUTOINCREMENT,
-        #     key_mlbam INTEGER UNIQUE,
-        #     key_fangraphs INTEGER,
-        #     name TEXT,
-        #     is_starter INTEGER,
-        #     first_seen_date TEXT,
-        #     last_seen_date TEXT
-        #     UNIQUE(key_mlbam)
-        # )
-        # ''')
+        # 3. Games table
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS games (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            game_id INTEGER UNIQUE,
+            game_date TEXT,
+            season INTEGER,
+            home_team TEXT,
+            away_team TEXT,
+            ballpark TEXT,
+            game_type TEXT,
+            FOREIGN KEY (home_team) REFERENCES teams(team_id),
+            FOREIGN KEY (away_team) REFERENCES teams(team_id)
+        )
+        ''')
         
-        # # 2. Teams table
-        # cursor.execute('''
-        # CREATE TABLE IF NOT EXISTS teams (
-        #     id INTEGER PRIMARY KEY AUTOINCREMENT,
-        #     team_id TEXT UNIQUE,
-        #     team_name TEXT,
-        #     key_fangraphs INTEGER
-        # )
-        # ''')
+        # 4. Raw Statcast pitch data
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS statcast_pitches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pitcher_id INTEGER,
+            game_id INTEGER,
+            pitch_type TEXT,
+            game_date TEXT,
+            release_speed REAL,
+            release_pos_x REAL,
+            release_pos_z REAL,
+            release_spin_rate INTEGER,
+            pfx_x REAL,
+            pfx_z REAL,
+            plate_x REAL,
+            plate_z REAL,
+            batter_id INTEGER,
+            batter_stands TEXT,
+            events TEXT,
+            description TEXT,
+            zone INTEGER,
+            balls INTEGER,
+            strikes INTEGER,
+            at_bat_number INTEGER,
+            pitch_number INTEGER,
+            inning INTEGER,
+            inning_topbot TEXT,
+            outs_when_up INTEGER,
+            on_1b INTEGER,
+            on_2b INTEGER,
+            on_3b INTEGER,
+            FOREIGN KEY (pitcher_id) REFERENCES pitcher_ids(key_mlbam),
+            FOREIGN KEY (game_id) REFERENCES games(game_id)
+        )
+        ''')
         
-        # # 3. Games table
-        # cursor.execute('''
-        # CREATE TABLE IF NOT EXISTS games (
-        #     id INTEGER PRIMARY KEY AUTOINCREMENT,
-        #     game_id INTEGER UNIQUE,         
-        #     game_date TEXT,                 
-        #     season INTEGER,                 
-        #     home_team TEXT,                 
-        #     away_team TEXT,                 
-        #     ballpark TEXT,                  
-        #     game_type TEXT,                 
-        #     FOREIGN KEY (home_team) REFERENCES teams(team_id),
-        #     FOREIGN KEY (away_team) REFERENCES teams(team_id)
-        # )
-        # ''')
+        # 5. Aggregated game-level pitcher stats
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS game_stats (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pitcher_id INTEGER,
+            game_id INTEGER,
+            game_date TEXT,
+            season INTEGER,
+            opponent_team TEXT,
+            strikeouts INTEGER,
+            batters_faced INTEGER,
+            pitches_thrown INTEGER,
+            strikes_thrown INTEGER,
+            called_strikes INTEGER,
+            swinging_strikes INTEGER,
+            foul_strikes INTEGER,
+            csw INTEGER,
+            csw_rate REAL,
+            avg_release_speed REAL,
+            max_release_speed REAL,
+            avg_spin_rate REAL,
+            zone_rate REAL,
+            first_pitch_strike_rate REAL,
+            chase_rate REAL,
+            contact_rate REAL,
+            whiff_rate REAL,
+            FOREIGN KEY (pitcher_id) REFERENCES pitcher_ids(key_mlbam),
+            FOREIGN KEY (game_id) REFERENCES games(game_id),
+            FOREIGN KEY (opponent_team) REFERENCES teams(team_id),
+            UNIQUE(pitcher_id, game_id)
+        )
+        ''')
         
-        # # 4. Raw Statcast pitch data
-        # cursor.execute('''
-        # CREATE TABLE IF NOT EXISTS statcast_pitches (
-        #     id INTEGER PRIMARY KEY AUTOINCREMENT,
-        #     pitcher_id INTEGER,             
-        #     game_id INTEGER,                
-        #     pitch_type TEXT,                
-        #     game_date TEXT,                 
-        #     release_speed REAL,             
-        #     release_pos_x REAL,             
-        #     release_pos_z REAL,             
-        #     release_spin_rate INTEGER,      
-        #     pfx_x REAL,                     
-        #     pfx_z REAL,                     
-        #     plate_x REAL,                   
-        #     plate_z REAL,                   
-        #     batter_id INTEGER,              
-        #     batter_stands TEXT,             
-        #     events TEXT,                    
-        #     description TEXT,               
-        #     zone INTEGER,                   
-        #     balls INTEGER,                  
-        #     strikes INTEGER,                
-        #     at_bat_number INTEGER,          
-        #     pitch_number INTEGER,           
-        #     inning INTEGER,                 
-        #     inning_topbot TEXT,             
-        #     outs_when_up INTEGER,           
-        #     on_1b INTEGER,                  
-        #     on_2b INTEGER,                  
-        #     on_3b INTEGER,                  
-        #     FOREIGN KEY (pitcher_id) REFERENCES pitcher_ids(mlbam_id),
-        #     FOREIGN KEY (game_id) REFERENCES games(game_id)
-        # )
-        # ''')
+        # 6. Pitch mix by game
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS pitch_mix (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            game_stats_id INTEGER,
+            pitch_type TEXT,
+            count INTEGER,
+            percentage REAL,
+            velocity_avg REAL,
+            movement_x_avg REAL,
+            movement_z_avg REAL,
+            whiff_rate REAL,
+            FOREIGN KEY (game_stats_id) REFERENCES game_stats(id)
+        )
+        ''')
         
-        # # 5. Aggregated game-level pitcher stats
-        # cursor.execute('''
-        # CREATE TABLE IF NOT EXISTS game_stats (
-        #     id INTEGER PRIMARY KEY AUTOINCREMENT,
-        #     pitcher_id INTEGER,             
-        #     game_id INTEGER,                
-        #     game_date TEXT,                 
-        #     season INTEGER,                 
-        #     opponent_team TEXT,             
-        #     strikeouts INTEGER,             
-        #     batters_faced INTEGER,          
-        #     pitches_thrown INTEGER,         
-        #     strikes_thrown INTEGER,         
-        #     called_strikes INTEGER,         
-        #     swinging_strikes INTEGER,       
-        #     foul_strikes INTEGER,           
-        #     csw INTEGER,                    
-        #     csw_rate REAL,                  
-        #     avg_release_speed REAL,         
-        #     max_release_speed REAL,         
-        #     avg_spin_rate REAL,             
-        #     zone_rate REAL,                 
-        #     first_pitch_strike_rate REAL,   
-        #     chase_rate REAL,                
-        #     contact_rate REAL,              
-        #     whiff_rate REAL,
-        #     FOREIGN KEY (pitcher_id) REFERENCES pitcher_ids(mlbam_id),
-        #     FOREIGN KEY (game_id) REFERENCES games(game_id),
-        #     FOREIGN KEY (opponent_team) REFERENCES teams(team_id),
-        #     UNIQUE(pitcher_id, game_id)
-        # )
-        # ''')
+        # 7. Team batting stats
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS team_batting_stats (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            team_id TEXT,
+            season INTEGER,
+            k_percent REAL,
+            bb_percent REAL,
+            avg REAL,
+            obp REAL,
+            slg REAL,
+            ops REAL,
+            iso REAL,
+            babip REAL,
+            o_swing_percent REAL,
+            z_contact_percent REAL,
+            contact_percent REAL,
+            zone_percent REAL,
+            swstr_percent REAL,
+            hard_hit_percent REAL,
+            pull_percent REAL,
+            FOREIGN KEY (team_id) REFERENCES teams(team_id),
+            UNIQUE(team_id, season)
+        )
+        ''')
         
-        # # 6. Pitch mix by game
-        # cursor.execute('''
-        # CREATE TABLE IF NOT EXISTS pitch_mix (
-        #     id INTEGER PRIMARY KEY AUTOINCREMENT,
-        #     game_stats_id INTEGER,          
-        #     pitch_type TEXT,                
-        #     count INTEGER,                  
-        #     percentage REAL,                
-        #     velocity_avg REAL,              
-        #     movement_x_avg REAL,            
-        #     movement_z_avg REAL,            
-        #     whiff_rate REAL,
-        #     FOREIGN KEY (game_stats_id) REFERENCES game_stats(id)
-        # )
-        # ''')
+        # 8. Batter profiles (selective aggregation from statcast_batter)
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS batter_profiles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            team_id TEXT,
+            season INTEGER,
+            batter_hand TEXT,
+            zone_whiff_rate REAL,
+            chase_rate REAL,
+            strikeout_rate REAL,
+            z1_whiff_rate REAL,
+            z2_whiff_rate REAL,
+            z3_whiff_rate REAL,
+            z4_whiff_rate REAL,
+            z5_whiff_rate REAL,
+            z6_whiff_rate REAL,
+            z7_whiff_rate REAL,
+            z8_whiff_rate REAL,
+            z9_whiff_rate REAL,
+            fb_whiff_rate REAL,
+            breaking_whiff_rate REAL,
+            offspeed_whiff_rate REAL,
+            FOREIGN KEY (team_id) REFERENCES teams(team_id),
+            UNIQUE(team_id, season, batter_hand)
+        )
+        ''')
         
-        # # 7. Team batting stats
-        # cursor.execute('''
-        # CREATE TABLE IF NOT EXISTS team_batting_stats (
-        #     id INTEGER PRIMARY KEY AUTOINCREMENT,
-        #     team_id TEXT,                   
-        #     season INTEGER,                 
-        #     k_percent REAL,                 
-        #     bb_percent REAL,                
-        #     avg REAL,                       
-        #     obp REAL,                       
-        #     slg REAL,                       
-        #     ops REAL,                       
-        #     iso REAL,                       
-        #     babip REAL,                     
-        #     o_swing_percent REAL,           
-        #     z_contact_percent REAL,         
-        #     contact_percent REAL,           
-        #     zone_percent REAL,              
-        #     swstr_percent REAL,             
-        #     hard_hit_percent REAL,          
-        #     pull_percent REAL,
-        #     FOREIGN KEY (team_id) REFERENCES teams(team_id),
-        #     UNIQUE(team_id, season)
-        # )
-        # ''')
+        # 9. Sequence patterns (for pitcher tendencies)
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS sequence_patterns (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pitcher_id INTEGER,
+            season INTEGER,
+            count_state TEXT,
+            first_pitch TEXT,
+            ahead_count_pitch TEXT,
+            behind_count_pitch TEXT,
+            two_strike_pitch TEXT,
+            strikeout_pitch TEXT,
+            fb_percent_first_pitch REAL,
+            breaking_percent_two_strike REAL, 
+            fb_to_breaking_rate REAL,
+            breaking_to_fb_rate REAL,
+            FOREIGN KEY (pitcher_id) REFERENCES pitcher_ids(key_mlbam),
+            UNIQUE(pitcher_id, season, count_state)
+        )
+        ''')
         
-        # # 8. Batter profiles (selective aggregation from statcast_batter)
-        # cursor.execute('''
-        # CREATE TABLE IF NOT EXISTS batter_profiles (
-        #     id INTEGER PRIMARY KEY AUTOINCREMENT,
-        #     team_id TEXT,                   
-        #     season INTEGER,                 
-        #     batter_hand TEXT,               
-        #     zone_whiff_rate REAL,           
-        #     chase_rate REAL,                
-        #     strikeout_rate REAL,            
-        #     z1_whiff_rate REAL,             
-        #     z2_whiff_rate REAL,             
-        #     z3_whiff_rate REAL,             
-        #     z4_whiff_rate REAL,             
-        #     z5_whiff_rate REAL,             
-        #     z6_whiff_rate REAL,             
-        #     z7_whiff_rate REAL,             
-        #     z8_whiff_rate REAL,             
-        #     z9_whiff_rate REAL,             
-        #     fb_whiff_rate REAL,             
-        #     breaking_whiff_rate REAL,       
-        #     offspeed_whiff_rate REAL,
-        #     FOREIGN KEY (team_id) REFERENCES teams(team_id),
-        #     UNIQUE(team_id, season, batter_hand)
-        # )
-        # ''')
+        # 10. Prediction features (pregame)
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS prediction_features (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pitcher_id INTEGER,
+            game_id TEXT,
+            game_date TEXT,
+            season INTEGER,
+            opponent_team TEXT,
+            
+            last_3_games_strikeouts_avg REAL,
+            last_5_games_strikeouts_avg REAL,
+            last_10_games_strikeouts_avg REAL,
+            last_3_games_velo_avg REAL,
+            last_5_games_velo_avg REAL,
+            last_10_games_velo_avg REAL,
+            last_3_games_swinging_strike_pct REAL,
+            last_5_games_swinging_strike_pct REAL,
+            last_10_games_swinging_strike_pct REAL,
+            last_3_games_csw_rate REAL,
+            last_5_games_csw_rate REAL,
+            last_10_games_csw_rate REAL,
+            
+            last_3_games_strikeouts_std REAL,
+            last_5_games_strikeouts_std REAL,
+            last_10_games_strikeouts_std REAL,
+            strikeout_consistency REAL,
+            
+            days_rest INTEGER,
+            team_changed INTEGER,
+            
+            opponent_k_rate REAL,
+            opponent_contact_rate REAL,
+            opponent_chase_rate REAL,
+            opponent_zone_contact_rate REAL,
+            opponent_k_vs_pitch_type REAL,
+            
+            pitcher_handedness TEXT,
+            opponent_k_rate_vs_hand REAL,
+            ballpark_k_factor REAL,
+            historical_k_rate_vs_opponent REAL,
+            
+            expected_fb_usage REAL,
+            expected_breaking_usage REAL,
+            expected_offspeed_usage REAL,
+            
+            fb_percent_first_pitch REAL,
+            breaking_percent_two_strike REAL,
+            
+            actual_strikeouts INTEGER,
+            
+            FOREIGN KEY (pitcher_id) REFERENCES pitcher_ids(key_mlbam),
+            FOREIGN KEY (game_id) REFERENCES games(game_id),
+            FOREIGN KEY (opponent_team) REFERENCES teams(team_id),
+            UNIQUE(pitcher_id, game_id)
+        )
+        ''')
         
-        # # 9. Sequence patterns (for pitcher tendencies)
-        # cursor.execute('''
-        # CREATE TABLE IF NOT EXISTS sequence_patterns (
-        #     id INTEGER PRIMARY KEY AUTOINCREMENT,
-        #     pitcher_id INTEGER,             
-        #     season INTEGER,                 
-        #     count_state TEXT,               
-        #     first_pitch TEXT,               
-        #     ahead_count_pitch TEXT,         
-        #     behind_count_pitch TEXT,        
-        #     two_strike_pitch TEXT,          
-        #     strikeout_pitch TEXT,           
-        #     fb_percent_first_pitch REAL,    
-        #     breaking_percent_two_strike REAL, 
-        #     fb_to_breaking_rate REAL,       
-        #     breaking_to_fb_rate REAL,
-        #     FOREIGN KEY (pitcher_id) REFERENCES pitcher_ids(mlbam_id),
-        #     UNIQUE(pitcher_id, season, count_state)
-        # )
-        # ''')
-        
-        # # 10. Prediction features (pregame)
-        # cursor.execute('''
-        # CREATE TABLE IF NOT EXISTS prediction_features (
-        #     id INTEGER PRIMARY KEY AUTOINCREMENT,
-        #     pitcher_id INTEGER,             
-        #     game_date TEXT,                 
-        #     season INTEGER,                 
-        #     opponent_team TEXT,             
-            
-            
-        #     last_3_games_strikeouts_avg REAL,
-        #     last_5_games_strikeouts_avg REAL,
-        #     last_10_games_strikeouts_avg REAL,
-        #     last_3_games_velo_avg REAL,
-        #     last_5_games_velo_avg REAL,
-        #     last_10_games_velo_avg REAL,
-        #     last_3_games_swinging_strike_pct REAL,
-        #     last_5_games_swinging_strike_pct REAL,
-        #     last_10_games_swinging_strike_pct REAL,
-        #     last_3_games_csw_rate REAL,
-        #     last_5_games_csw_rate REAL,
-        #     last_10_games_csw_rate REAL,
-            
-            
-        #     last_3_games_strikeouts_std REAL,
-        #     last_5_games_strikeouts_std REAL,
-        #     last_10_games_strikeouts_std REAL,
-        #     strikeout_consistency REAL,
-            
-            
-        #     days_rest INTEGER,
-        #     team_changed BOOLEAN,
-            
-            
-        #     opponent_k_rate REAL,
-        #     opponent_contact_rate REAL,
-        #     opponent_chase_rate REAL,
-        #     opponent_zone_contact_rate REAL,
-        #     opponent_k_vs_pitch_type REAL,  
-            
-        #     pitcher_handedness TEXT,
-        #     opponent_k_rate_vs_hand REAL,   
-        #     ballpark_k_factor REAL,
-        #     historical_k_rate_vs_opponent REAL,
-            
-        #     expected_fb_usage REAL,
-        #     expected_breaking_usage REAL,
-        #     expected_offspeed_usage REAL,
-            
-        #     fb_percent_first_pitch REAL,
-        #     breaking_percent_two_strike REAL,
-            
-        #     actual_strikeouts INTEGER,
-            
-        #     FOREIGN KEY (pitcher_id) REFERENCES pitcher_ids(mlbam_id),
-        #     FOREIGN KEY (game_id) REFERENCES games(game_id),
-        #     FOREIGN KEY (opponent_team) REFERENCES teams(team_id),
-        #     UNIQUE(pitcher_id, game_id)
-        # )
-        # ''')
-        
-        # # 11. Pitcher starting probability
-        # cursor.execute('''
-        # CREATE TABLE IF NOT EXISTS starter_probability (
-        #     id INTEGER PRIMARY KEY AUTOINCREMENT,
-        #     pitcher_id INTEGER,             
-        #     season INTEGER,                 
-        #     games_started INTEGER,          
-        #     total_games INTEGER,            
-        #     is_known_starter INTEGER,       
-        #     estimated_starter_probability REAL, 
-        #     last_role TEXT,                 
-        #     FOREIGN KEY (pitcher_id) REFERENCES pitcher_ids(mlbam_id),
-        #     UNIQUE(pitcher_id, season)
-        # )
-        # ''')
+        # 11. Pitcher starting probability
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS starter_probability (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pitcher_id INTEGER,
+            season INTEGER,
+            games_started INTEGER,
+            total_games INTEGER,
+            is_known_starter INTEGER,
+            estimated_starter_probability REAL, 
+            last_role TEXT,
+            FOREIGN KEY (pitcher_id) REFERENCES pitcher_ids(key_mlbam),
+            UNIQUE(pitcher_id, season)
+        )
+        ''')
         
         conn.commit()
 
@@ -419,7 +403,7 @@ def fetch_pitcher_id_mapping(seasons=None):
     Fetch pitcher ID mappings between MLBAM and FanGraphs
     """
     if seasons is None:
-        seasons = list(range(2015, 2026))  # Default: Recent seasons
+        seasons = list(range(2023, 2026))  # Default: Recent seasons
     
     logger.info(f"Fetching pitcher ID mappings for seasons: {seasons}")
     
@@ -428,9 +412,9 @@ def fetch_pitcher_id_mapping(seasons=None):
     all_pitchers = []
     
     try:
-        # Get player ID lookup table
-        logger.info("Fetching player lookup table...")
-        player_lookup = pb.playerid_lookup(None, None)
+        # Get Chadwick Register instead of using playerid_lookup with None parameters
+        logger.info("Fetching Chadwick Register data...")
+        player_lookup = pb.chadwick_register()
         
         # Process each season to find starters
         for season in seasons:
@@ -440,8 +424,18 @@ def fetch_pitcher_id_mapping(seasons=None):
                 # Get pitching stats for the season
                 pitching_stats = pb.pitching_stats(season, season, qual=0)
                 
+                # Print column names to diagnose the issue
+                logger.info(f"Season {season} pitching stats columns: {pitching_stats.columns.tolist()}")
+                
+                # The column might be 'IDfg' or 'playerid' - check both
+                player_id_col = 'IDfg' if 'IDfg' in pitching_stats.columns else 'playerid'
+                
+                if player_id_col not in pitching_stats.columns:
+                    raise KeyError(f"No player ID column found. Available columns: {pitching_stats.columns.tolist()}")
+                
                 # Identify all pitchers
-                season_pitchers = pitching_stats[['playerid', 'Name', 'Team', 'G', 'GS', 'IP']].copy()
+                season_pitchers = pitching_stats[['IDfg', 'Name', 'Team', 'G', 'GS', 'IP']].copy()
+                season_pitchers = season_pitchers.rename(columns={'IDfg': 'playerid'})
                 season_pitchers['season'] = season
                 
                 # Add to master pitcher list
@@ -483,34 +477,37 @@ def fetch_pitcher_id_mapping(seasons=None):
             logger.info(f"Total unique pitchers: {len(unique_pitchers)}")
             logger.info(f"Total unique starters: {unique_pitchers['is_starter'].sum()}")
             
-            # Now match with MLBAM IDs
-            # Add the key_mlbam to the unique_pitchers DataFrame
-            pitcher_ids = []
+            # Now match with MLBAM IDs by joining with the player_lookup dataframe
+            # Rename columns for consistent join
+            player_lookup_filtered = player_lookup[['key_fangraphs', 'key_mlbam']].dropna()
             
-            for _, row in unique_pitchers.iterrows():
-                fg_id = row['playerid']
-                name = row['Name']
-                is_starter = row['is_starter']
+            # Convert to appropriate types for joining
+            player_lookup_filtered['key_fangraphs'] = player_lookup_filtered['key_fangraphs'].astype(int)
+            unique_pitchers['playerid'] = unique_pitchers['playerid'].astype(int)
+            
+            # Join on key_fangraphs (playerid)
+            merged_df = pd.merge(
+                unique_pitchers,
+                player_lookup_filtered,
+                left_on='playerid',
+                right_on='key_fangraphs',
+                how='inner'
+            )
+            
+            if not merged_df.empty:
+                # Create final mapping DataFrame
+                mapping_df = pd.DataFrame({
+                    'key_fangraphs': merged_df['playerid'],
+                    'key_mlbam': merged_df['key_mlbam'],
+                    'name': merged_df['Name'],
+                    'is_starter': merged_df['is_starter']
+                })
                 
-                # Try to find matching player in lookup table
-                matches = player_lookup[player_lookup['key_fangraphs'] == fg_id]
-                
-                if not matches.empty:
-                    mlbam_id = matches['key_mlbam'].iloc[0]
-                    pitcher_ids.append({
-                        'key_fangraphs': fg_id,
-                        'key_mlbam': mlbam_id,
-                        'name': name,
-                        'is_starter': is_starter
-                    })
-                else:
-                    logger.warning(f"No MLBAM ID found for {name} (FG ID: {fg_id})")
-            
-            # Create final mapping DataFrame
-            mapping_df = pd.DataFrame(pitcher_ids)
-            logger.info(f"Created mapping for {len(mapping_df)} pitchers")
-            
-            return mapping_df
+                logger.info(f"Created mapping for {len(mapping_df)} pitchers")
+                return mapping_df
+            else:
+                logger.warning("No matches found between pitcher IDs and player lookup")
+                return pd.DataFrame()
         else:
             logger.error("No pitcher data found for any season")
             return pd.DataFrame()
@@ -577,7 +574,7 @@ def extract_statcast_for_starters(seasons, output_dir="data/statcast"):
         cursor = conn.cursor()
         
         # Get all starting pitchers
-        cursor.execute("SELECT mlbam_id FROM pitcher_ids WHERE is_starter = 1")
+        cursor.execute("SELECT key_mlbam FROM pitcher_ids WHERE is_starter = 1")
         starter_ids = [row[0] for row in cursor.fetchall()]
         
         if not starter_ids:
