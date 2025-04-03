@@ -5,7 +5,7 @@ from pathlib import Path
 from src.data.utils import setup_logger, ensure_dir
 from functools import lru_cache
 import hashlib
-import time
+from datetime import datetime
 from config import DBConfig
 import pybaseball as pb
 import os
@@ -400,19 +400,31 @@ def initialize_team_data():
 
 def fetch_pitcher_id_mapping(seasons=None):
     """
-    Fetch pitcher ID mappings between MLBAM and FanGraphs
+    Fetch pitcher ID mappings between MLBAM and FanGraphs with flexible starter criteria
     """
     if seasons is None:
         seasons = list(range(2023, 2026))  # Default: Recent seasons
     
     logger.info(f"Fetching pitcher ID mappings for seasons: {seasons}")
     
+    # More comprehensive column mapping
+    column_mapping = {
+        'fangraphs_id': ['IDfg', 'playerid', 'key_fangraphs', 'FG ID'],
+        'name': ['Name', 'name', 'player_name', 'Player Name'],
+        'team': ['Team', 'team', 'team_abbrev', 'Tm'],
+        'games': ['G', 'games_played', 'Games Played'],
+        'games_started': ['GS', 'games_started', 'Games Started']
+    }
+    
     # This will store our mapping data
     all_starters = []
     all_pitchers = []
     
+    # Get current year
+    current_year = datetime.now().year
+    
     try:
-        # Get Chadwick Register instead of using playerid_lookup with None parameters
+        # Get Chadwick Register for additional ID mapping
         logger.info("Fetching Chadwick Register data...")
         player_lookup = pb.chadwick_register()
         
@@ -424,29 +436,73 @@ def fetch_pitcher_id_mapping(seasons=None):
                 # Get pitching stats for the season
                 pitching_stats = pb.pitching_stats(season, season, qual=0)
                 
-                # Print column names to diagnose the issue
-                logger.info(f"Season {season} pitching stats columns: {pitching_stats.columns.tolist()}")
+                # Function to find the first matching column
+                def find_column(possible_names):
+                    for name in possible_names:
+                        if name in pitching_stats.columns:
+                            return name
+                    return None
                 
-                # The column might be 'IDfg' or 'playerid' - check both
-                player_id_col = 'IDfg' if 'IDfg' in pitching_stats.columns else 'playerid'
+                # Dynamically find column names
+                id_col = find_column(column_mapping['fangraphs_id'])
+                name_col = find_column(column_mapping['name'])
+                team_col = find_column(column_mapping['team'])
+                games_col = find_column(column_mapping['games'])
+                games_started_col = find_column(column_mapping['games_started'])
                 
-                if player_id_col not in pitching_stats.columns:
-                    raise KeyError(f"No player ID column found. Available columns: {pitching_stats.columns.tolist()}")
+                # Comprehensive logging for debugging
+                logger.info(f"Found columns:")
+                logger.info(f"  ID Column: {id_col}")
+                logger.info(f"  Name Column: {name_col}")
+                logger.info(f"  Team Column: {team_col}")
+                logger.info(f"  Games Column: {games_col}")
+                logger.info(f"  Games Started Column: {games_started_col}")
                 
-                # Identify all pitchers
-                season_pitchers = pitching_stats[['IDfg', 'Name', 'Team', 'G', 'GS', 'IP']].copy()
-                season_pitchers = season_pitchers.rename(columns={'IDfg': 'playerid'})
+                # Verify all required columns are found
+                if not all([id_col, name_col, team_col, games_col, games_started_col]):
+                    logger.error(f"Missing required columns in season {season}")
+                    logger.error(f"Available columns: {list(pitching_stats.columns)}")
+                    continue
+                
+                # Select and rename columns
+                season_pitchers = pitching_stats[[
+                    id_col, name_col, team_col, games_col, games_started_col
+                ]].copy()
+                
+                season_pitchers.columns = [
+                    'fangraphs_id', 'name', 'team', 'games', 'games_started'
+                ]
+                
+                # Convert columns to appropriate types
+                season_pitchers['fangraphs_id'] = pd.to_numeric(season_pitchers['fangraphs_id'], errors='coerce')
+                season_pitchers['games'] = pd.to_numeric(season_pitchers['games'], errors='coerce')
+                season_pitchers['games_started'] = pd.to_numeric(season_pitchers['games_started'], errors='coerce')
+                
                 season_pitchers['season'] = season
+                
+                # Drop rows with invalid data
+                season_pitchers = season_pitchers.dropna(subset=['fangraphs_id', 'games', 'games_started'])
                 
                 # Add to master pitcher list
                 all_pitchers.append(season_pitchers)
                 
-                # Identify starters (GS ≥ 5 or GS/G ratio ≥ 0.5 and G ≥ 8)
-                starters = season_pitchers[
-                    (season_pitchers['GS'] >= 5) | 
-                    ((season_pitchers['GS']/season_pitchers['G'] >= 0.5) & 
-                     (season_pitchers['G'] >= 8))
-                ].copy()
+                # Adjust starter criteria based on the season
+                if season == current_year:
+                    # For current year, be more lenient
+                    # Consider a starter if they've started at least 1 game
+                    # or have a games_started/games ratio suggesting they might be a starter
+                    starters = season_pitchers[
+                        (season_pitchers['games_started'] >= 1) | 
+                        ((season_pitchers['games_started']/season_pitchers['games'] >= 0.3) & 
+                         (season_pitchers['games'] >= 3))
+                    ].copy()
+                else:
+                    # Previous seasons use original criteria
+                    starters = season_pitchers[
+                        (season_pitchers['games_started'] >= 5) | 
+                        ((season_pitchers['games_started']/season_pitchers['games'] >= 0.5) & 
+                         (season_pitchers['games'] >= 8))
+                    ].copy()
                 
                 starters['is_known_starter'] = 1
                 
@@ -457,39 +513,40 @@ def fetch_pitcher_id_mapping(seasons=None):
                 
             except Exception as e:
                 logger.error(f"Error processing season {season}: {e}")
-    
-        # Combine all seasons
+                import traceback
+                logger.error(traceback.format_exc())
+        
+        # Combine all pitcher data
         if all_pitchers:
             all_pitchers_df = pd.concat(all_pitchers, ignore_index=True)
             
             # Get unique pitchers
-            unique_pitchers = all_pitchers_df[['playerid', 'Name']].drop_duplicates()
+            unique_pitchers = all_pitchers_df[['fangraphs_id', 'name']].drop_duplicates()
             
             # Check which ones are starters
             if all_starters:
                 all_starters_df = pd.concat(all_starters, ignore_index=True)
                 # Get unique FG IDs that were starters in any season
-                starter_ids = all_starters_df['playerid'].unique()
-                unique_pitchers['is_starter'] = unique_pitchers['playerid'].isin(starter_ids).astype(int)
+                starter_ids = all_starters_df['fangraphs_id'].unique()
+                unique_pitchers['is_starter'] = unique_pitchers['fangraphs_id'].isin(starter_ids).astype(int)
             else:
                 unique_pitchers['is_starter'] = 0
-                
+            
             logger.info(f"Total unique pitchers: {len(unique_pitchers)}")
             logger.info(f"Total unique starters: {unique_pitchers['is_starter'].sum()}")
             
-            # Now match with MLBAM IDs by joining with the player_lookup dataframe
-            # Rename columns for consistent join
+            # Modify player lookup and merging
             player_lookup_filtered = player_lookup[['key_fangraphs', 'key_mlbam']].dropna()
             
             # Convert to appropriate types for joining
             player_lookup_filtered['key_fangraphs'] = player_lookup_filtered['key_fangraphs'].astype(int)
-            unique_pitchers['playerid'] = unique_pitchers['playerid'].astype(int)
+            unique_pitchers['fangraphs_id'] = unique_pitchers['fangraphs_id'].astype(int)
             
-            # Join on key_fangraphs (playerid)
+            # Join on key_fangraphs
             merged_df = pd.merge(
                 unique_pitchers,
                 player_lookup_filtered,
-                left_on='playerid',
+                left_on='fangraphs_id',
                 right_on='key_fangraphs',
                 how='inner'
             )
@@ -497,9 +554,9 @@ def fetch_pitcher_id_mapping(seasons=None):
             if not merged_df.empty:
                 # Create final mapping DataFrame
                 mapping_df = pd.DataFrame({
-                    'key_fangraphs': merged_df['playerid'],
+                    'key_fangraphs': merged_df['fangraphs_id'],
                     'key_mlbam': merged_df['key_mlbam'],
-                    'name': merged_df['Name'],
+                    'name': merged_df['name'],
                     'is_starter': merged_df['is_starter']
                 })
                 
@@ -514,6 +571,8 @@ def fetch_pitcher_id_mapping(seasons=None):
     
     except Exception as e:
         logger.error(f"Error fetching pitcher ID mappings: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return pd.DataFrame()
 
 def initialize_pitcher_ids(mapping_df=None):
