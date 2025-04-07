@@ -45,30 +45,17 @@ def is_table_populated(table_name):
     return count > 0
 
 def create_database_schema():
-    """ create database tables """ 
+    """ Create basic database tables without statcast data tables """
     ensure_dir(Path(DB_PATH).parent)
     
     # Connect to database
     with DBConnection() as conn:
         cursor = conn.cursor()
     
-        # Create tables
-        logger.info("Creating database schema...")
+        # Create essential tables
+        logger.info("Creating essential database schema...")
 
-        # Drop existing tables to ensure clean schema
-        cursor.execute("DROP TABLE IF EXISTS teams")
-        cursor.execute("DROP TABLE IF EXISTS pitcher_ids")
-        cursor.execute("DROP TABLE IF EXISTS games")
-        cursor.execute("DROP TABLE IF EXISTS statcast_pitches")
-        cursor.execute("DROP TABLE IF EXISTS game_stats")
-        cursor.execute("DROP TABLE IF EXISTS pitch_mix")
-        cursor.execute("DROP TABLE IF EXISTS team_batting_stats")
-        cursor.execute("DROP TABLE IF EXISTS batter_profiles")
-        cursor.execute("DROP TABLE IF EXISTS sequence_patterns")
-        cursor.execute("DROP TABLE IF EXISTS prediction_features")
-        cursor.execute("DROP TABLE IF EXISTS starter_probability")
-
-        # 1. Pitcher ID Mapping table (to handle different ID systems)
+        # 1. Pitcher ID Mapping table
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS pitcher_ids (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -107,43 +94,7 @@ def create_database_schema():
         )
         ''')
         
-        # 4. Raw Statcast pitch data
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS statcast_pitches (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            pitcher_id INTEGER,
-            game_id INTEGER,
-            pitch_type TEXT,
-            game_date TEXT,
-            release_speed REAL,
-            release_pos_x REAL,
-            release_pos_z REAL,
-            release_spin_rate INTEGER,
-            pfx_x REAL,
-            pfx_z REAL,
-            plate_x REAL,
-            plate_z REAL,
-            batter_id INTEGER,
-            batter_stands TEXT,
-            events TEXT,
-            description TEXT,
-            zone INTEGER,
-            balls INTEGER,
-            strikes INTEGER,
-            at_bat_number INTEGER,
-            pitch_number INTEGER,
-            inning INTEGER,
-            inning_topbot TEXT,
-            outs_when_up INTEGER,
-            on_1b INTEGER,
-            on_2b INTEGER,
-            on_3b INTEGER,
-            FOREIGN KEY (pitcher_id) REFERENCES pitcher_ids(key_mlbam),
-            FOREIGN KEY (game_id) REFERENCES games(game_id)
-        )
-        ''')
-        
-        # 5. Aggregated game-level pitcher stats
+        # 4. Simplified Game Stats table - just key relationships
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS game_stats (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -152,23 +103,6 @@ def create_database_schema():
             game_date TEXT,
             season INTEGER,
             opponent_team TEXT,
-            strikeouts INTEGER,
-            batters_faced INTEGER,
-            pitches_thrown INTEGER,
-            strikes_thrown INTEGER,
-            called_strikes INTEGER,
-            swinging_strikes INTEGER,
-            foul_strikes INTEGER,
-            csw INTEGER,
-            csw_rate REAL,
-            avg_release_speed REAL,
-            max_release_speed REAL,
-            avg_spin_rate REAL,
-            zone_rate REAL,
-            first_pitch_strike_rate REAL,
-            chase_rate REAL,
-            contact_rate REAL,
-            whiff_rate REAL,
             FOREIGN KEY (pitcher_id) REFERENCES pitcher_ids(key_mlbam),
             FOREIGN KEY (game_id) REFERENCES games(game_id),
             FOREIGN KEY (opponent_team) REFERENCES teams(team_id),
@@ -176,97 +110,7 @@ def create_database_schema():
         )
         ''')
         
-        # 6. Pitch mix by game
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS pitch_mix (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            game_stats_id INTEGER,
-            pitch_type TEXT,
-            count INTEGER,
-            percentage REAL,
-            velocity_avg REAL,
-            movement_x_avg REAL,
-            movement_z_avg REAL,
-            whiff_rate REAL,
-            FOREIGN KEY (game_stats_id) REFERENCES game_stats(id)
-        )
-        ''')
-        
-        # 7. Team batting stats
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS team_batting_stats (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            team_id TEXT,
-            season INTEGER,
-            k_percent REAL,
-            bb_percent REAL,
-            avg REAL,
-            obp REAL,
-            slg REAL,
-            ops REAL,
-            iso REAL,
-            babip REAL,
-            o_swing_percent REAL,
-            z_contact_percent REAL,
-            contact_percent REAL,
-            zone_percent REAL,
-            swstr_percent REAL,
-            hard_hit_percent REAL,
-            pull_percent REAL,
-            FOREIGN KEY (team_id) REFERENCES teams(team_id),
-            UNIQUE(team_id, season)
-        )
-        ''')
-        
-        # 8. Batter profiles (selective aggregation from statcast_batter)
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS batter_profiles (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            team_id TEXT,
-            season INTEGER,
-            batter_hand TEXT,
-            zone_whiff_rate REAL,
-            chase_rate REAL,
-            strikeout_rate REAL,
-            z1_whiff_rate REAL,
-            z2_whiff_rate REAL,
-            z3_whiff_rate REAL,
-            z4_whiff_rate REAL,
-            z5_whiff_rate REAL,
-            z6_whiff_rate REAL,
-            z7_whiff_rate REAL,
-            z8_whiff_rate REAL,
-            z9_whiff_rate REAL,
-            fb_whiff_rate REAL,
-            breaking_whiff_rate REAL,
-            offspeed_whiff_rate REAL,
-            FOREIGN KEY (team_id) REFERENCES teams(team_id),
-            UNIQUE(team_id, season, batter_hand)
-        )
-        ''')
-        
-        # 9. Sequence patterns (for pitcher tendencies)
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS sequence_patterns (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            pitcher_id INTEGER,
-            season INTEGER,
-            count_state TEXT,
-            first_pitch TEXT,
-            ahead_count_pitch TEXT,
-            behind_count_pitch TEXT,
-            two_strike_pitch TEXT,
-            strikeout_pitch TEXT,
-            fb_percent_first_pitch REAL,
-            breaking_percent_two_strike REAL, 
-            fb_to_breaking_rate REAL,
-            breaking_to_fb_rate REAL,
-            FOREIGN KEY (pitcher_id) REFERENCES pitcher_ids(key_mlbam),
-            UNIQUE(pitcher_id, season, count_state)
-        )
-        ''')
-        
-        # 10. Prediction features (pregame)
+        # 5. Prediction features table - this can remain
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS prediction_features (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -275,74 +119,14 @@ def create_database_schema():
             game_date TEXT,
             season INTEGER,
             opponent_team TEXT,
-            
-            last_3_games_strikeouts_avg REAL,
-            last_5_games_strikeouts_avg REAL,
-            last_10_games_strikeouts_avg REAL,
-            last_3_games_velo_avg REAL,
-            last_5_games_velo_avg REAL,
-            last_10_games_velo_avg REAL,
-            last_3_games_swinging_strike_pct REAL,
-            last_5_games_swinging_strike_pct REAL,
-            last_10_games_swinging_strike_pct REAL,
-            last_3_games_csw_rate REAL,
-            last_5_games_csw_rate REAL,
-            last_10_games_csw_rate REAL,
-            
-            last_3_games_strikeouts_std REAL,
-            last_5_games_strikeouts_std REAL,
-            last_10_games_strikeouts_std REAL,
-            strikeout_consistency REAL,
-            
-            days_rest INTEGER,
-            team_changed INTEGER,
-            
-            opponent_k_rate REAL,
-            opponent_contact_rate REAL,
-            opponent_chase_rate REAL,
-            opponent_zone_contact_rate REAL,
-            opponent_k_vs_pitch_type REAL,
-            
-            pitcher_handedness TEXT,
-            opponent_k_rate_vs_hand REAL,
-            ballpark_k_factor REAL,
-            historical_k_rate_vs_opponent REAL,
-            
-            expected_fb_usage REAL,
-            expected_breaking_usage REAL,
-            expected_offspeed_usage REAL,
-            
-            fb_percent_first_pitch REAL,
-            breaking_percent_two_strike REAL,
-            
-            actual_strikeouts INTEGER,
-            
-            FOREIGN KEY (pitcher_id) REFERENCES pitcher_ids(key_mlbam),
-            FOREIGN KEY (game_id) REFERENCES games(game_id),
-            FOREIGN KEY (opponent_team) REFERENCES teams(team_id),
-            UNIQUE(pitcher_id, game_id)
-        )
-        ''')
-        
-        # 11. Pitcher starting probability
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS starter_probability (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            pitcher_id INTEGER,
-            season INTEGER,
-            games_started INTEGER,
-            total_games INTEGER,
-            is_known_starter INTEGER,
-            estimated_starter_probability REAL, 
-            last_role TEXT,
-            FOREIGN KEY (pitcher_id) REFERENCES pitcher_ids(key_mlbam),
-            UNIQUE(pitcher_id, season)
+            /* Keep the most essential fields here */
+            FOREIGN KEY (pitcher_id) REFERENCES pitcher_ids(key_mlbam)
         )
         ''')
         
         conn.commit()
 
-    logger.info("Database schema created successfully")
+    logger.info("Essential database schema created successfully")
 
 def initialize_team_data():
 
@@ -403,7 +187,7 @@ def fetch_pitcher_id_mapping(seasons=None):
     Fetch pitcher ID mappings between MLBAM and FanGraphs with flexible starter criteria
     """
     if seasons is None:
-        seasons = list(range(2023, 2026))  # Default: Recent seasons
+        seasons = list(range(2025, 2026))  # Default: Recent seasons
     
     logger.info(f"Fetching pitcher ID mappings for seasons: {seasons}")
     
@@ -1115,8 +899,191 @@ def load_statcast_csvs_to_database(csv_directory):
     logger.info(f"Successfully loaded {rows_inserted} pitches into database")
     return rows_inserted > 0
 
+def load_data_to_database(csv_files, data_type):
+    """
+    Load CSV files into appropriate database tables with preserved column names
+    
+    Args:
+        csv_files (list): List of paths to CSV files
+        data_type (str): Type of data - 'pitcher', 'batter', or 'team_batting'
+        
+    Returns:
+        bool: Success status
+    """
+    if not csv_files:
+        logger.error(f"No {data_type} CSV files found")
+        return False
+        
+    logger.info(f"Found {len(csv_files)} {data_type} CSV files to process")
+    
+    # Define table names based on data type
+    if data_type == 'pitcher':
+        table_name = 'statcast_pitches'
+    elif data_type == 'batter':
+        table_name = 'statcast_batters'
+    elif data_type == 'team_batting':
+        table_name = 'team_batting_stats'
+    else:
+        logger.error(f"Unsupported data type: {data_type}")
+        return False
+    
+    # First, get the schema from the first CSV to set up proper columns
+    sample_df = pd.read_csv(csv_files[0])
+    
+    with DBConnection() as conn:
+        cursor = conn.cursor()
+        
+        # Drop the existing table to recreate with proper columns
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        
+        # Create columns definition for SQL CREATE TABLE
+        columns = []
+        for col in sample_df.columns:
+            # Skip the unnamed index column which appears as ""
+            if col == "":
+                continue
+                
+            # Clean the column name for SQL (replace spaces and special chars)
+            clean_col = col.replace(" ", "_").replace("%", "pct").replace("/", "_per_")
+            
+            # Get appropriate type for each column
+            dtype = sample_df[col].dtype
+            if pd.api.types.is_integer_dtype(dtype):
+                sql_type = "INTEGER"
+            elif pd.api.types.is_float_dtype(dtype):
+                sql_type = "REAL"
+            else:
+                sql_type = "TEXT"
+            
+            columns.append(f'"{clean_col}" {sql_type}')
+        
+        # Add additional columns for tracking source if needed
+        if data_type in ['pitcher', 'batter']:
+            columns.append('"pitcher_id" INTEGER')
+            columns.append('"season" INTEGER')
+            
+        # Create the table with proper column names and types
+        create_query = f"""
+        CREATE TABLE {table_name} (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            {', '.join(columns)}
+        )
+        """
+        cursor.execute(create_query)
+        conn.commit()
+    
+    rows_inserted = 0
+    with DBConnection() as conn:
+        cursor = conn.cursor()
+        
+        for csv_file in csv_files:
+            try:
+                # Extract metadata from filename for pitcher/batter files
+                pitcher_id = None
+                season = None
+                
+                if data_type in ['pitcher', 'batter']:
+                    # Extract pitcher_id and season from filename (e.g., pitcher_XXXXX_YYYY.csv)
+                    filename = Path(csv_file).name
+                    parts = filename.replace(".csv", "").split("_")
+                    if len(parts) >= 3:
+                        pitcher_id = int(parts[1])
+                        season = int(parts[2])
+                
+                # Load CSV
+                df = pd.read_csv(csv_file)
+                logger.info(f"Processing {len(df)} rows from {Path(csv_file).name}")
+                
+                # Drop the index column if it exists
+                if "" in df.columns:
+                    df = df.drop("", axis=1)
+                
+                # Clean column names
+                df.columns = [col.replace(" ", "_").replace("%", "pct").replace("/", "_per_") 
+                              for col in df.columns]
+                
+                # Get column names for insertion
+                columns = list(df.columns)
+                
+                # Add pitcher_id and season columns if needed
+                extra_columns = []
+                extra_values = []
+                if data_type in ['pitcher', 'batter'] and pitcher_id and season:
+                    extra_columns = ["pitcher_id", "season"]
+                    extra_values = [pitcher_id, season]
+                
+                # Build the insert query
+                all_columns = columns + extra_columns
+                placeholders = ', '.join(['?'] * len(all_columns))
+                insert_query = f"""
+                INSERT INTO {table_name} ({', '.join([f'"{col}"' for col in all_columns])})
+                VALUES ({placeholders})
+                """
+                
+                # Insert data in batches
+                batch_size = 1000
+                for i in range(0, len(df), batch_size):
+                    batch = df.iloc[i:i+batch_size]
+                    
+                    for _, row in batch.iterrows():
+                        # Convert any NaN/None values to None for SQLite
+                        values = []
+                        for col in columns:
+                            val = row[col]
+                            if pd.isna(val):
+                                values.append(None)
+                            else:
+                                values.append(val)
+                        
+                        # Add extra values if needed
+                        values.extend(extra_values)
+                        
+                        cursor.execute(insert_query, tuple(values))
+                        rows_inserted += 1
+                    
+                    # Commit after each batch
+                    conn.commit()
+                    logger.info(f"Inserted {rows_inserted} rows so far...")
+                
+            except Exception as e:
+                logger.error(f"Error processing {csv_file}: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+        
+        conn.commit()
+    
+    logger.info(f"Successfully loaded {rows_inserted} rows into {table_name}")
+    return rows_inserted > 0
+
+def load_statcast_csvs_to_database(csv_directory):
+    """Load Statcast pitcher CSV files into the statcast_pitches table"""
+    pitcher_files = list(Path(csv_directory).glob("pitcher_*.csv"))
+    batter_files = list(Path(csv_directory).glob("batter_*.csv"))
+    team_batting_files = list(Path(csv_directory).glob("team_batting*.csv"))
+    
+    success = []
+    
+    if pitcher_files:
+        logger.info(f"Loading {len(pitcher_files)} pitcher files")
+        success.append(load_data_to_database(pitcher_files, 'pitcher'))
+    
+    if batter_files:
+        logger.info(f"Loading {len(batter_files)} batter files")
+        success.append(load_data_to_database(batter_files, 'batter'))
+    
+    if team_batting_files:
+        logger.info(f"Loading {len(team_batting_files)} team batting files")
+        success.append(load_data_to_database(team_batting_files, 'team_batting'))
+    
+    if not success:
+        logger.warning("No CSV files found to load")
+        return False
+    
+    return all(success)
+
 def main():
     """Main function"""
+    # Initialize essential schema
     create_database_schema()
     
     # Initialize team data
@@ -1125,23 +1092,16 @@ def main():
     # Initialize pitcher ID mappings
     initialize_pitcher_ids()
     
-    # Test processing team batting data
+    # Process statcast data files if they exist
+    statcast_dir = "data/statcast"
+    if os.path.exists(statcast_dir):
+        load_statcast_csvs_to_database(statcast_dir)
+    
+    # Process team batting data if it exists
     team_batting_path = 'team_batting.csv'
     if os.path.exists(team_batting_path):
-        process_team_batting_data(team_batting_path)
-    
-    # Test processing statcast batter data
-    batter_csv = 'statcast_batter_shohei.csv'
-    if os.path.exists(batter_csv):
-        process_statcast_batter_data(batter_csv)
-    
-    # Extract statcast data for starters (commented out to avoid accidental API calls)
-    extract_statcast_for_starters([2024, 2025])
-
-    statcast_csv_dir = "data/statcast"
-    if os.path.exists(statcast_csv_dir) and os.listdir(statcast_csv_dir):
-        logger.info(f"Found Statcast CSV files in {statcast_csv_dir}")
-        load_statcast_csvs_to_database(statcast_csv_dir)
+        team_batting_files = [team_batting_path]
+        load_data_to_database(team_batting_files, 'team_batting')
     
     logger.info("Database setup complete")
 
