@@ -44,18 +44,22 @@ def is_table_populated(table_name):
     
     return count > 0
 
-def create_database_schema():
-    """ Create basic database tables without statcast data tables """
-    ensure_dir(Path(DB_PATH).parent)
+def create_tables_from_csv_structure(csv_files):
+    """
+    Create database tables with column names directly from CSV headers
     
-    # Connect to database
+    Args:
+        csv_files (dict): Dictionary mapping table names to sample CSV files
+    
+    Returns:
+        bool: Success status
+    """
+    success = True
     with DBConnection() as conn:
         cursor = conn.cursor()
-    
-        # Create essential tables
-        logger.info("Creating essential database schema...")
-
-        # 1. Pitcher ID Mapping table
+        
+        # Create essential tables we know the structure of
+        logger.info("Creating essential tables...")
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS pitcher_ids (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -68,7 +72,6 @@ def create_database_schema():
         )
         ''')
         
-        # 2. Teams table
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS teams (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -78,55 +81,79 @@ def create_database_schema():
         )
         ''')
         
-        # 3. Games table
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS games (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            game_id INTEGER UNIQUE,
-            game_date TEXT,
-            season INTEGER,
-            home_team TEXT,
-            away_team TEXT,
-            ballpark TEXT,
-            game_type TEXT,
-            FOREIGN KEY (home_team) REFERENCES teams(team_id),
-            FOREIGN KEY (away_team) REFERENCES teams(team_id)
-        )
-        ''')
-        
-        # 4. Simplified Game Stats table - just key relationships
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS game_stats (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            pitcher_id INTEGER,
-            game_id INTEGER,
-            game_date TEXT,
-            season INTEGER,
-            opponent_team TEXT,
-            FOREIGN KEY (pitcher_id) REFERENCES pitcher_ids(key_mlbam),
-            FOREIGN KEY (game_id) REFERENCES games(game_id),
-            FOREIGN KEY (opponent_team) REFERENCES teams(team_id),
-            UNIQUE(pitcher_id, game_id)
-        )
-        ''')
-        
-        # 5. Prediction features table - this can remain
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS prediction_features (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            pitcher_id INTEGER,
-            game_id TEXT,
-            game_date TEXT,
-            season INTEGER,
-            opponent_team TEXT,
-            /* Keep the most essential fields here */
-            FOREIGN KEY (pitcher_id) REFERENCES pitcher_ids(key_mlbam)
-        )
-        ''')
+        # Create tables based on CSV structure
+        for table_name, csv_file in csv_files.items():
+            try:
+                if not os.path.exists(csv_file):
+                    logger.error(f"CSV file not found: {csv_file}")
+                    success = False
+                    continue
+                    
+                logger.info(f"Creating table {table_name} from {csv_file}")
+                
+                # Read CSV headers
+                df = pd.read_csv(csv_file)
+                
+                # Drop unnamed index column if present
+                if "" in df.columns or "Unnamed: 0" in df.columns:
+                    unnamed_col = "" if "" in df.columns else "Unnamed: 0"
+                    df = df.drop(columns=[unnamed_col])
+                
+                # Get column data types
+                dtype_map = {
+                    'int64': 'INTEGER',
+                    'float64': 'REAL',
+                    'object': 'TEXT',
+                    'bool': 'INTEGER',
+                    'datetime64[ns]': 'TEXT',
+                }
+                
+                # Build column definitions
+                column_defs = []
+                column_defs.append("id INTEGER PRIMARY KEY AUTOINCREMENT")
+                
+                # Add custom fields that aren't in the CSV
+                if table_name == 'statcast_pitches':
+                    column_defs.append("pitcher_id INTEGER")
+                    column_defs.append("season INTEGER")
+                elif table_name == 'statcast_batters':
+                    column_defs.append("team_id TEXT")
+                    column_defs.append("season INTEGER")
+                
+                # Add columns from CSV
+                for col in df.columns:
+                    # Create a SQL-safe column name
+                    sql_col = col.replace(" ", "_").replace("%", "pct").replace("-", "_")
+                    dtype = dtype_map.get(str(df[col].dtype), 'TEXT')
+                    column_defs.append(f'"{sql_col}" {dtype}')
+                
+                # Check if table exists
+                cursor.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table_name}'")
+                table_exists = cursor.fetchone() is not None
+                
+                if table_exists:
+                    logger.info(f"Table {table_name} already exists. Dropping it to recreate.")
+                    cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+                
+                # Create the table
+                create_query = f"""
+                CREATE TABLE {table_name} (
+                    {', '.join(column_defs)}
+                )
+                """
+                
+                cursor.execute(create_query)
+                logger.info(f"Successfully created table {table_name} with columns from {csv_file}")
+                
+            except Exception as e:
+                logger.error(f"Error creating table {table_name}: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                success = False
         
         conn.commit()
-
-    logger.info("Essential database schema created successfully")
+    
+    return success
 
 def initialize_team_data():
 
@@ -398,48 +425,42 @@ def initialize_pitcher_ids(mapping_df=None):
     
     return True
 
-def extract_statcast_for_starters(seasons, output_dir="data/statcast"):
+def extract_statcast_for_starters_direct_to_db(seasons):
     """
-    Fetch Statcast data for all identified starting pitchers
+    Fetch Statcast data for all identified starting pitchers and insert directly into database
+    using pandas to_sql to preserve column names
     
     Args:
         seasons (list): List of seasons to fetch
-        output_dir (str): Directory to save raw Statcast files
     
     Returns:
         bool: Success status
     """
-    # Create the output directory
-    Path(output_dir).mkdir(exist_ok=True, parents=True)
+    import pybaseball as pb
     
-    # Connect to the database
     with DBConnection() as conn:
-        cursor = conn.cursor()
-        
         # Get all starting pitchers
-        cursor.execute("SELECT key_mlbam FROM pitcher_ids WHERE is_starter = 1")
-        starter_ids = [row[0] for row in cursor.fetchall()]
+        query = "SELECT key_mlbam, name FROM pitcher_ids WHERE is_starter = 1"
+        starter_df = pd.read_sql_query(query, conn)
         
-        if not starter_ids:
+        if starter_df.empty:
             logger.error("No starters found in the database")
             return False
         
+        starter_ids = list(zip(starter_df['key_mlbam'], starter_df['name']))
         logger.info(f"Found {len(starter_ids)} starters to fetch Statcast data for")
         
         # Process starters in batches to avoid overwhelming the API
         batch_size = DBConfig.BATCH_SIZE
         success_count = 0
+        total_pitches = 0
         
         for i in range(0, len(starter_ids), batch_size):
             batch = starter_ids[i:i+batch_size]
             logger.info(f"Processing batch {i//batch_size + 1} / {(len(starter_ids) + batch_size - 1)//batch_size}")
             
-            for pitcher_id in batch:
+            for pitcher_id, name in batch:
                 try:
-                    # Get pitcher name for logging
-                    cursor.execute("SELECT name FROM pitcher_ids WHERE key_mlbam = ?", (pitcher_id,))
-                    name = cursor.fetchone()[0]
-                    
                     logger.info(f"Fetching Statcast data for {name} (ID: {pitcher_id})")
                     
                     # Fetch data for each season
@@ -447,10 +468,10 @@ def extract_statcast_for_starters(seasons, output_dir="data/statcast"):
                         try:
                             # Define date range for the season
                             if season == 2025:  # Current season
-                                start_date = f"{season}-03-01"
-                                end_date = "2025-04-01"  # Current date in our scenario
+                                start_date = f"{season}-03-30"
+                                end_date = "2025-04-06"  # Current date in our scenario
                             else:
-                                start_date = f"{season}-03-01"
+                                start_date = f"{season}-03-30"
                                 end_date = f"{season}-11-01"
                             
                             # Fetch the data using pybaseball's statcast_pitcher function
@@ -462,20 +483,34 @@ def extract_statcast_for_starters(seasons, output_dir="data/statcast"):
                                 logger.warning(f"  No data found for {name} in {season}")
                                 continue
                             
-                            # Save to CSV
-                            output_file = f"{output_dir}/pitcher_{pitcher_id}_{season}.csv"
-                            pitcher_data.to_csv(output_file, index=False)
-                            logger.info(f"  Saved {len(pitcher_data)} rows to {output_file}")
+                            # Add pitcher_id and season columns if not already there
+                            pitcher_data['pitcher_id'] = pitcher_id
+                            pitcher_data['season'] = season
                             
+                            # Convert date columns to string to avoid SQLite issues
+                            if 'game_date' in pitcher_data.columns:
+                                pitcher_data['game_date'] = pd.to_datetime(pitcher_data['game_date']).dt.strftime('%Y-%m-%d')
+                            
+                            # Insert directly into database using to_sql
+                            # The if_exists='append' option adds to the table instead of replacing it
+                            pitcher_data.to_sql('statcast_pitches', conn, if_exists='append', index=False)
+                            
+                            logger.info(f"  Inserted {len(pitcher_data)} rows for {name} in {season}")
+                            total_pitches += len(pitcher_data)
                             success_count += 1
-                        
+                            
                         except Exception as e:
                             logger.error(f"  Error fetching {name} for {season}: {e}")
+                            import traceback
+                            logger.error(traceback.format_exc())
                 
                 except Exception as e:
                     logger.error(f"Error processing pitcher {pitcher_id}: {e}")
-        
-    logger.info(f"Successfully fetched data for {success_count} pitcher-seasons")
+                    import traceback
+                    logger.error(traceback.format_exc())
+    
+    # Log total insertions
+    logger.info(f"Successfully inserted {total_pitches} pitch records for {success_count} pitcher-seasons")
     
     return success_count > 0
 
@@ -833,258 +868,492 @@ def get_starting_pitchers_alternative(seasons=None):
         logger.error(f"Error identifying starting pitchers: {e}")
         return {}
 
-def load_statcast_csvs_to_database(csv_directory):
-    """Load Statcast pitcher CSV files into the statcast_pitches table"""
-    csv_files = list(Path(csv_directory).glob("pitcher_*.csv"))
-    logger.info(f"Found {len(csv_files)} CSV files to process")
-    
-    rows_inserted = 0
-    with DBConnection() as conn:
-        cursor = conn.cursor()
-        
-        for csv_file in csv_files:
-            try:
-                # Extract pitcher_id and season from filename
-                filename = csv_file.name
-                # pitcher_XXXXX_YYYY.csv format
-                parts = filename.replace(".csv", "").split("_")
-                if len(parts) >= 3:
-                    pitcher_id = int(parts[1])
-                    
-                    # Load CSV
-                    df = pd.read_csv(csv_file)
-                    logger.info(f"Processing {len(df)} rows from {filename}")
-                    
-                    # Insert data into statcast_pitches
-                    for _, row in df.iterrows():
-                        # Map CSV columns to table columns
-                        # Handle differences between pybaseball output and your schema
-                        cursor.execute(
-                            """
-                            INSERT INTO statcast_pitches (
-                                pitcher_id, game_id, pitch_type, game_date, 
-                                release_speed, release_pos_x, release_pos_z, 
-                                release_spin_rate, pfx_x, pfx_z, plate_x, plate_z,
-                                batter_id, batter_stands, events, description,
-                                zone, balls, strikes, at_bat_number, pitch_number,
-                                inning, inning_topbot, outs_when_up, on_1b, on_2b, on_3b
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            """,
-                            (
-                                pitcher_id, row.get('game_pk'), row.get('pitch_type'), 
-                                row.get('game_date'), row.get('release_speed'),
-                                row.get('release_pos_x'), row.get('release_pos_z'),
-                                row.get('release_spin_rate'), row.get('pfx_x'), 
-                                row.get('pfx_z'), row.get('plate_x'), row.get('plate_z'),
-                                row.get('batter'), row.get('stand'), row.get('events'),
-                                row.get('description'), row.get('zone'), row.get('balls'),
-                                row.get('strikes'), row.get('at_bat_number'), 
-                                row.get('pitch_number'), row.get('inning'),
-                                row.get('inning_topbot'), row.get('outs_when_up'),
-                                row.get('on_1b'), row.get('on_2b'), row.get('on_3b')
-                            )
-                        )
-                        rows_inserted += 1
-                        
-                        # Commit in batches to avoid memory issues
-                        if rows_inserted % 1000 == 0:
-                            conn.commit()
-                            logger.info(f"Inserted {rows_inserted} rows so far...")
-                
-            except Exception as e:
-                logger.error(f"Error processing {csv_file}: {e}")
-        
-        conn.commit()
-    
-    logger.info(f"Successfully loaded {rows_inserted} pitches into database")
-    return rows_inserted > 0
-
-def load_data_to_database(csv_files, data_type):
+def load_statcast_pitcher_to_database(csv_file):
     """
-    Load CSV files into appropriate database tables with preserved column names
+    Load a single Statcast pitcher CSV file into the database preserving column names
     
     Args:
-        csv_files (list): List of paths to CSV files
-        data_type (str): Type of data - 'pitcher', 'batter', or 'team_batting'
+        csv_file (str): Path to the CSV file
         
     Returns:
-        bool: Success status
+        int: Number of rows inserted
     """
-    if not csv_files:
-        logger.error(f"No {data_type} CSV files found")
-        return False
+    try:
+        # Extract pitcher_id and season from filename
+        filename = Path(csv_file).name
+        parts = filename.replace(".csv", "").split("_")
         
-    logger.info(f"Found {len(csv_files)} {data_type} CSV files to process")
-    
-    # Define table names based on data type
-    if data_type == 'pitcher':
-        table_name = 'statcast_pitches'
-    elif data_type == 'batter':
-        table_name = 'statcast_batters'
-    elif data_type == 'team_batting':
-        table_name = 'team_batting_stats'
-    else:
-        logger.error(f"Unsupported data type: {data_type}")
-        return False
-    
-    # First, get the schema from the first CSV to set up proper columns
-    sample_df = pd.read_csv(csv_files[0])
-    
-    with DBConnection() as conn:
-        cursor = conn.cursor()
-        
-        # Drop the existing table to recreate with proper columns
-        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
-        
-        # Create columns definition for SQL CREATE TABLE
-        columns = []
-        for col in sample_df.columns:
-            # Skip the unnamed index column which appears as ""
-            if col == "":
-                continue
-                
-            # Clean the column name for SQL (replace spaces and special chars)
-            clean_col = col.replace(" ", "_").replace("%", "pct").replace("/", "_per_")
+        if len(parts) < 3:
+            logger.error(f"Invalid filename format: {filename}. Expected format: pitcher_ID_SEASON.csv")
+            return 0
             
-            # Get appropriate type for each column
-            dtype = sample_df[col].dtype
-            if pd.api.types.is_integer_dtype(dtype):
-                sql_type = "INTEGER"
-            elif pd.api.types.is_float_dtype(dtype):
-                sql_type = "REAL"
-            else:
-                sql_type = "TEXT"
-            
-            columns.append(f'"{clean_col}" {sql_type}')
+        pitcher_id = int(parts[1])
+        season = int(parts[2])
         
-        # Add additional columns for tracking source if needed
-        if data_type in ['pitcher', 'batter']:
-            columns.append('"pitcher_id" INTEGER')
-            columns.append('"season" INTEGER')
+        logger.info(f"Processing pitcher ID {pitcher_id} from season {season}")
+        
+        # Load CSV file
+        df = pd.read_csv(csv_file)
+        
+        if df.empty:
+            logger.warning(f"Empty CSV file: {csv_file}")
+            return 0
             
-        # Create the table with proper column names and types
-        create_query = f"""
-        CREATE TABLE {table_name} (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            {', '.join(columns)}
-        )
-        """
-        cursor.execute(create_query)
-        conn.commit()
+        logger.info(f"Loaded {len(df)} rows from {filename}")
+        
+        # Handling unnamed index column if present
+        if "" in df.columns or "Unnamed: 0" in df.columns:
+            unnamed_col = "" if "" in df.columns else "Unnamed: 0"
+            df = df.drop(columns=[unnamed_col])
+        
+        # Ensure game_date is in proper format
+        if 'game_date' in df.columns:
+            df['game_date'] = pd.to_datetime(df['game_date']).dt.strftime('%Y-%m-%d')
+        
+        # Create a new DataFrame with pitcher_id and season
+        df['pitcher_id'] = pitcher_id
+        df['season'] = season
+        
+        # Get SQL-safe column names by replacing special characters
+        df.columns = [col.replace(" ", "_").replace("%", "pct").replace("-", "_") for col in df.columns]
+        
+        rows_inserted = 0
+        
+        with DBConnection() as conn:
+            cursor = conn.cursor()
+            
+            # Process in batches to improve performance
+            batch_size = 1000
+            total_rows = len(df)
+            
+            for i in range(0, total_rows, batch_size):
+                batch = df.iloc[i:i+batch_size]
+                
+                for _, row in batch.iterrows():
+                    # Filter out NaN values
+                    filtered_row = {k: v for k, v in row.items() if not pd.isna(v)}
+                    
+                    # Build query
+                    columns = list(filtered_row.keys())
+                    placeholders = ', '.join(['?'] * len(columns))
+                    query = f"INSERT INTO statcast_pitches ({', '.join(columns)}) VALUES ({placeholders})"
+                    
+                    # Execute query
+                    cursor.execute(query, list(filtered_row.values()))
+                    rows_inserted += 1
+                
+                # Commit batch
+                conn.commit()
+                logger.info(f"Inserted {rows_inserted}/{total_rows} rows...")
+        
+        logger.info(f"Successfully inserted {rows_inserted} rows from {csv_file}")
+        return rows_inserted
+        
+    except Exception as e:
+        logger.error(f"Error processing {csv_file}: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return 0
+
+# Specialized function for loading Statcast batter data
+def load_statcast_batter_to_database(csv_file):
+    """
+    Load a single Statcast batter CSV file into the database with proper column handling
     
-    rows_inserted = 0
-    with DBConnection() as conn:
-        cursor = conn.cursor()
+    Args:
+        csv_file (str): Path to the CSV file
         
-        for csv_file in csv_files:
-            try:
-                # Extract metadata from filename for pitcher/batter files
-                pitcher_id = None
-                season = None
+    Returns:
+        int: Number of rows inserted
+    """
+    try:
+        # Extract batter_id and season from filename (e.g., batter_XXXXX_YYYY.csv)
+        filename = Path(csv_file).name
+        parts = filename.replace(".csv", "").split("_")
+        
+        if len(parts) < 3:
+            logger.error(f"Invalid filename format: {filename}. Expected format: batter_ID_SEASON.csv")
+            return 0
+            
+        team_id = parts[1]  # This might be a team ID rather than a player ID
+        season = int(parts[2])
+        
+        logger.info(f"Processing batter/team data {team_id} from season {season}")
+        
+        # Load CSV file
+        df = pd.read_csv(csv_file)
+        
+        if df.empty:
+            logger.warning(f"Empty CSV file: {csv_file}")
+            return 0
+            
+        logger.info(f"Loaded {len(df)} rows from {filename}")
+        
+        # Handling unnamed index column if present
+        if "" in df.columns or "Unnamed: 0" in df.columns:
+            unnamed_col = "" if "" in df.columns else "Unnamed: 0"
+            df = df.drop(columns=[unnamed_col])
+        
+        # Ensure game_date is in proper format
+        if 'game_date' in df.columns:
+            df['game_date'] = pd.to_datetime(df['game_date']).dt.strftime('%Y-%m-%d')
+        
+        # Add season column if not present
+        if 'season' not in df.columns:
+            df['season'] = season
+        
+        # Create the table if it doesn't exist
+        with DBConnection() as conn:
+            cursor = conn.cursor()
+            
+            # Check if the table exists
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='statcast_batters'")
+            if not cursor.fetchone():
+                # Create the table with key columns
+                create_query = """
+                CREATE TABLE statcast_batters (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    team_id TEXT,
+                    season INTEGER,
+                    game_pk INTEGER,
+                    game_date TEXT,
+                    batter INTEGER,
+                    pitcher INTEGER,
+                    stand TEXT,
+                    p_throws TEXT,
+                    pitch_type TEXT,
+                    events TEXT,
+                    description TEXT,
+                    zone INTEGER,
+                    release_speed REAL,
+                    release_spin_rate REAL,
+                    pfx_x REAL,
+                    pfx_z REAL,
+                    plate_x REAL,
+                    plate_z REAL,
+                    home_team TEXT,
+                    away_team TEXT,
+                    at_bat_number INTEGER,
+                    pitch_number INTEGER,
+                    inning INTEGER,
+                    inning_topbot TEXT,
+                    launch_speed REAL,
+                    launch_angle REAL
+                )
+                """
+                cursor.execute(create_query)
+                conn.commit()
+        
+        rows_inserted = 0
+        
+        with DBConnection() as conn:
+            cursor = conn.cursor()
+            
+            # Process each row
+            for _, row in df.iterrows():
+                # Collect values for insertion
+                values = {
+                    'team_id': team_id,
+                    'season': season,
+                    'game_pk': row.get('game_pk', None),
+                    'game_date': row.get('game_date', None),
+                    'batter': row.get('batter', None),
+                    'pitcher': row.get('pitcher', None),
+                    'stand': row.get('stand', None),
+                    'p_throws': row.get('p_throws', None),
+                    'pitch_type': row.get('pitch_type', None),
+                    'events': row.get('events', None),
+                    'description': row.get('description', None),
+                    'zone': row.get('zone', None),
+                    'release_speed': safe_float(row.get('release_speed', None)),
+                    'release_spin_rate': safe_float(row.get('release_spin_rate', None)),
+                    'pfx_x': safe_float(row.get('pfx_x', None)),
+                    'pfx_z': safe_float(row.get('pfx_z', None)),
+                    'plate_x': safe_float(row.get('plate_x', None)),
+                    'plate_z': safe_float(row.get('plate_z', None)),
+                    'home_team': row.get('home_team', None),
+                    'away_team': row.get('away_team', None),
+                    'at_bat_number': row.get('at_bat_number', None),
+                    'pitch_number': row.get('pitch_number', None),
+                    'inning': row.get('inning', None),
+                    'inning_topbot': row.get('inning_topbot', None),
+                    'launch_speed': safe_float(row.get('launch_speed', None)),
+                    'launch_angle': safe_float(row.get('launch_angle', None))
+                }
                 
-                if data_type in ['pitcher', 'batter']:
-                    # Extract pitcher_id and season from filename (e.g., pitcher_XXXXX_YYYY.csv)
-                    filename = Path(csv_file).name
-                    parts = filename.replace(".csv", "").split("_")
-                    if len(parts) >= 3:
-                        pitcher_id = int(parts[1])
-                        season = int(parts[2])
-                
-                # Load CSV
-                df = pd.read_csv(csv_file)
-                logger.info(f"Processing {len(df)} rows from {Path(csv_file).name}")
-                
-                # Drop the index column if it exists
-                if "" in df.columns:
-                    df = df.drop("", axis=1)
-                
-                # Clean column names
-                df.columns = [col.replace(" ", "_").replace("%", "pct").replace("/", "_per_") 
-                              for col in df.columns]
-                
-                # Get column names for insertion
-                columns = list(df.columns)
-                
-                # Add pitcher_id and season columns if needed
-                extra_columns = []
-                extra_values = []
-                if data_type in ['pitcher', 'batter'] and pitcher_id and season:
-                    extra_columns = ["pitcher_id", "season"]
-                    extra_values = [pitcher_id, season]
+                # Filter out None values
+                filtered_values = {k: v for k, v in values.items() if v is not None}
                 
                 # Build the insert query
-                all_columns = columns + extra_columns
-                placeholders = ', '.join(['?'] * len(all_columns))
-                insert_query = f"""
-                INSERT INTO {table_name} ({', '.join([f'"{col}"' for col in all_columns])})
-                VALUES ({placeholders})
-                """
+                columns = list(filtered_values.keys())
+                placeholders = ', '.join(['?'] * len(columns))
+                query = f"INSERT INTO statcast_batters ({', '.join(columns)}) VALUES ({placeholders})"
                 
-                # Insert data in batches
-                batch_size = 1000
-                for i in range(0, len(df), batch_size):
-                    batch = df.iloc[i:i+batch_size]
-                    
-                    for _, row in batch.iterrows():
-                        # Convert any NaN/None values to None for SQLite
-                        values = []
-                        for col in columns:
-                            val = row[col]
-                            if pd.isna(val):
-                                values.append(None)
-                            else:
-                                values.append(val)
-                        
-                        # Add extra values if needed
-                        values.extend(extra_values)
-                        
-                        cursor.execute(insert_query, tuple(values))
-                        rows_inserted += 1
-                    
-                    # Commit after each batch
+                # Execute the query
+                cursor.execute(query, list(filtered_values.values()))
+                rows_inserted += 1
+                
+                # Commit periodically
+                if rows_inserted % 1000 == 0:
                     conn.commit()
                     logger.info(f"Inserted {rows_inserted} rows so far...")
-                
-            except Exception as e:
-                logger.error(f"Error processing {csv_file}: {e}")
-                import traceback
-                logger.error(traceback.format_exc())
+            
+            conn.commit()
         
-        conn.commit()
-    
-    logger.info(f"Successfully loaded {rows_inserted} rows into {table_name}")
-    return rows_inserted > 0
+        logger.info(f"Successfully inserted {rows_inserted} rows from {csv_file}")
+        return rows_inserted
+        
+    except Exception as e:
+        logger.error(f"Error processing {csv_file}: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return 0
 
-def load_statcast_csvs_to_database(csv_directory):
-    """Load Statcast pitcher CSV files into the statcast_pitches table"""
-    pitcher_files = list(Path(csv_directory).glob("pitcher_*.csv"))
-    batter_files = list(Path(csv_directory).glob("batter_*.csv"))
-    team_batting_files = list(Path(csv_directory).glob("team_batting*.csv"))
+# Specialized function for loading team batting data
+def load_team_batting_to_database(csv_file):
+    """
+    Load a team batting CSV file into the database with proper column handling
     
-    success = []
+    Args:
+        csv_file (str): Path to the CSV file
+        
+    Returns:
+        int: Number of rows inserted
+    """
+    try:
+        logger.info(f"Processing team batting data from {csv_file}")
+        
+        # Load CSV file
+        df = pd.read_csv(csv_file)
+        
+        if df.empty:
+            logger.warning(f"Empty CSV file: {csv_file}")
+            return 0
+            
+        logger.info(f"Loaded {len(df)} rows from {csv_file}")
+        
+        # Handling unnamed index column if present
+        if "" in df.columns or "Unnamed: 0" in df.columns:
+            unnamed_col = "" if "" in df.columns else "Unnamed: 0"
+            df = df.drop(columns=[unnamed_col])
+        
+        # Create the table if it doesn't exist
+        with DBConnection() as conn:
+            cursor = conn.cursor()
+            
+            # Check if the table exists
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='team_batting_stats'")
+            if not cursor.fetchone():
+                # Create the table with essential columns
+                create_query = """
+                CREATE TABLE team_batting_stats (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    team_id TEXT,
+                    season INTEGER,
+                    teamIDfg INTEGER,
+                    k_percent REAL,
+                    bb_percent REAL,
+                    avg REAL,
+                    obp REAL,
+                    slg REAL,
+                    ops REAL,
+                    iso REAL,
+                    babip REAL,
+                    o_swing_percent REAL,
+                    z_contact_percent REAL,
+                    contact_percent REAL,
+                    zone_percent REAL,
+                    swstr_percent REAL,
+                    hard_hit_percent REAL
+                )
+                """
+                cursor.execute(create_query)
+                conn.commit()
+        
+        rows_inserted = 0
+        
+        with DBConnection() as conn:
+            cursor = conn.cursor()
+            
+            # Get existing team mappings
+            cursor.execute("SELECT team_id, key_fangraphs FROM teams")
+            team_mappings = {fangraphs_id: team_id for team_id, fangraphs_id in cursor.fetchall()}
+            
+            # Process each row
+            for _, row in df.iterrows():
+                # Get team_id from mapping
+                fangraphs_id = row.get('teamIDfg', None)
+                team_id = team_mappings.get(fangraphs_id)
+                
+                if not team_id:
+                    logger.warning(f"No team mapping found for FanGraphs ID: {fangraphs_id}")
+                    team_id = f"TEAM_{fangraphs_id}"  # Create a temporary mapping
+                
+                season = row.get('Season', 0)
+                
+                # Handle % signs in column names
+                kpct = safe_float(row.get('K%', 0))
+                bbpct = safe_float(row.get('BB%', 0))
+                ospct = safe_float(row.get('O-Swing%', 0))
+                zcpct = safe_float(row.get('Z-Contact%', 0))
+                cpct = safe_float(row.get('Contact%', 0))
+                zpct = safe_float(row.get('Zone%', 0))
+                sspct = safe_float(row.get('SwStr%', 0))
+                hhpct = safe_float(row.get('Hard%', 0))
+                
+                # Collect values for insertion
+                values = {
+                    'team_id': team_id,
+                    'season': season,
+                    'teamIDfg': fangraphs_id,
+                    'k_percent': kpct,
+                    'bb_percent': bbpct,
+                    'avg': safe_float(row.get('AVG', 0)),
+                    'obp': safe_float(row.get('OBP', 0)),
+                    'slg': safe_float(row.get('SLG', 0)),
+                    'ops': safe_float(row.get('OPS', 0)),
+                    'iso': safe_float(row.get('ISO', 0)),
+                    'babip': safe_float(row.get('BABIP', 0)),
+                    'o_swing_percent': ospct,
+                    'z_contact_percent': zcpct,
+                    'contact_percent': cpct,
+                    'zone_percent': zpct,
+                    'swstr_percent': sspct,
+                    'hard_hit_percent': hhpct
+                }
+                
+                # Filter out None values
+                filtered_values = {k: v for k, v in values.items() if v is not None}
+                
+                # Build the insert query
+                columns = list(filtered_values.keys())
+                placeholders = ', '.join(['?'] * len(columns))
+                query = f"INSERT INTO team_batting_stats ({', '.join(columns)}) VALUES ({placeholders})"
+                
+                # Execute the query
+                cursor.execute(query, list(filtered_values.values()))
+                rows_inserted += 1
+            
+            conn.commit()
+        
+        logger.info(f"Successfully inserted {rows_inserted} rows from {csv_file}")
+        return rows_inserted
+        
+    except Exception as e:
+        logger.error(f"Error processing {csv_file}: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return 0
+
+def load_all_data_to_database(csv_directory):
+    """
+    Load all CSV files from a directory into the database
     
-    if pitcher_files:
-        logger.info(f"Loading {len(pitcher_files)} pitcher files")
-        success.append(load_data_to_database(pitcher_files, 'pitcher'))
+    Args:
+        csv_directory (str): Directory containing CSV files
+        
+    Returns:
+        dict: Count of rows inserted by data type
+    """
+    directory = Path(csv_directory)
     
-    if batter_files:
-        logger.info(f"Loading {len(batter_files)} batter files")
-        success.append(load_data_to_database(batter_files, 'batter'))
+    # Find all CSV files by type
+    pitcher_files = list(directory.glob("pitcher_*.csv"))
+    batter_files = list(directory.glob("batter_*.csv"))
+    team_batting_files = list(directory.glob("team_batting*.csv"))
     
-    if team_batting_files:
-        logger.info(f"Loading {len(team_batting_files)} team batting files")
-        success.append(load_data_to_database(team_batting_files, 'team_batting'))
+    logger.info(f"Found {len(pitcher_files)} pitcher files, {len(batter_files)} batter files, "
+               f"and {len(team_batting_files)} team batting files")
     
-    if not success:
-        logger.warning("No CSV files found to load")
-        return False
+    # Verify tables exist before loading data
+    with DBConnection() as conn:
+        cursor = conn.cursor()
+        
+        # Check if required tables exist
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='statcast_pitches'")
+        pitcher_table_exists = cursor.fetchone() is not None
+        
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='statcast_batters'")
+        batter_table_exists = cursor.fetchone() is not None
+        
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='team_batting_stats'")
+        team_table_exists = cursor.fetchone() is not None
+        
+        if not pitcher_table_exists:
+            logger.error("statcast_pitches table does not exist! Cannot load pitcher data.")
+        
+        if not batter_table_exists:
+            logger.error("statcast_batters table does not exist! Cannot load batter data.")
+            
+        if not team_table_exists:
+            logger.error("team_batting_stats table does not exist! Cannot load team data.")
     
-    return all(success)
+    results = {
+        'pitcher': 0,
+        'batter': 0,
+        'team_batting': 0
+    }
+    
+    # Process each file type if tables exist
+    if pitcher_table_exists:
+        for file_path in pitcher_files:
+            if str(file_path).endswith('pitcher_example.csv'):
+                logger.info(f"Skipping example file: {file_path}")
+                continue
+            rows = load_statcast_pitcher_to_database(file_path)
+            results['pitcher'] += rows
+    
+    if batter_table_exists:
+        for file_path in batter_files:
+            if str(file_path).endswith('batter_example.csv'):
+                logger.info(f"Skipping example file: {file_path}")
+                continue
+            rows = load_statcast_batter_to_database(file_path)
+            results['batter'] += rows
+    
+    if team_table_exists:
+        for file_path in team_batting_files:
+            if str(file_path).endswith('team_batting_example.csv'):
+                logger.info(f"Skipping example file: {file_path}")
+                continue
+            rows = load_team_batting_to_database(file_path)
+            results['team_batting'] += rows
+    
+    logger.info(f"Successfully loaded {results['pitcher']} pitcher records, {results['batter']} batter records, "
+               f"and {results['team_batting']} team batting records")
+    
+    return results
+
+# Utility function for safe float conversion
+def safe_float(value, default=None):
+    """Safely convert a value to float, handling NA values"""
+    if pd.isna(value):
+        return default
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return default
 
 def main():
-    """Main function"""
-    # Initialize essential schema
-    create_database_schema()
+    """Initialize database and create/fetch data"""
+    # Initialize essential schema and team data 
+    logger.info("Setting up database...")
+    
+    # Create tables based on sample CSV files
+    statcast_dir = "data/statcast"
+    pitcher_example = os.path.join(statcast_dir, "pitcher_example.csv")
+    batter_example = os.path.join(statcast_dir, "batter_example.csv")
+    team_batting_example = os.path.join(statcast_dir, "team_batting_example.csv")
+    
+    # Sample CSV files to infer table structure
+    sample_csv_files = {
+        'statcast_pitches': pitcher_example,
+        'statcast_batters': batter_example,
+        'team_batting_stats': team_batting_example
+    }
+    
+    # Create tables based on CSV structure
+    create_tables_from_csv_structure(sample_csv_files)
     
     # Initialize team data
     initialize_team_data()
@@ -1092,16 +1361,29 @@ def main():
     # Initialize pitcher ID mappings
     initialize_pitcher_ids()
     
-    # Process statcast data files if they exist
-    statcast_dir = "data/statcast"
-    if os.path.exists(statcast_dir):
-        load_statcast_csvs_to_database(statcast_dir)
+    # Fetch Statcast data DIRECTLY to database
+    seasons = [2024, 2025]  # Current year and last year
+    logger.info(f"Fetching Statcast data for seasons: {seasons}")
     
-    # Process team batting data if it exists
-    team_batting_path = 'team_batting.csv'
-    if os.path.exists(team_batting_path):
-        team_batting_files = [team_batting_path]
-        load_data_to_database(team_batting_files, 'team_batting')
+    # Extract data directly to database (no CSV files)
+    success = extract_statcast_for_starters_direct_to_db(seasons)
+    
+    if success:
+        logger.info("Successfully fetched Statcast data and inserted into database")
+    else:
+        logger.error("Failed to fetch/insert Statcast data")
+    
+    # Log database stats
+    with DBConnection() as conn:
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT COUNT(*) FROM statcast_pitches")
+        pitch_count = cursor.fetchone()[0]
+        
+        cursor.execute("SELECT COUNT(DISTINCT pitcher_id) FROM statcast_pitches")
+        pitcher_count = cursor.fetchone()[0]
+        
+        logger.info(f"Database now contains {pitch_count} pitch records from {pitcher_count} pitchers")
     
     logger.info("Database setup complete")
 
