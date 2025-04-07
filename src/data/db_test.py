@@ -44,22 +44,18 @@ def is_table_populated(table_name):
     
     return count > 0
 
-def create_tables_from_csv_structure(csv_files):
+def initialize_database_from_pybaseball():
     """
-    Create database tables with column names directly from CSV headers
-    
-    Args:
-        csv_files (dict): Dictionary mapping table names to sample CSV files
-    
-    Returns:
-        bool: Success status
+    Create database tables based directly on pybaseball's data structure
+    without relying on example CSV files
     """
-    success = True
+    import pybaseball as pb
+    
     with DBConnection() as conn:
         cursor = conn.cursor()
         
-        # Create essential tables we know the structure of
         logger.info("Creating essential tables...")
+        # Create pitcher_ids and teams tables as before
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS pitcher_ids (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -81,79 +77,65 @@ def create_tables_from_csv_structure(csv_files):
         )
         ''')
         
-        # Create tables based on CSV structure
-        for table_name, csv_file in csv_files.items():
-            try:
-                if not os.path.exists(csv_file):
-                    logger.error(f"CSV file not found: {csv_file}")
-                    success = False
-                    continue
-                    
-                logger.info(f"Creating table {table_name} from {csv_file}")
+        # Fetch a small sample from pybaseball for each type of data we need
+        logger.info("Fetching sample data from pybaseball to create table schema...")
+        
+        # Try to fetch a sample for pitcher data (just 1-2 days of data for one pitcher)
+        try:
+            # Get a starter ID first (any starter)
+            sample_pitcher_id = 605483  # Use a known pitcher ID (e.g., Gerrit Cole)
+            sample_pitcher_data = pb.statcast_pitcher('2024-03-30', '2024-03-31', sample_pitcher_id)
+            
+            if not sample_pitcher_data.empty:
+                # Add our custom columns
+                sample_pitcher_data['pitcher_id'] = sample_pitcher_id
+                sample_pitcher_data['season'] = 2024
                 
-                # Read CSV headers
-                df = pd.read_csv(csv_file)
+                # Create statcast_pitches table automatically from DataFrame structure
+                logger.info(f"Creating statcast_pitches table with {len(sample_pitcher_data.columns)} columns")
+                sample_pitcher_data.head(0).to_sql('statcast_pitches', conn, if_exists='replace', index=False)
+                logger.info("Successfully created statcast_pitches table")
+            else:
+                logger.error("Failed to fetch sample pitcher data")
+        except Exception as e:
+            logger.error(f"Error creating pitcher table: {e}")
+        
+        # Similarly for team batting data
+        try:
+            # Fetch team batting data sample
+            sample_team_data = pb.team_batting(2024, 2024)
+            
+            if not sample_team_data.empty:
+                logger.info(f"Creating team_batting_stats table with {len(sample_team_data.columns)} columns")
+                sample_team_data.head(0).to_sql('team_batting_stats', conn, if_exists='replace', index=False)
+                logger.info("Successfully created team_batting_stats table")
+            else:
+                logger.error("Failed to fetch sample team batting data")
+        except Exception as e:
+            logger.error(f"Error creating team batting table: {e}")
+        
+        # For batter data, we could use statcast_batter() similarly
+        try:
+            # Sample batter ID
+            sample_batter_id = 545361  # Example: Aaron Judge
+            sample_batter_data = pb.statcast_batter('2024-03-30', '2024-03-31', sample_batter_id)
+            
+            if not sample_batter_data.empty:
+                # Add our custom columns
+                sample_batter_data['team_id'] = 'NYY'  # Just an example
+                sample_batter_data['season'] = 2024
                 
-                # Drop unnamed index column if present
-                if "" in df.columns or "Unnamed: 0" in df.columns:
-                    unnamed_col = "" if "" in df.columns else "Unnamed: 0"
-                    df = df.drop(columns=[unnamed_col])
-                
-                # Get column data types
-                dtype_map = {
-                    'int64': 'INTEGER',
-                    'float64': 'REAL',
-                    'object': 'TEXT',
-                    'bool': 'INTEGER',
-                    'datetime64[ns]': 'TEXT',
-                }
-                
-                # Build column definitions
-                column_defs = []
-                column_defs.append("id INTEGER PRIMARY KEY AUTOINCREMENT")
-                
-                # Add custom fields that aren't in the CSV
-                if table_name == 'statcast_pitches':
-                    column_defs.append("pitcher_id INTEGER")
-                    column_defs.append("season INTEGER")
-                elif table_name == 'statcast_batters':
-                    column_defs.append("team_id TEXT")
-                    column_defs.append("season INTEGER")
-                
-                # Add columns from CSV
-                for col in df.columns:
-                    # Create a SQL-safe column name
-                    sql_col = col.replace(" ", "_").replace("%", "pct").replace("-", "_")
-                    dtype = dtype_map.get(str(df[col].dtype), 'TEXT')
-                    column_defs.append(f'"{sql_col}" {dtype}')
-                
-                # Check if table exists
-                cursor.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table_name}'")
-                table_exists = cursor.fetchone() is not None
-                
-                if table_exists:
-                    logger.info(f"Table {table_name} already exists. Dropping it to recreate.")
-                    cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
-                
-                # Create the table
-                create_query = f"""
-                CREATE TABLE {table_name} (
-                    {', '.join(column_defs)}
-                )
-                """
-                
-                cursor.execute(create_query)
-                logger.info(f"Successfully created table {table_name} with columns from {csv_file}")
-                
-            except Exception as e:
-                logger.error(f"Error creating table {table_name}: {e}")
-                import traceback
-                logger.error(traceback.format_exc())
-                success = False
+                logger.info(f"Creating statcast_batters table with {len(sample_batter_data.columns)} columns")
+                sample_batter_data.head(0).to_sql('statcast_batters', conn, if_exists='replace', index=False)
+                logger.info("Successfully created statcast_batters table")
+            else:
+                logger.error("Failed to fetch sample batter data")
+        except Exception as e:
+            logger.error(f"Error creating batter table: {e}")
         
         conn.commit()
     
-    return success
+    return True
 
 def initialize_team_data():
 
@@ -428,13 +410,7 @@ def initialize_pitcher_ids(mapping_df=None):
 def extract_statcast_for_starters_direct_to_db(seasons):
     """
     Fetch Statcast data for all identified starting pitchers and insert directly into database
-    using pandas to_sql to preserve column names
-    
-    Args:
-        seasons (list): List of seasons to fetch
-    
-    Returns:
-        bool: Success status
+    using pandas to_sql with table schema already created from pybaseball
     """
     import pybaseball as pb
     
@@ -487,12 +463,7 @@ def extract_statcast_for_starters_direct_to_db(seasons):
                             pitcher_data['pitcher_id'] = pitcher_id
                             pitcher_data['season'] = season
                             
-                            # Convert date columns to string to avoid SQLite issues
-                            if 'game_date' in pitcher_data.columns:
-                                pitcher_data['game_date'] = pd.to_datetime(pitcher_data['game_date']).dt.strftime('%Y-%m-%d')
-                            
-                            # Insert directly into database using to_sql
-                            # The if_exists='append' option adds to the table instead of replacing it
+                            # Insert directly into database using to_sql - no column transformations needed
                             pitcher_data.to_sql('statcast_pitches', conn, if_exists='append', index=False)
                             
                             logger.info(f"  Inserted {len(pitcher_data)} rows for {name} in {season}")
@@ -1335,25 +1306,12 @@ def safe_float(value, default=None):
         return default
 
 def main():
-    """Initialize database and create/fetch data"""
+    """Initialize database and create/fetch data using pybaseball directly"""
     # Initialize essential schema and team data 
-    logger.info("Setting up database...")
+    logger.info("Setting up database directly from pybaseball...")
     
-    # Create tables based on sample CSV files
-    statcast_dir = "data/statcast"
-    pitcher_example = os.path.join(statcast_dir, "pitcher_example.csv")
-    batter_example = os.path.join(statcast_dir, "batter_example.csv")
-    team_batting_example = os.path.join(statcast_dir, "team_batting_example.csv")
-    
-    # Sample CSV files to infer table structure
-    sample_csv_files = {
-        'statcast_pitches': pitcher_example,
-        'statcast_batters': batter_example,
-        'team_batting_stats': team_batting_example
-    }
-    
-    # Create tables based on CSV structure
-    create_tables_from_csv_structure(sample_csv_files)
+    # Create tables based on direct samples from pybaseball
+    initialize_database_from_pybaseball()
     
     # Initialize team data
     initialize_team_data()
