@@ -643,7 +643,7 @@ def extract_statcast_for_starters(seasons, output_dir="data/statcast"):
         logger.info(f"Found {len(starter_ids)} starters to fetch Statcast data for")
         
         # Process starters in batches to avoid overwhelming the API
-        batch_size = 10
+        batch_size = DBConfig.BATCH_SIZE
         success_count = 0
         
         for i in range(0, len(starter_ids), batch_size):
@@ -653,7 +653,7 @@ def extract_statcast_for_starters(seasons, output_dir="data/statcast"):
             for pitcher_id in batch:
                 try:
                     # Get pitcher name for logging
-                    cursor.execute("SELECT name FROM pitcher_ids WHERE mlbam_id = ?", (pitcher_id,))
+                    cursor.execute("SELECT name FROM pitcher_ids WHERE key_mlbam = ?", (pitcher_id,))
                     name = cursor.fetchone()[0]
                     
                     logger.info(f"Fetching Statcast data for {name} (ID: {pitcher_id})")
@@ -1049,6 +1049,72 @@ def get_starting_pitchers_alternative(seasons=None):
         logger.error(f"Error identifying starting pitchers: {e}")
         return {}
 
+def load_statcast_csvs_to_database(csv_directory):
+    """Load Statcast pitcher CSV files into the statcast_pitches table"""
+    csv_files = list(Path(csv_directory).glob("pitcher_*.csv"))
+    logger.info(f"Found {len(csv_files)} CSV files to process")
+    
+    rows_inserted = 0
+    with DBConnection() as conn:
+        cursor = conn.cursor()
+        
+        for csv_file in csv_files:
+            try:
+                # Extract pitcher_id and season from filename
+                filename = csv_file.name
+                # pitcher_XXXXX_YYYY.csv format
+                parts = filename.replace(".csv", "").split("_")
+                if len(parts) >= 3:
+                    pitcher_id = int(parts[1])
+                    
+                    # Load CSV
+                    df = pd.read_csv(csv_file)
+                    logger.info(f"Processing {len(df)} rows from {filename}")
+                    
+                    # Insert data into statcast_pitches
+                    for _, row in df.iterrows():
+                        # Map CSV columns to table columns
+                        # Handle differences between pybaseball output and your schema
+                        cursor.execute(
+                            """
+                            INSERT INTO statcast_pitches (
+                                pitcher_id, game_id, pitch_type, game_date, 
+                                release_speed, release_pos_x, release_pos_z, 
+                                release_spin_rate, pfx_x, pfx_z, plate_x, plate_z,
+                                batter_id, batter_stands, events, description,
+                                zone, balls, strikes, at_bat_number, pitch_number,
+                                inning, inning_topbot, outs_when_up, on_1b, on_2b, on_3b
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                pitcher_id, row.get('game_pk'), row.get('pitch_type'), 
+                                row.get('game_date'), row.get('release_speed'),
+                                row.get('release_pos_x'), row.get('release_pos_z'),
+                                row.get('release_spin_rate'), row.get('pfx_x'), 
+                                row.get('pfx_z'), row.get('plate_x'), row.get('plate_z'),
+                                row.get('batter'), row.get('stand'), row.get('events'),
+                                row.get('description'), row.get('zone'), row.get('balls'),
+                                row.get('strikes'), row.get('at_bat_number'), 
+                                row.get('pitch_number'), row.get('inning'),
+                                row.get('inning_topbot'), row.get('outs_when_up'),
+                                row.get('on_1b'), row.get('on_2b'), row.get('on_3b')
+                            )
+                        )
+                        rows_inserted += 1
+                        
+                        # Commit in batches to avoid memory issues
+                        if rows_inserted % 1000 == 0:
+                            conn.commit()
+                            logger.info(f"Inserted {rows_inserted} rows so far...")
+                
+            except Exception as e:
+                logger.error(f"Error processing {csv_file}: {e}")
+        
+        conn.commit()
+    
+    logger.info(f"Successfully loaded {rows_inserted} pitches into database")
+    return rows_inserted > 0
+
 def main():
     """Main function"""
     create_database_schema()
@@ -1070,7 +1136,12 @@ def main():
         process_statcast_batter_data(batter_csv)
     
     # Extract statcast data for starters (commented out to avoid accidental API calls)
-    # extract_statcast_for_starters([2024, 2025])
+    extract_statcast_for_starters([2024, 2025])
+
+    statcast_csv_dir = "data/statcast"
+    if os.path.exists(statcast_csv_dir) and os.listdir(statcast_csv_dir):
+        logger.info(f"Found Statcast CSV files in {statcast_csv_dir}")
+        load_statcast_csvs_to_database(statcast_csv_dir)
     
     logger.info("Database setup complete")
 
