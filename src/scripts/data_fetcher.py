@@ -9,7 +9,7 @@ import time
 from datetime import datetime, timedelta
 from config import DBConfig, DataConfig
 from src.data.utils import setup_logger, ensure_dir
-from src.data.db import DBConnection
+from src.data.utils import DBConnection
 
 logger = setup_logger(__name__)
 

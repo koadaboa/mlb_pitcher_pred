@@ -3,6 +3,8 @@ import re
 import logging
 from pathlib import Path
 import pandas as pd
+from config import DBConfig
+import sqlite3
 
 def normalize_name(name):
     """
@@ -78,3 +80,17 @@ def ensure_dir(path):
     p = Path(path)
     p.mkdir(exist_ok=True, parents=True)
     return p
+
+class DBConnection:
+    """Context manager for database connections"""
+    def __init__(self, db_name=DBConfig.PATH):
+        self.db_name = db_name
+
+    def __enter__(self):
+        ensure_dir(Path(self.db_name).parent)
+        self.conn = sqlite3.connect(self.db_name)
+        return self.conn
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.conn:
+            self.conn.close()
