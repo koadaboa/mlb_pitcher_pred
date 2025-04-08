@@ -47,10 +47,8 @@ def is_table_populated(table_name):
 def initialize_database_from_pybaseball():
     """
     Create database tables based directly on pybaseball's data structure
-    without relying on example CSV files
+    with a comprehensive schema including all possible columns
     """
-    import pybaseball as pb
-    
     with DBConnection() as conn:
         cursor = conn.cursor()
         
@@ -77,63 +75,149 @@ def initialize_database_from_pybaseball():
         )
         ''')
         
-        # Fetch a small sample from pybaseball for each type of data we need
-        logger.info("Fetching sample data from pybaseball to create table schema...")
+        # Create statcast_pitchers table with a comprehensive schema
+        logger.info("Creating statcast_pitchers table with comprehensive schema...")
         
-        # Try to fetch a sample for pitcher data (just 1-2 days of data for one pitcher)
-        try:
-            # Get a starter ID first (any starter)
-            sample_pitcher_id = 605483  # Use a known pitcher ID (e.g., Gerrit Cole)
-            sample_pitcher_data = pb.statcast_pitcher('2024-03-30', '2024-03-31', sample_pitcher_id)
+        # Drop the table if it exists to ensure clean schema
+        cursor.execute("DROP TABLE IF EXISTS statcast_pitchers")
+        
+        # Create a comprehensive schema with ALL possible Statcast columns
+        create_table_sql = '''
+        CREATE TABLE statcast_pitchers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pitch_type TEXT,
+            game_date TEXT,
+            release_speed REAL,
+            release_pos_x REAL,
+            release_pos_z REAL,
+            player_name TEXT,
+            batter INTEGER,
+            pitcher INTEGER,
+            events TEXT,
+            description TEXT,
+            spin_dir TEXT,
+            spin_rate_deprecated TEXT,
+            break_angle_deprecated TEXT,
+            break_length_deprecated TEXT,
+            zone INTEGER,
+            des TEXT,
+            game_type TEXT,
+            stand TEXT,
+            p_throws TEXT,
+            home_team TEXT,
+            away_team TEXT,
+            type TEXT,
+            hit_location REAL,
+            bb_type TEXT,
+            balls INTEGER,
+            strikes INTEGER,
+            game_year INTEGER,
+            pfx_x REAL,
+            pfx_z REAL,
+            plate_x REAL,
+            plate_z REAL,
+            on_3b REAL,
+            on_2b REAL,
+            on_1b REAL,
+            outs_when_up INTEGER,
+            inning INTEGER,
+            inning_topbot TEXT,
+            hc_x REAL,
+            hc_y REAL,
+            tfs_deprecated TEXT,
+            tfs_zulu_deprecated TEXT,
+            umpire TEXT,
+            sv_id TEXT,
+            vx0 REAL,
+            vy0 REAL,
+            vz0 REAL,
+            ax REAL,
+            ay REAL,
+            az REAL,
+            sz_top REAL,
+            sz_bot REAL,
+            hit_distance_sc REAL,
+            launch_speed REAL,
+            launch_angle REAL,
+            effective_speed REAL,
+            release_spin_rate REAL,
+            release_extension REAL,
+            game_pk INTEGER,
+            fielder_2 INTEGER,
+            fielder_3 INTEGER,
+            fielder_4 INTEGER,
+            fielder_5 INTEGER,
+            fielder_6 INTEGER,
+            fielder_7 INTEGER,
+            fielder_8 INTEGER,
+            fielder_9 INTEGER,
+            release_pos_y REAL,
+            estimated_ba_using_speedangle REAL,
+            estimated_woba_using_speedangle REAL,
+            woba_value REAL,
+            woba_denom REAL,
+            babip_value REAL,
+            iso_value REAL,
+            launch_speed_angle REAL,
+            at_bat_number INTEGER,
+            pitch_number INTEGER,
+            pitch_name TEXT,
+            home_score INTEGER,
+            away_score INTEGER,
+            bat_score INTEGER,
+            fld_score INTEGER,
+            post_away_score INTEGER,
+            post_home_score INTEGER,
+            post_bat_score INTEGER,
+            post_fld_score INTEGER,
+            if_fielding_alignment TEXT,
+            of_fielding_alignment TEXT,
+            spin_axis REAL,
+            delta_home_win_exp REAL,
+            delta_run_exp REAL,
+            bat_speed REAL,
+            swing_length REAL,
+            estimated_slg_using_speedangle REAL,
+            delta_pitcher_run_exp REAL,
+            hyper_speed REAL,
+            home_score_diff INTEGER,
+            bat_score_diff INTEGER,
+            home_win_exp REAL,
+            bat_win_exp REAL,
+            age_pit_legacy INTEGER,
+            age_bat_legacy INTEGER,
+            age_pit INTEGER,
+            age_bat INTEGER,
+            n_thruorder_pitcher INTEGER,
+            n_priorpa_thisgame_player_at_bat INTEGER,
+            pitcher_days_since_prev_game REAL,
+            batter_days_since_prev_game REAL,
+            pitcher_days_until_next_game REAL,
+            batter_days_until_next_game REAL,
+            api_break_z_with_gravity REAL,
+            api_break_x_arm REAL,
+            api_break_x_batter_in REAL,
+            arm_angle REAL,
+            pitcher_id INTEGER,
+            season INTEGER
+        )
+        '''
+        cursor.execute(create_table_sql)
+        
+        # Check if the table was created successfully
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='statcast_pitchers'")
+        if cursor.fetchone():
+            logger.info("Successfully created statcast_pitchers table with comprehensive schema")
             
-            if not sample_pitcher_data.empty:
-                # Add our custom columns
-                sample_pitcher_data['pitcher_id'] = sample_pitcher_id
-                sample_pitcher_data['season'] = 2024
-                
-                # Create statcast_pitches table automatically from DataFrame structure
-                logger.info(f"Creating statcast_pitches table with {len(sample_pitcher_data.columns)} columns")
-                sample_pitcher_data.head(0).to_sql('statcast_pitches', conn, if_exists='replace', index=False)
-                logger.info("Successfully created statcast_pitches table")
-            else:
-                logger.error("Failed to fetch sample pitcher data")
-        except Exception as e:
-            logger.error(f"Error creating pitcher table: {e}")
-        
-        # Similarly for team batting data
-        try:
-            # Fetch team batting data sample
-            sample_team_data = pb.team_batting(2024, 2024)
+            # Check the number of columns to confirm
+            cursor.execute("PRAGMA table_info(statcast_pitchers)")
+            columns = cursor.fetchall()
+            logger.info(f"Created table with {len(columns)} columns")
+        else:
+            logger.error("Failed to create statcast_pitchers table")
             
-            if not sample_team_data.empty:
-                logger.info(f"Creating team_batting_stats table with {len(sample_team_data.columns)} columns")
-                sample_team_data.head(0).to_sql('team_batting_stats', conn, if_exists='replace', index=False)
-                logger.info("Successfully created team_batting_stats table")
-            else:
-                logger.error("Failed to fetch sample team batting data")
-        except Exception as e:
-            logger.error(f"Error creating team batting table: {e}")
-        
-        # For batter data, we could use statcast_batter() similarly
-        try:
-            # Sample batter ID
-            sample_batter_id = 545361  # Example: Aaron Judge
-            sample_batter_data = pb.statcast_batter('2024-03-30', '2024-03-31', sample_batter_id)
-            
-            if not sample_batter_data.empty:
-                # Add our custom columns
-                sample_batter_data['team_id'] = 'NYY'  # Just an example
-                sample_batter_data['season'] = 2024
-                
-                logger.info(f"Creating statcast_batters table with {len(sample_batter_data.columns)} columns")
-                sample_batter_data.head(0).to_sql('statcast_batters', conn, if_exists='replace', index=False)
-                logger.info("Successfully created statcast_batters table")
-            else:
-                logger.error("Failed to fetch sample batter data")
-        except Exception as e:
-            logger.error(f"Error creating batter table: {e}")
-        
         conn.commit()
+        logger.info("Database schema initialized successfully")
     
     return True
 
@@ -407,14 +491,50 @@ def initialize_pitcher_ids(mapping_df=None):
     
     return True
 
+def normalize_column_name(col):
+    """
+    Normalize column names to ensure consistent matching
+    
+    Args:
+        col (str): Original column name
+        
+    Returns:
+        str: Normalized column name
+    """
+    return (col.lower()
+            .replace(' ', '_')
+            .replace('%', 'pct')
+            .replace('-', '_')
+            .replace('(', '')
+            .replace(')', '')
+            .strip())
+
 def extract_statcast_for_starters_direct_to_db(seasons):
     """
     Fetch Statcast data for all identified starting pitchers and insert directly into database
-    using pandas to_sql with table schema already created from pybaseball
+    with robust column matching
     """
     import pybaseball as pb
     
     with DBConnection() as conn:
+        cursor = conn.cursor()
+        
+        # Verify table exists
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='statcast_pitchers'")
+        if not cursor.fetchone():
+            logger.error("Table 'statcast_pitchers' doesn't exist!")
+            return False
+        
+        # Get full column list
+        cursor.execute("PRAGMA table_info(statcast_pitchers)")
+        table_columns = [row[1] for row in cursor.fetchall() if row[1] != 'id']
+        
+        # Create normalized column mapping
+        normalized_table_columns = {normalize_column_name(col): col for col in table_columns}
+        
+        logger.info(f"Database table has {len(table_columns)} columns")
+        logger.info("Normalized table columns: " + ", ".join(normalized_table_columns.keys()))
+    
         # Get all starting pitchers
         query = "SELECT key_mlbam, name FROM pitcher_ids WHERE is_starter = 1"
         starter_df = pd.read_sql_query(query, conn)
@@ -427,7 +547,7 @@ def extract_statcast_for_starters_direct_to_db(seasons):
         logger.info(f"Found {len(starter_ids)} starters to fetch Statcast data for")
         
         # Process starters in batches to avoid overwhelming the API
-        batch_size = DBConfig.BATCH_SIZE
+        batch_size = 5  # Smaller batch size for testing 
         success_count = 0
         total_pitches = 0
         
@@ -463,12 +583,82 @@ def extract_statcast_for_starters_direct_to_db(seasons):
                             pitcher_data['pitcher_id'] = pitcher_id
                             pitcher_data['season'] = season
                             
-                            # Insert directly into database using to_sql - no column transformations needed
-                            pitcher_data.to_sql('statcast_pitches', conn, if_exists='append', index=False)
+                            # Normalize column names
+                            pitcher_data.columns = [normalize_column_name(col) for col in pitcher_data.columns]
                             
-                            logger.info(f"  Inserted {len(pitcher_data)} rows for {name} in {season}")
-                            total_pitches += len(pitcher_data)
-                            success_count += 1
+                            # Column matching
+                            valid_columns = {}
+                            for norm_col in pitcher_data.columns:
+                                if norm_col in normalized_table_columns:
+                                    valid_columns[norm_col] = normalized_table_columns[norm_col]
+                            
+                            if not valid_columns:
+                                logger.error(f"No matching columns found between DataFrame and table")
+                                logger.info(f"DataFrame columns: {list(pitcher_data.columns)}")
+                                logger.info(f"Table columns: {list(normalized_table_columns.keys())}")
+                                continue
+                            
+                            logger.info(f"Found {len(valid_columns)} matching columns")
+                            
+                            # Prepare insert query
+                            insert_query = f"""
+                            INSERT INTO statcast_pitchers ({', '.join(valid_columns.values())})
+                            VALUES ({', '.join(['?'] * len(valid_columns))})
+                            """
+                            
+                            # Track insert count for this batch
+                            insert_count = 0
+                            
+                            for _, row in pitcher_data.iterrows():
+                                try:
+                                    # Prepare row values
+                                    row_values = []
+                                    missing_columns = []
+                                    
+                                    for norm_col, orig_col in normalized_table_columns.items():
+                                        # Try to find the value using normalized column name
+                                        value = row.get(norm_col, None)
+                                        
+                                        # If not found, check for original column name
+                                        if value is None:
+                                            value = row.get(orig_col, None)
+                                        
+                                        # Track missing columns
+                                        if value is None:
+                                            missing_columns.append(orig_col)
+                                        
+                                        row_values.append(value)
+                                    
+                                    # Build insert query
+                                    insert_query = f"""
+                                    INSERT INTO statcast_pitchers ({', '.join(table_columns)})
+                                    VALUES ({', '.join(['?'] * len(table_columns))})
+                                    """
+                                    
+                                    # Only insert if we have values
+                                    if len(row_values) == len(table_columns):
+                                        cursor.execute(insert_query, row_values)
+                                        insert_count += 1
+                                    else:
+                                        logger.warning(f"Skipping row due to missing columns: {missing_columns}")
+                                        logger.warning(f"Row values count: {len(row_values)}, Expected: {len(table_columns)}")
+                                    
+                                    # Commit occasionally
+                                    if insert_count % 100 == 0:
+                                        conn.commit()
+                                
+                                except Exception as e:
+                                    logger.error(f"Error inserting row: {e}")
+                                    logger.error(f"Row values: {row_values}")
+                                    continue
+                            
+                            # Final commit
+                            conn.commit()
+                            
+                            logger.info(f"  Inserted {insert_count} rows for {name} in {season}")
+                            total_pitches += insert_count
+                            if insert_count > 0:
+                                success_count += 1
                             
                         except Exception as e:
                             logger.error(f"  Error fetching {name} for {season}: {e}")
@@ -907,7 +1097,7 @@ def load_statcast_pitcher_to_database(csv_file):
                     # Build query
                     columns = list(filtered_row.keys())
                     placeholders = ', '.join(['?'] * len(columns))
-                    query = f"INSERT INTO statcast_pitches ({', '.join(columns)}) VALUES ({placeholders})"
+                    query = f"INSERT INTO statcast_pitchers ({', '.join(columns)}) VALUES ({placeholders})"
                     
                     # Execute query
                     cursor.execute(query, list(filtered_row.values()))
@@ -1241,7 +1431,7 @@ def load_all_data_to_database(csv_directory):
         cursor = conn.cursor()
         
         # Check if required tables exist
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='statcast_pitches'")
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='statcast_pitchers'")
         pitcher_table_exists = cursor.fetchone() is not None
         
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='statcast_batters'")
@@ -1251,7 +1441,7 @@ def load_all_data_to_database(csv_directory):
         team_table_exists = cursor.fetchone() is not None
         
         if not pitcher_table_exists:
-            logger.error("statcast_pitches table does not exist! Cannot load pitcher data.")
+            logger.error("statcast_pitchers table does not exist! Cannot load pitcher data.")
         
         if not batter_table_exists:
             logger.error("statcast_batters table does not exist! Cannot load batter data.")
@@ -1305,13 +1495,88 @@ def safe_float(value, default=None):
     except (ValueError, TypeError):
         return default
 
+def get_statcast_data(limit=10):
+    """
+    Retrieves statcast data from the database with proper column handling
+    
+    Args:
+        limit (int): Number of rows to retrieve
+        
+    Returns:
+        pandas.DataFrame: DataFrame with properly named columns
+    """
+    with DBConnection() as conn:
+        # Check if table exists
+        cursor = conn.cursor()
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='statcast_pitchers'")
+        if not cursor.fetchone():
+            logger.error("Table 'statcast_pitchers' does not exist!")
+            return pd.DataFrame()
+            
+        # First get column names
+        cursor.execute("PRAGMA table_info(statcast_pitchers)")
+        columns = [row[1] for row in cursor.fetchall()]
+        
+        if not columns:
+            logger.error("No columns found in statcast_pitchers table")
+            return pd.DataFrame()
+            
+        # Then query data with explicit column names
+        column_list = ", ".join([f'"{col}"' for col in columns if col != 'id'])
+        query = f"SELECT {column_list} FROM statcast_pitchers LIMIT {limit}"
+        
+        try:
+            df = pd.read_sql_query(query, conn)
+            return df
+        except Exception as e:
+            logger.error(f"Error querying statcast data: {e}")
+            return pd.DataFrame()
+
+def verify_database_columns():
+    """
+    Verify and print the columns in the statcast_pitchers table
+    to help diagnose column naming issues
+    """
+    with DBConnection() as conn:
+        cursor = conn.cursor()
+        
+        # Check if table exists first
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='statcast_pitchers'")
+        if not cursor.fetchone():
+            logger.error("Table 'statcast_pitchers' does not exist!")
+            return False
+            
+        cursor.execute("PRAGMA table_info(statcast_pitchers)")
+        columns = cursor.fetchall()
+        
+        logger.info(f"Found {len(columns)} columns in statcast_pitchers table:")
+        for idx, col in enumerate(columns):
+            logger.info(f"  {idx}. {col[1]} ({col[2]})")
+        
+        # Test query with a small sample if the table exists
+        try:
+            sample_df = pd.read_sql_query("SELECT * FROM statcast_pitchers LIMIT 5", conn)
+            logger.info(f"Sample DataFrame has {len(sample_df.columns)} columns:")
+            logger.info(f"Column names: {sample_df.columns.tolist()}")
+            return True
+        except Exception as e:
+            logger.error(f"Error querying sample data: {e}")
+            return False
+
 def main():
     """Initialize database and create/fetch data using pybaseball directly"""
     # Initialize essential schema and team data 
     logger.info("Setting up database directly from pybaseball...")
     
     # Create tables based on direct samples from pybaseball
-    initialize_database_from_pybaseball()
+    db_initialized = initialize_database_from_pybaseball()
+    
+    # Verify table schema after initialization
+    logger.info("Verifying database schema and column names...")
+    schema_ok = verify_database_columns()
+    
+    if not schema_ok:
+        logger.warning("Database schema verification failed, but proceeding with other steps")
     
     # Initialize team data
     initialize_team_data()
@@ -1328,6 +1593,17 @@ def main():
     
     if success:
         logger.info("Successfully fetched Statcast data and inserted into database")
+        
+        # Verify column names after data insertion
+        logger.info("Verifying column names with actual data...")
+        verify_database_columns()
+        
+        # Test retrieval with our new function
+        sample_data = get_statcast_data(limit=5)
+        if not sample_data.empty:
+            logger.info(f"Successfully retrieved sample data with {len(sample_data.columns)} properly named columns")
+        else:
+            logger.error("Failed to retrieve sample data")
     else:
         logger.error("Failed to fetch/insert Statcast data")
     
@@ -1335,10 +1611,10 @@ def main():
     with DBConnection() as conn:
         cursor = conn.cursor()
         
-        cursor.execute("SELECT COUNT(*) FROM statcast_pitches")
+        cursor.execute("SELECT COUNT(*) FROM statcast_pitchers")
         pitch_count = cursor.fetchone()[0]
         
-        cursor.execute("SELECT COUNT(DISTINCT pitcher_id) FROM statcast_pitches")
+        cursor.execute("SELECT COUNT(DISTINCT pitcher_id) FROM statcast_pitchers")
         pitcher_count = cursor.fetchone()[0]
         
         logger.info(f"Database now contains {pitch_count} pitch records from {pitcher_count} pitchers")
