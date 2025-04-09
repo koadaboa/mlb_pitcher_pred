@@ -1,11 +1,8 @@
-# src/models/train_strikeout_model.py
+# src/models/train_complete_model.py
 import pandas as pd
 import numpy as np
-import sqlite3
-from pathlib import Path
 import lightgbm as lgb
 import optuna
-from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -13,6 +10,7 @@ import logging
 from datetime import datetime
 import os
 import sys
+import pickle
 
 # Add project root to path if needed
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
@@ -20,10 +18,9 @@ if project_root not in sys.path:
     sys.path.append(project_root)
 
 from src.data.utils import setup_logger, DBConnection
-from config import StrikeoutModelConfig
 
 # Setup logger
-logger = setup_logger('train_strikeout_model')
+logger = setup_logger('train_complete_model')
 
 def within_n_strikeouts(y_true, y_pred, n=1):
     """Calculate percentage of predictions within n strikeouts of actual value"""
@@ -31,90 +28,13 @@ def within_n_strikeouts(y_true, y_pred, n=1):
     return np.mean(within_n)
 
 def load_data():
-    """Load pitcher features from database"""
-    logger.info("Loading pitcher data from database...")
+    """Load combined predictive features"""
+    logger.info("Loading combined feature data...")
     with DBConnection() as conn:
-        query = "SELECT * FROM predictive_pitch_features"
+        query = "SELECT * FROM combined_predictive_features"
         df = pd.read_sql_query(query, conn)
     
-    logger.info(f"Loaded {len(df)} rows of pitcher data")
-    return df
-
-def create_additional_features(df):
-    """Create additional features to improve model performance"""
-    logger.info("Creating additional features...")
-    
-    # Add more advanced rolling metrics
-    for window in [3, 5, 10]:
-        # Create group key for proper rolling calculations
-        df = df.sort_values(['pitcher_id', 'game_date'])
-        
-        # Calculate rolling K/9
-        rolling_k9 = (df.groupby('pitcher_id')['strikeouts']
-                      .rolling(window, min_periods=1)
-                      .sum() * 9 / 
-                      df.groupby('pitcher_id')['innings_pitched']
-                      .rolling(window, min_periods=1)
-                      .sum()).reset_index(level=0, drop=True)
-        df[f'rolling_{window}g_k9'] = df.index.map(rolling_k9)
-        
-        # Calculate rolling K%
-        rolling_k_pct = (df.groupby('pitcher_id')['strikeouts']
-                        .rolling(window, min_periods=1)
-                        .sum() / 
-                        df.groupby('pitcher_id')['batters_faced']
-                        .rolling(window, min_periods=1)
-                        .sum()).reset_index(level=0, drop=True)
-        df[f'rolling_{window}g_k_pct'] = df.index.map(rolling_k_pct)
-        
-        # Calculate rolling SwStr%
-        rolling_swstr = (df.groupby('pitcher_id')['swinging_strike_percent']
-                         .rolling(window, min_periods=1)
-                         .mean()).reset_index(level=0, drop=True)
-        df[f'rolling_{window}g_swstr_pct'] = df.index.map(rolling_swstr)
-        
-        # Calculate velocity trend
-        rolling_velo = (df.groupby('pitcher_id')['avg_velocity']
-                        .rolling(window, min_periods=1)
-                        .mean()).reset_index(level=0, drop=True)
-        df[f'rolling_{window}g_velocity'] = df.index.map(rolling_velo)
-        
-    # Create pitch mix trend features
-    for pitch_type in ['fastball', 'breaking', 'offspeed']:
-        for window in [3, 5]:
-            # Calculate rolling pitch usage
-            rolling_usage = (df.groupby('pitcher_id')[f'{pitch_type}_percent']
-                            .rolling(window, min_periods=1)
-                            .mean()).reset_index(level=0, drop=True)
-            df[f'rolling_{window}g_{pitch_type}_pct'] = df.index.map(rolling_usage)
-    
-    # Create career metrics
-    career_k9 = df.groupby('pitcher_id').apply(
-        lambda x: x['strikeouts'].sum() * 9 / x['innings_pitched'].sum()
-    ).to_dict()
-    df['career_k9'] = df['pitcher_id'].map(career_k9)
-    
-    career_k_pct = df.groupby('pitcher_id').apply(
-        lambda x: x['strikeouts'].sum() / x['batters_faced'].sum()
-    ).to_dict()
-    df['career_k_pct'] = df['pitcher_id'].map(career_k_pct)
-    
-    # Create home/away feature
-    df['is_home'] = (df['home_team'] == df['home_team']).astype(int)  # Using a tautology as placeholder
-    # In reality, you'd compare with the pitcher's team - but we don't have that column in the sample
-    
-    # Create streak features
-    df['K_last_game'] = df.groupby('pitcher_id')['strikeouts'].shift(1)
-    
-    # Create season month indicators
-    df['game_month'] = pd.to_datetime(df['game_date']).dt.month
-    for month in range(3, 11):  # MLB season months
-        df[f'is_month_{month}'] = (df['game_month'] == month).astype(int)
-    
-    # Calculate recent form vs. career average
-    df['recent_vs_career_k9'] = df['rolling_5g_k9'] / df['career_k9']
-    
-    logger.info(f"Created additional features. Total features: {len(df.columns)}")
+    logger.info(f"Loaded {len(df)} rows of combined features")
     return df
 
 def prepare_data(df):
@@ -122,24 +42,24 @@ def prepare_data(df):
     # Convert game_date to datetime
     df['game_date'] = pd.to_datetime(df['game_date'])
     
-    # Create additional features
-    df = create_additional_features(df)
+    # Sort by pitcher_id and game_date for time series integrity
+    df = df.sort_values(['pitcher_id', 'game_date'])
     
     # Handle missing values
     for col in df.select_dtypes(include=['float64', 'int64']).columns:
         if df[col].isnull().sum() > 0:
-            median_val = df[col].median()
-            df[col] = df[col].fillna(median_val)
-    
-    # Sort by pitcher_id and game_date for time series integrity
-    df = df.sort_values(['pitcher_id', 'game_date'])
+            logger.info(f"Filling {df[col].isnull().sum()} missing values in {col}")
+            df[col] = df[col].fillna(df[col].median())
     
     # Define features and target
-    exclude_cols = ['index', '', 'pitcher_id', 'player_name', 'game_date', 'game_pk', 
-                    'home_team', 'away_team', 'p_throws', 'season', 'strikeouts', 'game_month']
+    exclude_cols = [
+        'index', '', 'pitcher_id', 'player_name', 'game_date', 'game_pk', 
+        'home_team', 'away_team', 'p_throws', 'season', 'strikeouts',
+        'player_name_opp', 'opposing_team', 'game_month'
+    ]
     feature_cols = [col for col in df.columns if col not in exclude_cols]
     
-    logger.info(f"Using {len(feature_cols)} features")
+    logger.info(f"Using {len(feature_cols)} features in complete model")
     return df, feature_cols
 
 def time_series_cv_by_season(df):
@@ -164,7 +84,7 @@ def objective(trial, df, feature_cols, train_idx, val_idx):
         'metric': 'rmse',
         'boosting_type': 'gbdt',
         'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.1, log=True),
-        'num_leaves': trial.suggest_int('num_leaves', 20, 200),
+        'num_leaves': trial.suggest_int('num_leaves', 20, 150),
         'max_depth': trial.suggest_int('max_depth', 3, 12),
         'min_data_in_leaf': trial.suggest_int('min_data_in_leaf', 10, 100),
         'feature_fraction': trial.suggest_float('feature_fraction', 0.6, 1.0),
@@ -203,8 +123,8 @@ def objective(trial, df, feature_cols, train_idx, val_idx):
     
     return within_1  # Optuna tries to maximize this
 
-def train_model_with_optuna():
-    """Train LightGBM model with time series CV and Optuna optimization"""
+def train_model():
+    """Train LightGBM model with all features"""
     # Load and prepare data
     df = load_data()
     df, feature_cols = prepare_data(df)
@@ -221,6 +141,9 @@ def train_model_with_optuna():
     # Store best parameters and models for each fold
     best_params_list = []
     models = []
+    
+    # Save feature importance for each fold
+    importance_dfs = []
     
     # Optuna and training for each fold
     for i, (train_idx, test_idx) in enumerate(splits):
@@ -249,7 +172,7 @@ def train_model_with_optuna():
         study = optuna.create_study(direction='maximize')
         objective_func = lambda trial: objective(trial, df, feature_cols, actual_train_idx, validation_idx)
         
-        # Limit to 100 trials for time constraints - adjust as needed
+        # Limit to 50 trials
         study.optimize(objective_func, n_trials=50)
         
         best_params = study.best_params
@@ -304,20 +227,25 @@ def train_model_with_optuna():
         logger.info(f"Season {test_season} - Within 1 K: {within_1:.4f}, Within 2 K: {within_2:.4f}")
         logger.info(f"Fold completed in {fold_time}")
         
+        # Save feature importance
+        importance = pd.DataFrame({
+            'Feature': feature_cols,
+            'Importance': final_model.feature_importance(),
+            'Fold': i+1,
+            'Test_Season': test_season
+        })
+        importance_dfs.append(importance)
+        
         # Create feature importance plot for this fold
         plt.figure(figsize=(12, 8))
-        feature_importance = pd.DataFrame({
-            'Feature': feature_cols,
-            'Importance': final_model.feature_importance()
-        }).sort_values('Importance', ascending=False)
-        
-        plt.barh(feature_importance['Feature'][:20], feature_importance['Importance'][:20])
-        plt.title(f'Feature Importance - Test Season {test_season}')
+        top_features = importance.sort_values('Importance', ascending=False).head(20)
+        plt.barh(top_features['Feature'], top_features['Importance'])
+        plt.title(f'Complete Model - Feature Importance - Test Season {test_season}')
         plt.tight_layout()
         
         plots_dir = Path('plots')
         plots_dir.mkdir(exist_ok=True, parents=True)
-        plt.savefig(f'plots/feature_importance_season_{test_season}.png')
+        plt.savefig(f'plots/complete_importance_season_{test_season}.png')
     
     # Log average metrics
     logger.info("\nAverage metrics across all test seasons:")
@@ -328,6 +256,18 @@ def train_model_with_optuna():
     best_fold_idx = np.argmax(metrics['within_1'])
     best_params = best_params_list[best_fold_idx]
     logger.info(f"\nBest model is from fold {best_fold_idx + 1} with within_1 = {metrics['within_1'][best_fold_idx]:.4f}")
+    
+    # Combine all feature importances and analyze
+    all_importance = pd.concat(importance_dfs)
+    avg_importance = all_importance.groupby('Feature')['Importance'].mean().reset_index()
+    avg_importance = avg_importance.sort_values('Importance', ascending=False)
+    
+    # Plot average feature importance
+    plt.figure(figsize=(12, 10))
+    plt.barh(avg_importance['Feature'].head(30), avg_importance['Importance'].head(30))
+    plt.title('Average Feature Importance Across All Folds')
+    plt.tight_layout()
+    plt.savefig(f'plots/complete_avg_importance_{datetime.now().strftime("%Y%m%d")}.png')
     
     # Train final model on all data using best hyperparameters
     logger.info("\nTraining final model on all data using best hyperparameters...")
@@ -364,24 +304,12 @@ def train_model_with_optuna():
     final_preds = final_model.predict(X_val_all)
     final_within_1 = within_n_strikeouts(y_val_all, final_preds, n=1)
     final_within_2 = within_n_strikeouts(y_val_all, final_preds, n=2)
+    final_rmse = np.sqrt(mean_squared_error(y_val_all, final_preds))
+    final_mae = mean_absolute_error(y_val_all, final_preds)
     
+    logger.info(f"Final model validation RMSE: {final_rmse:.4f}, MAE: {final_mae:.4f}")
     logger.info(f"Final model validation within 1 K: {final_within_1:.4f}")
     logger.info(f"Final model validation within 2 K: {final_within_2:.4f}")
-    
-    # Create feature importance plot for final model
-    plt.figure(figsize=(12, 8))
-    feature_importance = pd.DataFrame({
-        'Feature': feature_cols,
-        'Importance': final_model.feature_importance()
-    }).sort_values('Importance', ascending=False)
-    
-    plt.barh(feature_importance['Feature'][:20], feature_importance['Importance'][:20])
-    plt.title('Feature Importance - Final Model')
-    plt.tight_layout()
-    
-    plots_dir = Path('plots')
-    plots_dir.mkdir(exist_ok=True, parents=True)
-    plt.savefig(f'plots/feature_importance_final_{datetime.now().strftime("%Y%m%d")}.png')
     
     # Visualize predictions vs actuals
     plt.figure(figsize=(10, 8))
@@ -389,59 +317,24 @@ def train_model_with_optuna():
     plt.plot([0, max(y_val_all)], [0, max(y_val_all)], 'r--')
     plt.xlabel('Actual Strikeouts')
     plt.ylabel('Predicted Strikeouts')
-    plt.title('Predicted vs Actual Strikeouts')
-    plt.savefig(f'plots/predictions_vs_actuals_{datetime.now().strftime("%Y%m%d")}.png')
+    plt.title('Complete Model - Predicted vs Actual Strikeouts')
+    plt.savefig(f'plots/complete_predictions_vs_actuals_{datetime.now().strftime("%Y%m%d")}.png')
     
     # Save final model
     model_dir = Path('models')
     model_dir.mkdir(exist_ok=True, parents=True)
-    model_filename = f'models/lightgbm_strikeout_predictor_{datetime.now().strftime("%Y%m%d")}.txt'
+    model_filename = f'models/complete_strikeout_predictor_{datetime.now().strftime("%Y%m%d")}.txt'
     final_model.save_model(model_filename)
     
-    # Save feature columns for prediction
-    import pickle
-    with open(f'models/feature_columns_{datetime.now().strftime("%Y%m%d")}.pkl', 'wb') as f:
+    # Save feature columns
+    with open(f'models/complete_feature_columns_{datetime.now().strftime("%Y%m%d")}.pkl', 'wb') as f:
         pickle.dump(feature_cols, f)
     
     logger.info(f"Final model saved to {model_filename}")
     
-    # Provide important visualization of errors
-    plt.figure(figsize=(10, 6))
-    error = y_val_all - final_preds
-    sns.histplot(error, kde=True, bins=30)
-    plt.axvline(x=0, color='r', linestyle='--')
-    plt.title('Error Distribution')
-    plt.xlabel('Error (Actual - Predicted)')
-    plt.savefig(f'plots/error_distribution_{datetime.now().strftime("%Y%m%d")}.png')
-    
     return final_model, feature_cols
 
-def predict_strikeouts(model, new_data, feature_cols):
-    """Make predictions for new pitcher data"""
-    # Ensure data has all required features
-    missing_features = set(feature_cols) - set(new_data.columns)
-    if missing_features:
-        # Check if we can create the missing features
-        if 'game_date' in new_data.columns and 'pitcher_id' in new_data.columns:
-            # Add code to create the missing features
-            logger.warning(f"Creating missing features: {missing_features}")
-            # This would require similar logic to create_additional_features
-        else:
-            raise ValueError(f"Missing required features: {missing_features}")
-    
-    # Handle any missing values in new data
-    for col in feature_cols:
-        if col in new_data.columns and new_data[col].isnull().any():
-            new_data[col] = new_data[col].fillna(new_data[col].median())
-    
-    # Make prediction
-    X_new = new_data[feature_cols]
-    predictions = model.predict(X_new)
-    
-    # Round to nearest integer
-    return np.round(predictions).astype(int)
-
 if __name__ == "__main__":
-    logger.info("Starting strikeout model training with hyperparameter optimization...")
-    model, features = train_model_with_optuna()
-    logger.info("Model training complete.")
+    logger.info("Starting strikeout model training with complete features...")
+    model, features = train_model()
+    logger.info("Complete model training complete.")

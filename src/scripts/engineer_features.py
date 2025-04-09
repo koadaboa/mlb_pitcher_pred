@@ -1,131 +1,73 @@
-"""
-Script for engineering predictive features for pitcher strikeout prediction.
-"""
-
-import argparse
+# src/scripts/engineer_features.py
+import os
+import sys
 import logging
 from pathlib import Path
-import numpy as np
 import pandas as pd
-from src.data.utils import setup_logger
-from src.features.pitch_features import (
-    create_predictive_features, 
-    store_predictive_features,
-    calculate_rolling_features,
-    create_days_rest_features,
-    create_handedness_features,
-    combine_features,
-    prepare_final_features
-)
-from src.data.aggregate_pitchers import aggregate_pitchers_to_game_level, get_game_level_pitcher_stats
-from config import StrikeoutModelConfig, DBConfig
+import time
 
-logger = setup_logger(__name__)
+# Add project root to path if needed
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
+if project_root not in sys.path:
+    sys.path.append(project_root)
 
-def create_and_store_features(limit=None, seasons=None, batch_size=None, rebuild_tables=False):
-    """
-    Create and store predictive features for pitcher strikeout prediction.
+from src.data.utils import setup_logger, DBConnection
+from src.features.pitch_features import create_pitcher_features
+from src.features.batter_features import create_batter_features
+from src.features.team_features import create_team_features, create_combined_features
+
+# Setup logger
+logger = setup_logger('engineer_features')
+
+def run_feature_engineering_pipeline():
+    """Run the complete feature engineering pipeline"""
+    start_time = time.time()
     
-    Args:
-        limit (int): Optional limit on rows to process
-        seasons (list): Optional list of seasons to include
-        batch_size (int): Optional batch size for processing large datasets
-        rebuild_tables (bool): If True, rebuild existing tables
-        
-    Returns:
-        bool: Success status
-    """
     try:
-        logger.info("Starting feature engineering process")
-        
-        # Aggregate pitch data to game level if needed
-        # This ensures we have the game_level_pitchers table
-        logger.info("Aggregating pitch data to game level")
-        aggregate_success = aggregate_pitchers_to_game_level(force_rebuild=rebuild_tables)
-        
-        if not aggregate_success:
-            logger.error("Failed to aggregate pitcher data to game level")
+        # Step 1: Create pitcher features
+        logger.info("Step 1: Creating pitcher features...")
+        pitcher_df = create_pitcher_features()
+        if pitcher_df.empty:
+            logger.error("Failed to create pitcher features. Aborting pipeline.")
             return False
+        logger.info("Pitcher features created successfully.")
         
-        # Use specified seasons or default
-        if seasons is None:
-            seasons = StrikeoutModelConfig.DEFAULT_TRAIN_YEARS
-        
-        # Use batch size from config if not specified
-        if batch_size is None:
-            batch_size = DBConfig.BATCH_SIZE
-            
-        logger.info(f"Using batch size: {batch_size}")
-        logger.info(f"Using seasons: {seasons}")
-        
-        # Get game level data
-        logger.info("Retrieving game-level pitchers data")
-        game_data = get_game_level_pitcher_stats(limit=limit, seasons=seasons)
-        
-        if game_data.empty:
-            logger.error("Failed to retrieve game-level pitcher data")
-            return False
-        
-        logger.info(f"Retrieved {len(game_data)} game-level records")
-        
-        # Create advanced predictive features
-        logger.info("Creating advanced predictive features")
-        
-        # Convert game_date to datetime if it's not already
-        if not pd.api.types.is_datetime64_any_dtype(game_data['game_date']):
-            game_data['game_date'] = pd.to_datetime(game_data['game_date'])
-        
-        # Calculate rolling features
-        logger.info("Calculating rolling features")
-        game_data = calculate_rolling_features(game_data)
-        
-        # Create rest day features
-        logger.info("Creating rest day features")
-        game_data = create_days_rest_features(game_data)
-        
-        # Create handedness features
-        logger.info("Creating handedness features")
-        game_data = create_handedness_features(game_data)
-        
-        # Combine features to create interaction terms
-        logger.info("Creating feature interactions")
-        game_data = combine_features(game_data)
-        
-        # Prepare final feature set (apply shifting to prevent data leakage)
-        logger.info("Preparing final feature set")
-        final_features = prepare_final_features(game_data)
-        
-        # Store features
-        logger.info("Storing predictive features")
-        success = store_predictive_features(final_features)
-        
-        if success:
-            logger.info(f"Feature engineering completed successfully, created {len(final_features)} feature records")
+        # Step 2: Create batter features
+        logger.info("Step 2: Creating batter features...")
+        batter_df = create_batter_features()
+        if batter_df.empty:
+            logger.warning("No batter features created. Continuing pipeline.")
         else:
-            logger.error("Feature engineering failed during storage")
-            
-        return success
+            logger.info("Batter features created successfully.")
+        
+        # Step 3: Create team features
+        logger.info("Step 3: Creating team features...")
+        team_df = create_team_features()
+        if team_df.empty:
+            logger.warning("No team features created. Continuing pipeline.")
+        else:
+            logger.info("Team features created successfully.")
+        
+        # Step 4: Create combined features for modeling
+        logger.info("Step 4: Creating combined features...")
+        combined_df = create_combined_features()
+        if combined_df.empty:
+            logger.error("Failed to create combined features. Pipeline may be incomplete.")
+            return False
+        logger.info("Combined features created successfully.")
+        
+        pipeline_time = time.time() - start_time
+        logger.info(f"Feature engineering pipeline completed in {pipeline_time:.2f} seconds.")
+        return True
         
     except Exception as e:
-        logger.error(f"Error in feature engineering process: {e}")
+        logger.error(f"Error in feature engineering pipeline: {str(e)}")
         return False
 
-def main():
-    """Main function to parse arguments and execute feature engineering."""
-    parser = argparse.ArgumentParser(description='Create predictive features for strikeout prediction')
-    parser.add_argument('--limit', type=int, help='Limit on number of rows to process')
-    parser.add_argument('--seasons', nargs='+', type=int, help='Seasons to include')
-    parser.add_argument('--batch_size', type=int, help='Batch size for processing')
-    parser.add_argument('--rebuild', action='store_true', help='Rebuild tables even if they exist')
-    
-    args = parser.parse_args()
-    
-    create_and_store_features(
-        limit=args.limit, 
-        seasons=args.seasons, 
-        batch_size=args.batch_size,
-        rebuild_tables=args.rebuild
-    )
-
 if __name__ == "__main__":
-    main()
+    logger.info("Starting feature engineering pipeline...")
+    success = run_feature_engineering_pipeline()
+    if success:
+        logger.info("Feature engineering pipeline completed successfully.")
+    else:
+        logger.error("Feature engineering pipeline failed.")
