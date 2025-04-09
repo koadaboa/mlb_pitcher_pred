@@ -125,15 +125,17 @@ def aggregate_batters_to_game_level():
     grouped['swinging_strike_pct'] = grouped['swinging_strikes'] / grouped['total_pitches']
     grouped['called_strike_pct'] = grouped['called_strikes'] / grouped['total_pitches']
     
-    # Calculate zone stats
-    grouped['zone_contact_pct'] = grouped.apply(
-        lambda x: x['is_contact'] / x['is_in_zone'] if x['is_in_zone'] > 0 else 0, axis=1
-    )
-    
-    grouped['chase_pct'] = grouped.apply(
-        lambda x: x['is_chase'] / (grouped['total_pitches'] - x['is_in_zone']) 
-        if (grouped['total_pitches'] - x['is_in_zone']) > 0 else 0, axis=1
-    )
+    # Safe division for zone_contact_pct
+    safe_zone = grouped['is_in_zone'].copy()
+    safe_zone[safe_zone == 0] = float('inf')  # Replace zeros with infinity
+    grouped['zone_contact_pct'] = grouped['is_contact'] / safe_zone
+    grouped['zone_contact_pct'] = grouped['zone_contact_pct'].replace(float('inf'), 0)  # Replace infinity with 0
+
+    # Safe division for chase_pct
+    safe_denominator = (grouped['total_pitches'] - grouped['is_in_zone']).copy()
+    safe_denominator[safe_denominator <= 0] = float('inf')
+    grouped['chase_pct'] = grouped['is_chase'] / safe_denominator
+    grouped['chase_pct'] = grouped['chase_pct'].replace(float('inf'), 0)
     
     # Calculate pitch type whiff rates
     grouped['fastball_whiff_pct'] = grouped.apply(
