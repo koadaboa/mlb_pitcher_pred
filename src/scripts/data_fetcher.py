@@ -395,9 +395,9 @@ def setup_database():
     # Get list of pitcher IDs and names
     pitcher_ids = list(zip(pitcher_mapping['key_mlbam'], pitcher_mapping['name']))
     
-    # 2. Fetch Statcast data for starting pitchers (sample for testing)
-    sample_pitchers = pitcher_ids[:5]  # Just a few for testing
-    pitcher_data = fetch_statcast_for_pitchers(sample_pitchers, seasons)
+    # 2. Fetch Statcast data for starting pitchers
+    pitchers = pitcher_ids # Just a few for testing
+    pitcher_data = fetch_statcast_for_pitchers(pitchers, seasons)
     
     # Store pitcher data
     if not pitcher_data.empty:
@@ -410,7 +410,7 @@ def setup_database():
     if not team_batting.empty:
         store_data_to_sql(team_batting, 'team_batting')
     
-    # 4. Fetch batter data (sample)
+    # 4. Fetch batter data
     batter_data = fetch_batter_data(seasons)
     
     # Store batter data
