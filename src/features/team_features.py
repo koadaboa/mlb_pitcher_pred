@@ -26,11 +26,23 @@ def load_team_batting_data():
     logger.info(f"Loaded {len(df)} rows of team batting data")
     return df
 
-def create_team_features():
-    """Create features from team_batting table"""
+def create_team_features(seasons=None):
+    """Create features from team_batting table
+    
+    Args:
+        seasons (tuple, optional): Specific seasons to use
+        
+    Returns:
+        pandas.DataFrame: Team features
+    """
     try:
         # Load team batting data
         df = load_team_batting_data()
+        
+        # Filter to specified seasons if provided
+        if seasons is not None:
+            df = df[df['Season'].isin(seasons)]
+            logger.info(f"Filtered team batting data to seasons {seasons}: {len(df)} rows")
         
         # Create team-level features dataframe
         team_features = []
@@ -41,10 +53,10 @@ def create_team_features():
             return pd.DataFrame()
         
         # Get unique seasons and teams
-        seasons = df['Season'].unique()
-        logger.info(f"Processing {len(seasons)} seasons of team data")
+        all_seasons = df['Season'].unique()
+        logger.info(f"Processing {len(all_seasons)} seasons of team data")
         
-        for season in seasons:
+        for season in all_seasons:
             season_data = df[df['Season'] == season]
             
             for _, row in season_data.iterrows():
@@ -93,129 +105,74 @@ def create_team_features():
         logger.error(f"Error creating team features: {str(e)}")
         return pd.DataFrame()
 
-def create_combined_features():
-    """Combine pitcher, batter, and team features into a single dataset"""
-    logger.info("Creating combined features...")
+def create_combined_features(pitcher_df=None, team_df=None, dataset_type="all"):
+    """Combine pitcher, batter, and team features into a single dataset
+    
+    Args:
+        pitcher_df (pandas.DataFrame, optional): Pitcher features
+        team_df (pandas.DataFrame, optional): Team features
+        dataset_type (str): Type of dataset ("train", "test", or "all")
+        
+    Returns:
+        pandas.DataFrame: Combined features dataset
+    """
+    logger.info(f"Creating combined features for {dataset_type} dataset...")
     
     try:
-        with DBConnection() as conn:
-            # Load pitcher features
-            pitcher_query = "SELECT * FROM predictive_pitch_features"
-            pitcher_df = pd.read_sql_query(pitcher_query, conn)
-            
-            # Load team features
-            team_query = "SELECT * FROM team_season_features"
-            team_df = pd.read_sql_query(team_query, conn)
-            
-            # Load game-level batters to get expected lineup
-            batters_query = """
-            SELECT 
-                game_pk, game_date, batter_id, player_name, swinging_strike_pct, 
-                strikeouts, total_pitches, stand
-            FROM game_level_batters
-            """
-            batters_df = pd.read_sql_query(batters_query, conn)
-            
-            # Load batter predictive features
-            batter_query = """
-            SELECT 
-                batter_id, game_date, game_pk,
-                rolling_5g_k_pct, rolling_5g_swstr_pct, 
-                rolling_5g_chase_pct, rolling_5g_zone_contact_pct
-            FROM batter_predictive_features
-            """
-            batter_features_df = pd.read_sql_query(batter_query, conn)
+        # Load data if not provided
+        if pitcher_df is None or team_df is None:
+            with DBConnection() as conn:
+                # Load pitcher features - use appropriate table
+                pitcher_table = "predictive_pitch_features"
+                if dataset_type == "train":
+                    pitcher_table = "train_predictive_pitch_features"
+                elif dataset_type == "test":
+                    pitcher_table = "test_predictive_pitch_features"
+                
+                pitcher_query = f"SELECT * FROM {pitcher_table}"
+                pitcher_df = pd.read_sql_query(pitcher_query, conn)
+                
+                # Load team features
+                team_query = "SELECT * FROM team_season_features"
+                team_df = pd.read_sql_query(team_query, conn)
         
         # Convert dates
         pitcher_df['game_date'] = pd.to_datetime(pitcher_df['game_date'])
-        batters_df['game_date'] = pd.to_datetime(batters_df['game_date'])
-        batter_features_df['game_date'] = pd.to_datetime(batter_features_df['game_date'])
         
-        # First create team-level batter metrics for each game
-        game_lineup_stats = []
-        
-        for game_pk in pitcher_df['game_pk'].unique():
-            # Get batters for this game
-            game_batters = batters_df[batters_df['game_pk'] == game_pk]
-            
-            if game_batters.empty:
-                continue
-                
-            # Get batter features for these batters
-            batter_stats = batter_features_df[
-                (batter_features_df['batter_id'].isin(game_batters['batter_id'])) & 
-                (batter_features_df['game_pk'] == game_pk)
-            ]
-            
-            if batter_stats.empty:
-                continue
-                
-            # Calculate lineup-level stats
-            game_date = game_batters['game_date'].iloc[0]
-            home_team = pitcher_df[pitcher_df['game_pk'] == game_pk]['home_team'].iloc[0]
-            away_team = pitcher_df[pitcher_df['game_pk'] == game_pk]['away_team'].iloc[0]
-            
-            # Calculate aggregated stats
-            avg_k_pct = batter_stats['rolling_5g_k_pct'].mean()
-            avg_swstr_pct = batter_stats['rolling_5g_swstr_pct'].mean()
-            avg_chase_pct = batter_stats['rolling_5g_chase_pct'].mean()
-            avg_zone_contact = batter_stats['rolling_5g_zone_contact_pct'].mean()
-            
-            # Count handedness
-            right_batters = sum(game_batters['stand'] == 'R')
-            left_batters = sum(game_batters['stand'] == 'L')
-            
-            # Store lineup stats for both teams
-            for team in [home_team, away_team]:
-                lineup_stats = {
-                    'game_pk': game_pk,
-                    'game_date': game_date,
-                    'team': team,
-                    'lineup_avg_k_pct': avg_k_pct,
-                    'lineup_avg_swstr_pct': avg_swstr_pct,
-                    'lineup_avg_chase_pct': avg_chase_pct,
-                    'lineup_avg_zone_contact': avg_zone_contact,
-                    'lineup_right_handed': right_batters,
-                    'lineup_left_handed': left_batters,
-                    'lineup_handedness_ratio': right_batters / (left_batters + 0.001)
-                }
-                game_lineup_stats.append(lineup_stats)
-                
-        # Convert to DataFrame
-        lineup_df = pd.DataFrame(game_lineup_stats)
-        
-        # Now join with pitcher data
-        # For each game, determine the opposing team and get their lineup stats
+        # Create container for combined features
         combined_features = []
         
+        # Process each pitcher game
         for _, row in pitcher_df.iterrows():
             game_pk = row['game_pk']
+            game_date = row['game_date']
             pitcher_team = row['home_team']  # Simplified assumption
             opposing_team = row['away_team'] if pitcher_team == row['home_team'] else row['home_team']
             season = row['season']
             
-            # Get opposing team features
+            # *** CRITICAL FIX: Use only team-level seasonal data from PREVIOUS seasons ***
+            # Get opposing team features from previous seasons only
             team_feats = team_df[(team_df['team'] == opposing_team) & 
-                                (team_df['season'] == season)]
-            
-            # Get lineup features
-            lineup_feats = lineup_df[(lineup_df['game_pk'] == game_pk) & 
-                                    (lineup_df['team'] == opposing_team)]
-            
+                                (team_df['season'] < season)]
+                                
             # Combine all features
             combined_row = row.to_dict()
             
-            # Add team features
+            # Add team features from previous seasons only
             if not team_feats.empty:
+                # Use most recent previous season
+                latest_season = team_feats['season'].max()
+                latest_data = team_feats[team_feats['season'] == latest_season].iloc[0]
+                
                 for col in team_feats.columns:
                     if col not in ['team', 'season']:
-                        combined_row[f'opp_{col}'] = team_feats.iloc[0][col]
-            
-            # Add lineup features
-            if not lineup_feats.empty:
-                for col in lineup_feats.columns:
-                    if col not in ['game_pk', 'game_date', 'team']:
-                        combined_row[f'opp_{col}'] = lineup_feats.iloc[0][col]
+                        combined_row[f'opp_{col}'] = latest_data[col]
+            else:
+                # No previous season data, use league averages
+                logger.info(f"No previous season data for team {opposing_team}, using defaults")
+                combined_row['opp_team_k_percent'] = 0.22  # Default K rate
+                combined_row['opp_team_swstr_percent'] = 0.10  # Default SwStr rate
+                combined_row['opp_team_contact_percent'] = 0.77  # Default contact rate
             
             combined_features.append(combined_row)
         
@@ -229,10 +186,16 @@ def create_combined_features():
         
         logger.info(f"Created combined dataset with {len(combined_df)} rows and {len(combined_df.columns)} columns")
         
-        # Store to database
+        # Store to database with appropriate table name
+        table_name = "combined_predictive_features"
+        if dataset_type == "train":
+            table_name = "train_combined_features"
+        elif dataset_type == "test":
+            table_name = "test_combined_features"
+        
         with DBConnection() as conn:
-            combined_df.to_sql('combined_predictive_features', conn, if_exists='replace', index=False)
-            logger.info(f"Stored {len(combined_df)} combined feature records to database")
+            combined_df.to_sql(table_name, conn, if_exists='replace', index=False)
+            logger.info(f"Stored {len(combined_df)} combined feature records to {table_name}")
         
         return combined_df
         

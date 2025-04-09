@@ -10,3 +10,4 @@ mlb_pred.egg-info/
 models/
 !src/models/
 logs/
+plots/

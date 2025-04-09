@@ -36,102 +36,108 @@ def create_additional_features(df):
     if not pd.api.types.is_datetime64_any_dtype(df['game_date']):
         df['game_date'] = pd.to_datetime(df['game_date'])
     
-    # Add more advanced rolling metrics
+    # Sort by pitcher_id and game_date
+    df = df.sort_values(['pitcher_id', 'game_date'])
+    
+    # Add more advanced rolling metrics with proper shifting to prevent leakage
     for window in StrikeoutModelConfig.WINDOW_SIZES:
-        # Create group key for proper rolling calculations
-        df = df.sort_values(['pitcher_id', 'game_date'])
+        # Group by pitcher_id
+        grouped = df.groupby('pitcher_id')
         
-        # Calculate rolling K/9
-        rolling_k9 = (df.groupby('pitcher_id')['strikeouts']
-                      .rolling(window, min_periods=1)
-                      .sum() * 9 / 
-                      df.groupby('pitcher_id')['innings_pitched']
-                      .rolling(window, min_periods=1)
-                      .sum()).reset_index(level=0, drop=True)
+        # *** KEY FIX: SHIFT before calculating rolling metrics ***
+        # Calculate rolling K/9 with proper shifting
+        shifted_strikeouts = grouped['strikeouts'].shift(1)
+        shifted_innings = grouped['innings_pitched'].shift(1)
+        
+        # Calculate rolling statistics on SHIFTED values
+        rolling_k_sum = shifted_strikeouts.rolling(window, min_periods=1).sum()
+        rolling_ip_sum = shifted_innings.rolling(window, min_periods=1).sum()
+        
+        # Apply to dataframe
+        rolling_k9 = (rolling_k_sum * 9 / rolling_ip_sum).reset_index(level=0, drop=True)
         df[f'rolling_{window}g_k9'] = df.index.map(rolling_k9)
         
-        # Calculate rolling K%
-        rolling_k_pct = (df.groupby('pitcher_id')['strikeouts']
-                        .rolling(window, min_periods=1)
-                        .sum() / 
-                        df.groupby('pitcher_id')['batters_faced']
-                        .rolling(window, min_periods=1)
-                        .sum()).reset_index(level=0, drop=True)
+        # Calculate rolling K% with shifting
+        shifted_bf = grouped['batters_faced'].shift(1)
+        rolling_bf_sum = shifted_bf.rolling(window, min_periods=1).sum()
+        rolling_k_pct = (rolling_k_sum / rolling_bf_sum).reset_index(level=0, drop=True)
         df[f'rolling_{window}g_k_pct'] = df.index.map(rolling_k_pct)
         
-        # Calculate rolling SwStr%
-        rolling_swstr = (df.groupby('pitcher_id')['swinging_strike_percent']
-                         .rolling(window, min_periods=1)
-                         .mean()).reset_index(level=0, drop=True)
+        # Calculate rolling SwStr% with shifting
+        shifted_swstr = grouped['swinging_strike_percent'].shift(1)
+        rolling_swstr = shifted_swstr.rolling(window, min_periods=1).mean().reset_index(level=0, drop=True)
         df[f'rolling_{window}g_swstr_pct'] = df.index.map(rolling_swstr)
         
-        # Calculate velocity trend
-        rolling_velo = (df.groupby('pitcher_id')['avg_velocity']
-                        .rolling(window, min_periods=1)
-                        .mean()).reset_index(level=0, drop=True)
+        # Calculate velocity trend with shifting
+        shifted_velo = grouped['avg_velocity'].shift(1)
+        rolling_velo = shifted_velo.rolling(window, min_periods=1).mean().reset_index(level=0, drop=True)
         df[f'rolling_{window}g_velocity'] = df.index.map(rolling_velo)
         
-        # Calculate K standard deviation (variability)
-        rolling_k_std = (df.groupby('pitcher_id')['strikeouts']
-                         .rolling(window, min_periods=2)
-                         .std()).reset_index(level=0, drop=True)
+        # Calculate K standard deviation (variability) with shifting
+        rolling_k_std = shifted_strikeouts.rolling(window, min_periods=2).std().reset_index(level=0, drop=True)
         df[f'rolling_{window}g_K_std'] = df.index.map(rolling_k_std)
     
-    # Create pitch mix trend features
+    # Create pitch mix trend features with shifting
     for pitch_type in ['fastball', 'breaking', 'offspeed']:
         for window in [3, 5]:
-            # Calculate rolling pitch usage
-            rolling_usage = (df.groupby('pitcher_id')[f'{pitch_type}_percent']
-                            .rolling(window, min_periods=1)
-                            .mean()).reset_index(level=0, drop=True)
+            # Calculate rolling pitch usage with proper shifting
+            shifted_usage = df.groupby('pitcher_id')[f'{pitch_type}_percent'].shift(1)
+            rolling_usage = shifted_usage.rolling(window, min_periods=1).mean().reset_index(level=0, drop=True)
             df[f'rolling_{window}g_{pitch_type}_pct'] = df.index.map(rolling_usage)
     
-    # Create career metrics
-    career_k9 = df.groupby('pitcher_id').apply(
-        lambda x: x['strikeouts'].sum() * 9 / x['innings_pitched'].sum()
-    ).to_dict()
-    df['career_k9'] = df['pitcher_id'].map(career_k9)
+    # Fix career metrics - use expanding window on SHIFTED data
+    df['career_k9'] = df.groupby('pitcher_id').apply(
+        lambda x: x.sort_values('game_date').loc[:, 'strikeouts'].shift(1).expanding().sum() * 9 / 
+                  x.sort_values('game_date').loc[:, 'innings_pitched'].shift(1).expanding().sum()
+    ).reset_index(level=0, drop=True)
     
-    career_k_pct = df.groupby('pitcher_id').apply(
-        lambda x: x['strikeouts'].sum() / x['batters_faced'].sum()
-    ).to_dict()
-    df['career_k_pct'] = df['pitcher_id'].map(career_k_pct)
+    df['career_k_pct'] = df.groupby('pitcher_id').apply(
+        lambda x: x.sort_values('game_date').loc[:, 'strikeouts'].shift(1).expanding().sum() / 
+                  x.sort_values('game_date').loc[:, 'batters_faced'].shift(1).expanding().sum()
+    ).reset_index(level=0, drop=True)
     
-    # Create home/away feature
-    # In reality, you'd compare with the pitcher's team, but as a placeholder:
+    # Remaining features remain mostly the same
     df['is_home'] = (df['home_team'] == df['away_team']).astype(int)
-    
-    # Create streak features
     df['K_last_game'] = df.groupby('pitcher_id')['strikeouts'].shift(1)
-    
-    # Calculate days since last game
     df['days_since_last_game'] = df.groupby('pitcher_id')['game_date'].diff().dt.days
     
-    # Create rest day categorical features
+    # Rest day features
     df['rest_days_4_less'] = ((df['days_since_last_game'] > 0) & 
-                              (df['days_since_last_game'] <= 4)).astype(float)
+                             (df['days_since_last_game'] <= 4)).astype(float)
     df['rest_days_5'] = (df['days_since_last_game'] == 5).astype(float)
     df['rest_days_6_more'] = (df['days_since_last_game'] >= 6).astype(float)
     
-    # Create season month indicators
+    # Month indicators
     df['game_month'] = pd.to_datetime(df['game_date']).dt.month
-    for month in range(3, 11):  # MLB season months
+    for month in range(3, 11):
         df[f'is_month_{month}'] = (df['game_month'] == month).astype(int)
     
     # Calculate recent form vs. career average
     df['recent_vs_career_k9'] = df['rolling_5g_k9'] / df['career_k9']
-    
-    # Create handedness feature
     df['throws_right'] = (df['p_throws'] == 'R').astype(float)
     
     logger.info(f"Created additional features. Total features: {len(df.columns)}")
     return df
 
-def create_pitcher_features():
-    """Main function to create pitcher features"""
+def create_pitcher_features(df=None, dataset_type="all"):
+    """Main function to create pitcher features
+    
+    Args:
+        df (pandas.DataFrame, optional): Game-level data to process. If None, load from DB.
+        dataset_type (str): Type of dataset ("train", "test", or "all")
+    
+    Returns:
+        pandas.DataFrame: DataFrame with pitcher features
+    """
     try:
-        # Load game-level data
-        df = load_game_level_data()
+        # Load game-level data if not provided
+        if df is None:
+            logger.info("Loading game-level pitcher data...")
+            with DBConnection() as conn:
+                query = "SELECT * FROM game_level_pitchers"
+                df = pd.read_sql_query(query, conn)
+            
+            logger.info(f"Loaded {len(df)} rows of game-level pitcher data")
         
         # Convert game_date to datetime
         df['game_date'] = pd.to_datetime(df['game_date'])
@@ -145,10 +151,16 @@ def create_pitcher_features():
                 logger.info(f"Filling {df[col].isnull().sum()} missing values in {col}")
                 df[col] = df[col].fillna(df[col].median())
         
-        # Store to database
+        # Store to database with appropriate table name
+        table_name = "predictive_pitch_features"
+        if dataset_type == "train":
+            table_name = "train_predictive_pitch_features"
+        elif dataset_type == "test":
+            table_name = "test_predictive_pitch_features"
+        
         with DBConnection() as conn:
-            df.to_sql('predictive_pitch_features', conn, if_exists='replace', index=False)
-            logger.info(f"Stored {len(df)} rows of predictive pitcher features to database")
+            df.to_sql(table_name, conn, if_exists='replace', index=False)
+            logger.info(f"Stored {len(df)} rows of predictive pitcher features to {table_name}")
         
         return df
     

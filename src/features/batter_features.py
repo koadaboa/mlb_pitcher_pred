@@ -17,29 +17,35 @@ from config import StrikeoutModelConfig
 # Setup logger
 logger = setup_logger('batter_features')
 
-def create_batter_features():
-    """Create batter features from pre-aggregated game-level data"""
+def create_batter_features(df=None, dataset_type="all"):
+    """Create batter features from pre-aggregated game-level data
+    
+    Args:
+        df (pandas.DataFrame, optional): Game-level data to process. If None, load from DB.
+        dataset_type (str): Type of dataset ("train", "test", or "all")
+    
+    Returns:
+        pandas.DataFrame: DataFrame with batter features
+    """
     try:
-        # Load game-level batter data
-        logger.info("Loading game-level batter data...")
-        with DBConnection() as conn:
-            query = "SELECT * FROM game_level_batters"
-            df = pd.read_sql_query(query, conn)
-        
-        if df.empty:
-            logger.error("No game-level batter data found. Run create_game_level_batters.py first.")
-            return pd.DataFrame()
+        # Load game-level batter data if not provided
+        if df is None:
+            logger.info("Loading game-level batter data...")
+            with DBConnection() as conn:
+                query = "SELECT * FROM game_level_batters"
+                df = pd.read_sql_query(query, conn)
             
-        logger.info(f"Loaded {len(df)} rows of game-level batter data")
+            if df.empty:
+                logger.error("No game-level batter data found. Run create_game_level_batters.py first.")
+                return pd.DataFrame()
+                
+            logger.info(f"Loaded {len(df)} rows of game-level batter data")
         
         # Convert game_date to datetime
         df['game_date'] = pd.to_datetime(df['game_date'])
         
         # Sort by batter_id and game_date
         df = df.sort_values(['batter_id', 'game_date'])
-        
-        # Calculate rolling window features for each batter
-        logger.info("Creating rolling window features...")
         
         # Container for all features
         all_features = []
@@ -58,55 +64,47 @@ def create_batter_features():
             if len(batter_games) <= 1:
                 continue
                 
-            # Calculate rolling features for each window size
+            # *** KEY FIX: Use shifted values before calculating rolling windows ***
             for window in window_sizes:
-                # Rolling strikeout rate
+                # Shift values first to prevent leakage
+                shifted_strikeouts = batter_games['strikeouts'].shift(1)
+                shifted_pitches = batter_games['total_pitches'].shift(1)
+                shifted_swinging_strikes = batter_games['swinging_strikes'].shift(1)
+                
+                # Rolling strikeout rate with shifted data
                 batter_games[f'rolling_{window}g_k_pct'] = (
-                    batter_games['strikeouts'].rolling(window, min_periods=1).sum() /
-                    batter_games['total_pitches'].rolling(window, min_periods=1).sum() * 100
+                    shifted_strikeouts.rolling(window, min_periods=1).sum() /
+                    shifted_pitches.rolling(window, min_periods=1).sum() * 100
                 )
                 
-                # Rolling swinging strike rate
+                # Rolling swinging strike rate with shifted data
                 batter_games[f'rolling_{window}g_swstr_pct'] = (
-                    batter_games['swinging_strikes'].rolling(window, min_periods=1).sum() /
-                    batter_games['total_pitches'].rolling(window, min_periods=1).sum() * 100
+                    shifted_swinging_strikes.rolling(window, min_periods=1).sum() /
+                    shifted_pitches.rolling(window, min_periods=1).sum() * 100
                 )
                 
-                # Rolling chase rate
+                # Other metrics with shifting
                 batter_games[f'rolling_{window}g_chase_pct'] = (
-                    batter_games['chase_pct'].rolling(window, min_periods=1).mean()
+                    batter_games['chase_pct'].shift(1).rolling(window, min_periods=1).mean()
                 )
                 
-                # Rolling zone contact rate
                 batter_games[f'rolling_{window}g_zone_contact_pct'] = (
-                    batter_games['zone_contact_pct'].rolling(window, min_periods=1).mean()
+                    batter_games['zone_contact_pct'].shift(1).rolling(window, min_periods=1).mean()
                 )
                 
                 # By pitch type
                 batter_games[f'rolling_{window}g_fb_whiff_pct'] = (
-                    batter_games['fastball_whiff_pct'].rolling(window, min_periods=1).mean()
+                    batter_games['fastball_whiff_pct'].shift(1).rolling(window, min_periods=1).mean()
                 )
                 
                 batter_games[f'rolling_{window}g_breaking_whiff_pct'] = (
-                    batter_games['breaking_whiff_pct'].rolling(window, min_periods=1).mean()
+                    batter_games['breaking_whiff_pct'].shift(1).rolling(window, min_periods=1).mean()
                 )
                 
                 batter_games[f'rolling_{window}g_offspeed_whiff_pct'] = (
-                    batter_games['offspeed_whiff_pct'].rolling(window, min_periods=1).mean()
+                    batter_games['offspeed_whiff_pct'].shift(1).rolling(window, min_periods=1).mean()
                 )
-                
-                # By handedness
-                rhp_k = batter_games['strikeouts_vs_rhp'].rolling(window, min_periods=1).sum()
-                lhp_k = batter_games['strikeouts_vs_lhp'].rolling(window, min_periods=1).sum()
-                
-                # Add the handedness features when we have enough data
-                if rhp_k.sum() > 0:
-                    batter_games[f'rolling_{window}g_k_vs_rhp'] = rhp_k
-                
-                if lhp_k.sum() > 0:
-                    batter_games[f'rolling_{window}g_k_vs_lhp'] = lhp_k
             
-            # Add to collection
             all_features.append(batter_games)
         
         # Combine all batter features
@@ -119,9 +117,15 @@ def create_batter_features():
                 batter_features[col] = batter_features[col].fillna(batter_features[col].median())
         
         # Store to database
+        table_name = "batter_predictive_features"
+        if dataset_type == "train":
+            table_name = "train_batter_predictive_features"
+        elif dataset_type == "test":
+            table_name = "test_batter_predictive_features"
+            
         with DBConnection() as conn:
-            batter_features.to_sql('batter_predictive_features', conn, if_exists='replace', index=False)
-            logger.info(f"Stored {len(batter_features)} batter features to database")
+            batter_features.to_sql(table_name, conn, if_exists='replace', index=False)
+            logger.info(f"Stored {len(batter_features)} batter features to {table_name}")
         
         return batter_features
         

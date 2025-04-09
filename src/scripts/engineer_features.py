@@ -15,46 +15,62 @@ from src.data.utils import setup_logger, DBConnection
 from src.features.pitch_features import create_pitcher_features
 from src.features.batter_features import create_batter_features
 from src.features.team_features import create_team_features, create_combined_features
+from config import StrikeoutModelConfig
 
 # Setup logger
 logger = setup_logger('engineer_features')
 
 def run_feature_engineering_pipeline():
-    """Run the complete feature engineering pipeline"""
+    """Run the complete feature engineering pipeline with train/test separation"""
     start_time = time.time()
     
+    # Define train/test seasons explicitly
+    train_seasons = StrikeoutModelConfig.DEFAULT_TRAIN_YEARS
+    test_seasons = StrikeoutModelConfig.DEFAULT_TEST_YEARS
+    
+    logger.info(f"Running pipeline with train seasons {train_seasons}, test seasons {test_seasons}")
+    
     try:
-        # Step 1: Create pitcher features
-        logger.info("Step 1: Creating pitcher features...")
-        pitcher_df = create_pitcher_features()
-        if pitcher_df.empty:
-            logger.error("Failed to create pitcher features. Aborting pipeline.")
-            return False
-        logger.info("Pitcher features created successfully.")
+        # Split data by season BEFORE feature engineering
+        with DBConnection() as conn:
+            # Get pitcher data split by seasons
+            train_pitcher_query = f"SELECT * FROM game_level_pitchers WHERE season IN {train_seasons}"
+            train_pitcher_df = pd.read_sql_query(train_pitcher_query, conn)
+            
+            test_pitcher_query = f"SELECT * FROM game_level_pitchers WHERE season IN {test_seasons}"
+            test_pitcher_df = pd.read_sql_query(test_pitcher_query, conn)
+            
+            # Get batter data split by seasons
+            train_batter_query = f"SELECT * FROM game_level_batters WHERE season IN {train_seasons}"
+            train_batter_df = pd.read_sql_query(train_batter_query, conn)
+            
+            test_batter_query = f"SELECT * FROM game_level_batters WHERE season IN {test_seasons}"
+            test_batter_df = pd.read_sql_query(test_batter_query, conn)
         
-        # Step 2: Create batter features
-        logger.info("Step 2: Creating batter features...")
-        batter_df = create_batter_features()
-        if batter_df.empty:
-            logger.warning("No batter features created. Continuing pipeline.")
-        else:
-            logger.info("Batter features created successfully.")
+        # Step 1: Create pitcher features separately for train/test
+        logger.info("Creating pitcher features for train set...")
+        train_pitcher_features = create_pitcher_features(train_pitcher_df, "train")
         
-        # Step 3: Create team features
-        logger.info("Step 3: Creating team features...")
-        team_df = create_team_features()
-        if team_df.empty:
-            logger.warning("No team features created. Continuing pipeline.")
-        else:
-            logger.info("Team features created successfully.")
+        logger.info("Creating pitcher features for test set...")
+        test_pitcher_features = create_pitcher_features(test_pitcher_df, "test")
         
-        # Step 4: Create combined features for modeling
-        logger.info("Step 4: Creating combined features...")
-        combined_df = create_combined_features()
-        if combined_df.empty:
-            logger.error("Failed to create combined features. Pipeline may be incomplete.")
-            return False
-        logger.info("Combined features created successfully.")
+        # Step 2: Create batter features separately for train/test
+        logger.info("Creating batter features for train set...")
+        train_batter_features = create_batter_features(train_batter_df, "train")
+        
+        logger.info("Creating batter features for test set...")
+        test_batter_features = create_batter_features(test_batter_df, "test")
+        
+        # Step 3: Create team features from train data only
+        logger.info("Creating team features from training data only...")
+        team_features = create_team_features(train_seasons)
+        
+        # Step 4: Create combined features separately
+        logger.info("Creating combined features for train set...")
+        train_combined = create_combined_features(train_pitcher_features, team_features, "train")
+        
+        logger.info("Creating combined features for test set...")
+        test_combined = create_combined_features(test_pitcher_features, team_features, "test")
         
         pipeline_time = time.time() - start_time
         logger.info(f"Feature engineering pipeline completed in {pipeline_time:.2f} seconds.")
