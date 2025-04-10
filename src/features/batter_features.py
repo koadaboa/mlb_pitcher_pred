@@ -12,7 +12,7 @@ if project_root not in sys.path:
     sys.path.append(project_root)
 
 from src.data.utils import setup_logger, DBConnection
-from config import StrikeoutModelConfig
+from src.config import StrikeoutModelConfig
 
 # Setup logger
 logger = setup_logger('batter_features')
@@ -31,7 +31,7 @@ if project_root not in sys.path:
     sys.path.append(project_root)
 
 from src.data.utils import setup_logger, DBConnection
-from config import StrikeoutModelConfig
+from src.config import StrikeoutModelConfig
 
 #   Setup logger
 logger = setup_logger('batter_features')

@@ -19,7 +19,7 @@ if project_root not in sys.path:
     sys.path.append(project_root)
 
 from src.data.utils import setup_logger, DBConnection
-from config import StrikeoutModelConfig
+from src.config import StrikeoutModelConfig
 
 # Setup logger
 logger = setup_logger('train_complete_model')
@@ -43,18 +43,28 @@ def train_model():
     # This table includes pitcher features, batter features, and relevant team features.
     logger.info("Loading combined predictive feature data...")
     with DBConnection() as conn:
-        # This table should contain features from pitchers, batters, and opposing teams,
-        # pre-calculated and stored by the feature engineering pipeline.
-        # The pipeline in engineer_features.py ensures features are calculated correctly
-        # based on train/test splits to prevent leakage.
-        query = "SELECT * FROM combined_predictive_features"
-        df = pd.read_sql_query(query, conn)
+        # Load BOTH train and test features
+        train_query = "SELECT * FROM train_combined_features"
+        test_query = "SELECT * FROM test_combined_features"
+        
+        try:
+            train_features_df = pd.read_sql_query(train_query, conn)
+            logger.info(f"Loaded {len(train_features_df)} rows from train_combined_features")
+            
+            test_features_df = pd.read_sql_query(test_query, conn)
+            logger.info(f"Loaded {len(test_features_df)} rows from test_combined_features")
+            
+            # Concatenate them into one DataFrame
+            df = pd.concat([train_features_df, test_features_df], ignore_index=True)
+            
+        except Exception as e:
+            logger.error(f"Failed to load train/test combined features: {e}")
+            # Re-raise or handle appropriately
+            raise pandas.errors.DatabaseError(f"Execution failed on loading train/test combined features: {e}") from e
 
     if df.empty:
         logger.error("Failed to load combined features. Make sure engineer_features.py ran successfully.")
         return None, None
-
-    logger.info(f"Loaded {len(df)} rows of combined features")
 
     # --- Data Preparation ---
     df['game_date'] = pd.to_datetime(df['game_date'])

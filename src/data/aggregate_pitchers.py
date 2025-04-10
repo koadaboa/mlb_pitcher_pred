@@ -6,7 +6,7 @@ import sqlite3
 import logging
 import pandas as pd
 from src.data.utils import setup_logger, DBConnection, ensure_dir
-from config import DBConfig
+from src.config import DBConfig
 
 logger = setup_logger(__name__)
 

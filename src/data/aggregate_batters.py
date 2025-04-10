@@ -13,7 +13,7 @@ if project_root not in sys.path:
     sys.path.append(project_root)
 
 from src.data.utils import setup_logger, DBConnection
-from config import DataConfig
+from src.config import DataConfig
 
 #   Setup logger
 logger = setup_logger('create_game_level_batters')

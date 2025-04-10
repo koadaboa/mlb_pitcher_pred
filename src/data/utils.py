@@ -3,7 +3,7 @@ import re
 import logging
 from pathlib import Path
 import pandas as pd
-from config import DBConfig
+from src.config import DBConfig
 import sqlite3
 
 def normalize_name(name):

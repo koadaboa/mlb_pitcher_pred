@@ -1,7 +1,7 @@
 # config.py
 class DBConfig:
     PATH = "data/pitcher_stats.db"
-    BATCH_SIZE = 1000
+    BATCH_SIZE = 5000
 
 class DataConfig:
     SEASONS = [2016, 2017, 2018, 2019, 2021, 2022, 2023, 2024, 2025]
