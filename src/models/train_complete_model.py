@@ -111,6 +111,18 @@ def train_model():
         'breaking_percent',         # Current game Breaking %
         'offspeed_percent',         # Current game Offspeed %
         # Add any other columns calculated *during* the game being predicted
+        'is_playoff',
+        'is_home',
+        'is_close_game',
+        'score_differential',
+        'inning',
+        'rest_days_6_more',
+        'rest_days_4_less',
+        'is_month_3',
+        'is_month_5',
+        'is_month_6',
+        'is_month_7',
+        'is_month_8'
     ]
     # Keep only columns that are not in the exclude list
     feature_cols = [col for col in df.columns if col not in exclude_cols and df[col].dtype in [np.int64, np.float64, 'int', 'float']] # Ensure numeric types
@@ -259,8 +271,6 @@ def train_model():
     y_train_all = train_df['strikeouts']
     full_train_data = lgb.Dataset(X_train_all, label=y_train_all)
 
-    X_train_all.to_csv('x_train_all.csv', index=False)
-
     # Train the final model - potentially increase boosting rounds and use early stopping
     # based on training data if no separate validation set is held out from training.
     # Or train for a fixed number of rounds determined during CV.
@@ -305,6 +315,13 @@ def train_model():
         'Feature': feature_cols,
         'Importance': final_model.feature_importance()
     }).sort_values(by='Importance', ascending=False)
+
+    full_importance_filename = output_dir / f'complete_feature_importance_full_{timestamp}.csv'
+    try:
+        importance_df.to_csv(full_importance_filename, index=False)
+        logger.info(f"Full feature importance list saved to {full_importance_filename}")
+    except Exception as e:
+        logger.error(f"Failed to save full feature importance CSV: {e}")
 
     plt.figure(figsize=(10, 12)) # Adjusted size
     top_n = 30 # Show top N features
