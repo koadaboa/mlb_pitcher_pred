@@ -169,14 +169,18 @@ def create_pitcher_features(df=None, dataset_type="all"):
         
         #   Store to database with appropriate table name
         table_name = "predictive_pitch_features"
-        if dataset_type == "train":
-            table_name = "train_predictive_pitch_features"
-        elif dataset_type == "test":
-            table_name = "test_predictive_pitch_features"
-        
+        # Add 'split' column for new schema
+        valid_splits = ("train", "test", "predict")
+        if dataset_type in valid_splits:
+            df['split'] = dataset_type
+        else:
+            df['split'] = 'all'
+        # Drop rows where umpire is null
+        if 'umpire' in df.columns:
+            df = df[df['umpire'].notnull()]
         with DBConnection() as conn:
-            df.to_sql(table_name, conn, if_exists='replace', index=False)
-            logger.info(f"Stored {len(df)} rows of predictive pitcher features to {table_name}")
+            df.to_sql('pitcher_features', conn, if_exists='append', index=False)
+            logger.info(f"Stored {len(df)} pitcher features to 'pitcher_features' table with split='{dataset_type}' (umpire not null)")
         
         return df
     

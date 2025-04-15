@@ -186,16 +186,18 @@ def create_combined_features(pitcher_df=None, team_df=None, dataset_type="all"):
         
         logger.info(f"Created combined dataset with {len(combined_df)} rows and {len(combined_df.columns)} columns")
         
-        # Store to database with appropriate table name
-        table_name = "combined_predictive_features"
-        if dataset_type == "train":
-            table_name = "train_combined_features"
-        elif dataset_type == "test":
-            table_name = "test_combined_features"
-        
+        # Add 'split' column for new schema
+        valid_splits = ("train", "test", "predict")
+        if dataset_type in valid_splits:
+            combined_df['split'] = dataset_type
+        else:
+            combined_df['split'] = 'all'
+        # Drop rows where umpire is null
+        if 'umpire' in combined_df.columns:
+            combined_df = combined_df[combined_df['umpire'].notnull()]
         with DBConnection() as conn:
-            combined_df.to_sql(table_name, conn, if_exists='replace', index=False)
-            logger.info(f"Stored {len(combined_df)} combined feature records to {table_name}")
+            combined_df.to_sql('combined_features', conn, if_exists='append', index=False)
+            logger.info(f"Stored {len(combined_df)} combined feature records to 'combined_features' table with split='{dataset_type}' (umpire not null)")
         
         return combined_df
         

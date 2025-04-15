@@ -6,7 +6,7 @@ class DBConfig:
 class DataConfig:
     SEASONS = [2016, 2017, 2018, 2019, 2021, 2022, 2023, 2024, 2025]
     RATE_LIMIT_PAUSE = 5
-    CHUNK_SIZE = 14
+    CHUNK_SIZE = 1000000
 
 class StrikeoutModelConfig:
     RANDOM_STATE = 3

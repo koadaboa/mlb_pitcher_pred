@@ -11,3 +11,7 @@ models/
 !src/models/
 logs/
 plots/
+notebooks/
+
+# windsurf rules
+.windsurfrules
