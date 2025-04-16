@@ -1,4 +1,3 @@
-# src/scripts/data_fetcher.py (Rewritten - Single Date Historical Mode)
 import sqlite3
 import pandas as pd
 import numpy as np
