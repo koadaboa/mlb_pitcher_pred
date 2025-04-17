@@ -3,8 +3,9 @@ import re
 import logging
 from pathlib import Path
 import pandas as pd
-from src.config import DBConfig
+from src.config import DBConfig, LogConfig
 import sqlite3
+from datetime import datetime
 
 def normalize_name(name):
     """
@@ -92,5 +93,84 @@ class DBConnection:
         return self.conn
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        if self.conn:
+        if hasattr(self, "conn"):
+            if exc_type:
+                self.conn.rollback()
+            else:
+                self.conn.commit()
             self.conn.close()
+
+logger = setup_logger('utils', LogConfig.LOG_DIR / 'utils.log')
+
+def find_latest_file(directory, pattern):
+    """
+    Finds the most recent file in a directory matching a glob pattern,
+    based on timestamp in the filename or modification time.
+
+    Args:
+        directory (str or Path): The directory to search in.
+        pattern (str): The glob pattern to match files (e.g., "*.pkl").
+
+    Returns:
+        Path or None: The Path object of the latest file, or None if no match found.
+    """
+    try:
+        search_dir = Path(directory)
+        if not search_dir.is_dir():
+            logger.error(f"Directory not found: {search_dir}")
+            return None
+
+        files = list(search_dir.glob(pattern))
+        if not files:
+            # Use logging.info or logging.debug for non-critical missing files
+            logger.info(f"No files found matching pattern '{pattern}' in {search_dir}")
+            return None
+
+        latest_file, latest_timestamp = None, 0
+        # Matches _YYYYMMDD_HHMMSS. before the extension (e.g., _20250416_091259.)
+        ts_pattern = re.compile(r"_(\d{8}_\d{6})\.")
+        parsed_successfully = False
+
+        for f in files:
+            match = ts_pattern.search(f.name)
+            if match:
+                try:
+                    # Extract timestamp string and parse it
+                    ts_str = match.group(1)
+                    ts = datetime.strptime(ts_str, "%Y%m%d_%H%M%S").timestamp()
+                    if ts > latest_timestamp:
+                        latest_timestamp = ts
+                        latest_file = f
+                    parsed_successfully = True
+                except ValueError:
+                    # Log parsing errors, but don't stop the process
+                    logger.warning(f"Could not parse timestamp from filename: {f.name}")
+                except Exception as e:
+                    logger.warning(f"Error processing timestamp for file {f.name}: {e}")
+
+
+        # Fallback to modification time if no timestamps were parsed or found
+        if not parsed_successfully and files:
+            logger.warning(f"Could not determine latest file by timestamp pattern '{ts_pattern.pattern}' for '{pattern}'. Falling back to modification time.")
+            try:
+                # Get the file with the maximum modification time
+                latest_file = max(files, key=lambda x: x.stat().st_mtime)
+                parsed_successfully = True # Mark as successful using mtime
+                logger.info(f"Determined latest file by modification time: {latest_file.name}")
+            except Exception as e:
+                logger.error(f"Error finding latest file by modification time for pattern '{pattern}': {e}")
+                return None # Return None if mtime fallback also fails
+
+        # Final logging based on outcome
+        if latest_file:
+            logger.info(f"Found latest file for pattern '{pattern}': {latest_file.name}")
+        elif parsed_successfully: # Should not happen if max() worked, but belt-and-suspenders
+             logger.warning(f"Parsed successfully but latest_file is None for '{pattern}'.")
+        else:
+             logger.error(f"Could not find latest file for pattern '{pattern}' using any method.")
+
+        return latest_file
+
+    except Exception as e:
+        logger.error(f"Unexpected error in find_latest_file: {e}", exc_info=True)
+        return None

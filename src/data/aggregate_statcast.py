@@ -1,630 +1,490 @@
-# src/data/aggregate_statcast.py (Fully Refactored with SQL Aggregation - Added is_home flag)
+# src/data/aggregate_statcast.py
+
 import pandas as pd
 import numpy as np
-import logging
-from pathlib import Path
-import sys
-import time
-import pickle
-import gc
 from sklearn.impute import KNNImputer
+import sqlite3
+from pathlib import Path
+import logging
+import time
+import gc
+from datetime import datetime # Ensure datetime is imported
 
-# Add project root to path if needed
-project_root = Path(__file__).resolve().parents[2]
-if str(project_root) not in sys.path:
-    sys.path.append(str(project_root))
+# Assuming script is run via engineer_features or standalone with similar setup
+try:
+    from src.config import DBConfig, LogConfig, FileConfig # Added FileConfig assumption
+    from src.data.utils import setup_logger, DBConnection
+    MODULE_IMPORTS_OK = True
+except ImportError:
+    MODULE_IMPORTS_OK = False
+    # Basic fallbacks if config/utils are not found
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    logger = logging.getLogger('aggregate_statcast_fallback')
+    DB_PATH = Path("./data/mlb_data.db") # Default path
+    class DBConnection: # Basic context manager
+        def __init__(self, db_path=DB_PATH): self.db_path = db_path
+        def __enter__(self): self.conn = sqlite3.connect(self.db_path); return self.conn
+        def __exit__(self,et,ev,tb): self.conn.close()
+else:
+    # Setup logger using imported function
+    LogConfig.LOG_DIR.mkdir(parents=True, exist_ok=True)
+    logger = setup_logger('aggregate_statcast', LogConfig.LOG_DIR / 'aggregate_statcast.log', level=logging.DEBUG) # Use DEBUG level
+    DB_PATH = Path(DBConfig.PATH)
 
-from src.data.utils import setup_logger, DBConnection
+# --- Constants ---
+ID_COLS_TO_EXCLUDE_FROM_DOWNCAST = ['pitcher', 'batter', 'game_pk', 'pitcher_id']
 
-# Setup logger
-logger = setup_logger('aggregate_statcast')
+# --- Memory Optimization Helper ---
+def optimize_dtypes(df):
+    """Attempt to reduce memory usage by downcasting dtypes, excluding specified ID columns."""
+    logger.debug("Optimizing dtypes...")
+    df_copy = df.copy() # Work on a copy to avoid SettingWithCopyWarning later if df is a slice
+    cols_to_exclude = [col for col in ID_COLS_TO_EXCLUDE_FROM_DOWNCAST if col in df_copy.columns]
+    logger.debug(f" Excluding ID columns from downcasting: {cols_to_exclude}")
+    for col in df_copy.select_dtypes(include=['int64']).columns:
+        if col not in cols_to_exclude: # Check if column should be excluded
+            try:
+                df_copy[col] = pd.to_numeric(df_copy[col], downcast='integer')
+            except Exception as e:
+                 logger.warning(f"Could not downcast integer column '{col}': {e}")
+    for col in df_copy.select_dtypes(include=['float64']).columns:
+         try:
+            # Downcast floats to float32
+            df_copy[col] = pd.to_numeric(df_copy[col], downcast='float')
+         except Exception as e:
+            logger.warning(f"Could not downcast float column '{col}': {e}")
+    logger.debug("Dtype optimization attempt complete.")
+    return df_copy
 
-# Create checkpoint directory
-checkpoint_dir = project_root / 'data' / 'checkpoints'
-checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
+# --- Imputation Functions ---
 
-def aggregate_statcast_pitchers_sql(use_checkpoint=True, force_reprocess=False):
-    """
-    Aggregate raw Statcast pitch-by-pitch data to PITCHER game level using SQL.
-    Focused on starting pitchers, excluding spring training, with smart imputation.
-    Calculates 'is_home' flag based on inning_topbot.
-
-    Args:
-        use_checkpoint (bool): Whether to try loading the FINAL aggregated result
-                               from a checkpoint first.
-        force_reprocess (bool): Force reprocessing even if checkpoint exists.
-
-    Returns:
-        pd.DataFrame: DataFrame with game-level pitcher metrics including 'is_home'.
-    """
-    start_time = time.time()
-    logger.info("Starting PITCHER Statcast aggregation using SQL...")
-
-    # Define checkpoint path for the FINAL aggregated data
-    pitcher_checkpoint = checkpoint_dir / 'pitcher_game_level_sql.pkl'
-
-    # --- Checkpoint Loading ---
-    if use_checkpoint and not force_reprocess and pitcher_checkpoint.exists():
-        try:
-            logger.info(f"Loading from pitcher checkpoint: {pitcher_checkpoint}")
-            with open(pitcher_checkpoint, 'rb') as f:
-                game_level = pickle.load(f)
-
-            if isinstance(game_level, pd.DataFrame) and not game_level.empty:
-                # Check for essential columns including the new is_home flag
-                if 'pitcher_id' in game_level.columns and 'strikeouts' in game_level.columns and 'is_home' in game_level.columns:
-                    logger.info(f"Successfully loaded {len(game_level)} pitcher records from checkpoint")
-                    return game_level
-                else:
-                    logger.warning("Pitcher checkpoint data missing required columns (possibly 'is_home'). Re-aggregating.")
+def smart_impute(df, group_col, target_cols):
+    """Imputes missing values using group median first, then global median."""
+    logger.info(f"Performing smart imputation for {group_col} missing values...")
+    df_copy = df.copy()
+    for col in target_cols:
+        if col in df_copy.columns and df_copy[col].isnull().any(): # Check col exists
+            logger.info(f"Imputing {df_copy[col].isnull().sum()} NaNs in '{col}' using {group_col}/global median...")
+            # Calculate group median (ensure numeric type for median)
+            numeric_groups = df_copy.dropna(subset=[col])
+            if pd.api.types.is_numeric_dtype(numeric_groups[col]):
+                 group_median = numeric_groups.groupby(group_col)[col].median()
+                 # Apply group median
+                 df_copy[col] = df_copy.groupby(group_col)[col].transform(lambda x: x.fillna(x.median()))
+                 # Apply global median for remaining NaNs (groups with all NaNs)
+                 global_median = df_copy[col].median()
+                 df_copy[col] = df_copy[col].fillna(global_median) # Use assignment
+                 logger.debug(f"   '{col}' imputation complete. Remaining NaNs: {df_copy[col].isnull().sum()}")
             else:
-                logger.warning("Invalid or empty pitcher checkpoint data")
-        except Exception as e:
-            logger.warning(f"Failed to load pitcher checkpoint: {e}")
+                 logger.warning(f"   Column '{col}' is not numeric, skipping median imputation.")
+        elif col in df_copy.columns:
+             logger.debug(f"   Column '{col}' has no NaNs to impute.")
+        # else: logger.warning(f"   Column '{col}' not found for imputation.") # Already checked
+    return df_copy
 
-    logger.info("Processing pitcher data using SQL aggregation (no valid checkpoint found)...")
-
-    # --- SQL Aggregation Query for Pitchers (SQLite Compatible - Added is_home) ---
-    # Assumes 'inning_topbot' column exists in 'statcast_pitchers' table
-    sql_query_pitchers = """
-    WITH PitchLevelFlags AS (
-        SELECT
-            pitcher_id,
-            player_name,
-            game_pk,
-            game_date,
-            game_type,
-            home_team,
-            away_team,
-            p_throws,
-            inning,
-            inning_topbot, -- Include inning_topbot
-            at_bat_number,
-            pitch_number,
-            events,
-            description,
-            pitch_type,
-            release_speed,
-            release_spin_rate,
-            pfx_x,
-            pfx_z,
-            zone,
-            MAX(CASE WHEN inning = 1 THEN 1 ELSE 0 END) OVER (PARTITION BY pitcher_id, game_pk) as is_starter_flag,
-            ROW_NUMBER() OVER (PARTITION BY pitcher_id, game_pk, at_bat_number ORDER BY pitch_number DESC) as pitch_rank_in_ab,
-            ROW_NUMBER() OVER (PARTITION BY pitcher_id, game_pk ORDER BY pitch_number ASC) as game_pitch_seq, -- Sequence number for FIRST_VALUE
-            CASE WHEN events IN ('strikeout', 'strikeout_double_play') THEN 1 ELSE 0 END as is_strikeout_event,
-            CASE WHEN description IN ('swinging_strike', 'swinging_strike_blocked') THEN 1 ELSE 0 END as is_swinging_strike,
-            CASE WHEN description = 'called_strike' THEN 1 ELSE 0 END as is_called_strike,
-            CASE WHEN pitch_type IN ('FF', 'FT', 'FC', 'SI', 'FS') THEN 1 ELSE 0 END as is_fastball,
-            CASE WHEN pitch_type IN ('SL', 'CU', 'KC', 'KN') THEN 1 ELSE 0 END as is_breaking,
-            CASE WHEN pitch_type IN ('CH', 'SC', 'FO') THEN 1 ELSE 0 END as is_offspeed,
-            CASE WHEN zone BETWEEN 1 AND 9 THEN 1 ELSE 0 END as is_in_zone
-        FROM
-            statcast_pitchers -- Ensure this table has inning_topbot
-        WHERE
-            game_type = 'R'
-    ),
-    GameLevelAgg AS (
-        SELECT
-            pitcher_id,
-            game_pk,
-            game_date,
-            MAX(player_name) as player_name,
-            MAX(home_team) as home_team,
-            MAX(away_team) as away_team,
-            MAX(p_throws) as p_throws,
-            -- *** FIX: Determine is_home flag using FIRST_VALUE and inning_topbot ***
-            FIRST_VALUE(CASE WHEN inning_topbot = 'Top' THEN 1 WHEN inning_topbot = 'Bot' THEN 0 ELSE NULL END) OVER (PARTITION BY pitcher_id, game_pk ORDER BY game_pitch_seq ASC) as is_home,
-            SUM(CASE WHEN pitch_rank_in_ab = 1 THEN is_strikeout_event ELSE 0 END) as strikeouts,
-            COUNT(DISTINCT CASE WHEN pitch_rank_in_ab = 1 THEN at_bat_number ELSE NULL END) as batters_faced,
-            COUNT(*) as total_pitches,
-            SUM(is_swinging_strike) as total_swinging_strikes,
-            SUM(is_called_strike) as total_called_strikes,
-            SUM(is_fastball) as total_fastballs,
-            SUM(is_breaking) as total_breaking,
-            SUM(is_offspeed) as total_offspeed,
-            SUM(is_in_zone) as total_in_zone,
-            AVG(release_speed) as avg_velocity,
-            MAX(release_speed) as max_velocity,
-            AVG(release_spin_rate) as avg_spin_rate,
-            AVG(pfx_x) as avg_horizontal_break,
-            AVG(pfx_z) as avg_vertical_break
-        FROM
-            PitchLevelFlags
-        WHERE
-            is_starter_flag = 1
-        GROUP BY
-            pitcher_id,
-            game_pk,
-            game_date
-    )
-    SELECT DISTINCT -- Use DISTINCT because FIRST_VALUE might duplicate rows before final aggregation in some DBs
-        g.pitcher_id,
-        g.game_pk,
-        g.game_date,
-        g.player_name,
-        g.home_team,
-        g.away_team,
-        g.p_throws,
-        g.is_home, -- Include the new flag
-        g.strikeouts,
-        g.batters_faced,
-        g.total_pitches,
-        g.total_swinging_strikes,
-        g.total_called_strikes,
-        g.total_fastballs,
-        g.total_breaking,
-        g.total_offspeed,
-        g.total_in_zone,
-        g.avg_velocity,
-        g.max_velocity,
-        g.avg_spin_rate,
-        g.avg_horizontal_break,
-        g.avg_vertical_break,
-        CAST(STRFTIME('%Y', g.game_date) AS INTEGER) as season,
-        CAST(g.batters_faced AS REAL) / 3.0 as innings_pitched,
-        CAST(g.strikeouts AS REAL) / NULLIF(g.batters_faced, 0) as k_percent,
-        CAST(g.strikeouts AS REAL) * 9.0 / NULLIF(CAST(g.batters_faced AS REAL) / 3.0, 0) as k_per_9,
-        CAST(g.total_swinging_strikes AS REAL) / NULLIF(g.total_pitches, 0) as swinging_strike_percent,
-        CAST(g.total_called_strikes AS REAL) / NULLIF(g.total_pitches, 0) as called_strike_percent,
-        CAST(g.total_fastballs AS REAL) / NULLIF(g.total_pitches, 0) as fastball_percent,
-        CAST(g.total_breaking AS REAL) / NULLIF(g.total_pitches, 0) as breaking_percent,
-        CAST(g.total_offspeed AS REAL) / NULLIF(g.total_pitches, 0) as offspeed_percent,
-        CAST(g.total_in_zone AS REAL) / NULLIF(g.total_pitches, 0) as zone_percent
-    FROM
-        GameLevelAgg g
-    WHERE g.is_home IS NOT NULL -- Ensure we could determine home/away status
-    ORDER BY
-        g.game_date, g.game_pk, g.pitcher_id;
-    """
-
-    # --- Execute SQL Query ---
-    game_level = pd.DataFrame()
-    try:
-        logger.info("Executing SQL query for PITCHER game-level aggregation (incl. is_home)...")
-        with DBConnection() as conn:
-            if conn is None:
-                raise ConnectionError("DB Connection failed.")
-            game_level = pd.read_sql_query(sql_query_pitchers, conn)
-            logger.info(f"SQL aggregation returned {len(game_level)} PITCHER game-level records for starters")
-
-            # Verify is_home column exists and has values
-            if 'is_home' not in game_level.columns:
-                 logger.error("'is_home' column missing from SQL result. Check query and source table.")
-                 # Handle error - maybe return empty or raise exception
-                 return pd.DataFrame()
-            if game_level['is_home'].isnull().any():
-                 logger.warning(f"Found {game_level['is_home'].isnull().sum()} records where 'is_home' could not be determined (likely missing inning_topbot data). These records were excluded.")
-                 # Note: The WHERE g.is_home IS NOT NULL clause in SQL handles this exclusion.
-
-            # Convert game_date back to datetime if it's not already
-            if 'game_date' in game_level.columns and not pd.api.types.is_datetime64_any_dtype(game_level['game_date']):
-                 game_level['game_date'] = pd.to_datetime(game_level['game_date'])
-
-    except Exception as e:
-        logger.error(f"Error executing PITCHER SQL aggregation query: {e}", exc_info=True)
-        return pd.DataFrame() # Return empty dataframe on error
-
-    if game_level.empty:
-        logger.error("PITCHER SQL aggregation resulted in an empty DataFrame.")
-        return pd.DataFrame()
-
-    # --- Optional: Filter Pitcher Data by Umpire Data ---
-    # This step remains the same, but now operates on data that includes 'is_home'
-    logger.info("Filtering PITCHER results based on available umpire data...")
-    try:
-        with DBConnection() as conn:
-            if conn is not None:
-                # *** Use correct table name 'umpire_data' ***
-                umpire_query = "SELECT DISTINCT game_date, home_team, away_team FROM umpire_data"
-                umpire_df = pd.read_sql_query(umpire_query, conn)
-
-                if not umpire_df.empty:
-                    umpire_df['game_date'] = pd.to_datetime(umpire_df['game_date']).dt.normalize()
-                    game_level['game_date'] = pd.to_datetime(game_level['game_date']).dt.normalize()
-                    initial_count = len(game_level)
-                    game_level = pd.merge(
-                        game_level,
-                        umpire_df[['game_date', 'home_team', 'away_team']],
-                        on=['game_date', 'home_team', 'away_team'],
-                        how='inner'
-                    )
-                    logger.info(f"Filtered PITCHER records to {len(game_level)} with umpire data (from {initial_count})")
-                else:
-                    logger.warning("No umpire data found for PITCHER filtering.")
+def knn_impute_complex_features(df, target_cols, n_neighbors=5):
+    """Performs KNN imputation on specified columns."""
+    logger.info(f"Performing KNN imputation for remaining complex features: {target_cols}...")
+    df_copy = df.copy()
+    # Select only numeric columns for KNN, including target_cols and potential predictors
+    numeric_cols = df_copy.select_dtypes(include=np.number).columns.tolist()
+    # Ensure target columns are numeric
+    valid_target_cols = []
+    for col in target_cols:
+        if col in df_copy.columns:
+            if not pd.api.types.is_numeric_dtype(df_copy[col]):
+                 logger.warning(f"KNN Imputation: Column '{col}' is not numeric, attempting conversion.")
+                 df_copy[col] = pd.to_numeric(df_copy[col], errors='coerce')
+            # Check if still numeric after potential conversion
+            if pd.api.types.is_numeric_dtype(df_copy[col]):
+                 valid_target_cols.append(col)
             else:
-                 logger.warning("DB connection failed, skipping PITCHER umpire filtering.")
-    except Exception as e:
-        # Catch specific OperationalError for "no such table"
-        if "no such table: umpire_data" in str(e):
-             logger.error(f"Umpire filtering failed: Table 'umpire_data' not found in the database.", exc_info=False)
-             logger.warning("Proceeding without umpire filtering for pitchers.")
+                 logger.warning(f"KNN Imputation: Column '{col}' could not be converted to numeric, skipping.")
         else:
-             logger.warning(f"Failed to filter PITCHER data using umpire data: {e}", exc_info=True)
-        # Continue execution without filtering if the table is missing or another error occurs
-
-    # Check if empty *after* attempting filter, even if filter failed
-    if game_level.empty:
-        logger.error("PITCHER DataFrame is empty (potentially after umpire filtering attempt).")
-        return pd.DataFrame()
-
-    # --- Pitcher Imputation ---
-    # (Imputation code remains the same as previous version)
-    logger.info("Performing smart imputation for PITCHER missing values...")
-    numeric_features = [
-        'avg_velocity', 'max_velocity', 'avg_spin_rate',
-        'avg_horizontal_break', 'avg_vertical_break',
-        'k_percent', 'k_per_9', 'swinging_strike_percent', 'zone_percent',
-        'fastball_percent', 'breaking_percent', 'offspeed_percent', 'innings_pitched'
-    ]
-    available_features = [col for col in numeric_features if col in game_level.columns]
-
-    # 1. Median Imputation (Pitcher-specific + Global Fallback)
-    for col in available_features:
-        if game_level[col].isnull().sum() > 0:
-            logger.info(f"Imputing PITCHER NaNs in '{col}' using pitcher/global median...")
-            pitcher_medians = game_level.groupby('pitcher_id')[col].transform('median')
-            game_level[f'{col}_imputed_median'] = game_level[col].isnull()
-            game_level[col] = game_level[col].fillna(pitcher_medians)
-            if game_level[col].isnull().sum() > 0:
-                global_median = game_level[col].median()
-                if pd.notna(global_median):
-                    game_level[col] = game_level[col].fillna(global_median)
-                    logger.info(f"  Used global median fallback ({global_median:.4f}) for PITCHER '{col}'")
-                else:
-                    game_level[col] = game_level[col].fillna(0)
-                    logger.warning(f"  Global median for PITCHER '{col}' is NaN. Used 0 as fallback.")
-
-    # 2. KNN Imputation
-    logger.info("Performing KNN imputation for remaining complex PITCHER features...")
-    complex_features = ['avg_velocity', 'avg_spin_rate', 'avg_horizontal_break', 'avg_vertical_break']
-    available_complex = [col for col in complex_features if col in game_level.columns and game_level[col].isnull().any()]
-
-    if available_complex and len(game_level) > 20:
-        helper_cols = ['k_per_9', 'swinging_strike_percent', 'fastball_percent', 'innings_pitched']
-        helper_cols = [col for col in helper_cols if col in game_level.columns and not game_level[col].isnull().all()]
-
-        if helper_cols:
-            imputer_cols = available_complex + helper_cols
-            logger.info(f"Applying PITCHER KNN Imputation using features: {imputer_cols}")
-            rows_to_impute_mask = game_level[available_complex].isnull().any(axis=1)
-            imputer_data = game_level.loc[rows_to_impute_mask, imputer_cols].dropna(subset=helper_cols)
-
-            if not imputer_data.empty and len(imputer_data) >= 5:
-                try:
-                    n_neighbors = min(5, len(imputer_data) -1)
-                    if n_neighbors < 1: n_neighbors = 1
-                    imputer = KNNImputer(n_neighbors=n_neighbors, weights='distance')
-                    imputed_values = imputer.fit_transform(imputer_data)
-                    imputed_df = pd.DataFrame(imputed_values, columns=imputer_cols, index=imputer_data.index)
-                    for col in available_complex:
-                        target_mask = rows_to_impute_mask & game_level[col].isnull()
-                        aligned_imputed, _ = imputed_df[col].align(target_mask, join='right', axis=0)
-                        game_level.loc[target_mask, col] = aligned_imputed[target_mask]
-                        game_level[f'{col}_imputed_knn'] = target_mask & game_level[col].notnull()
-                    logger.info(f"Successfully applied PITCHER KNN imputation to relevant rows for columns: {', '.join(available_complex)}")
-                except Exception as e:
-                    logger.warning(f"PITCHER KNN imputation failed: {e}. Falling back to median/0.", exc_info=True)
-                    for col in available_complex:
-                         if game_level[col].isnull().sum() > 0:
-                              median_val = game_level[col].median()
-                              game_level[col] = game_level[col].fillna(median_val if pd.notna(median_val) else 0)
-            elif imputer_data.empty:
-                 logger.info("No PITCHER rows suitable for KNN imputation after filtering helpers.")
-            else:
-                 logger.info(f"Not enough samples ({len(imputer_data)}) for PITCHER KNN imputation.")
-        else:
-             logger.warning("PITCHER KNN imputation skipped: Not enough valid helper columns. Falling back to median/0.")
-             for col in available_complex:
-                 if game_level[col].isnull().sum() > 0:
-                     median_val = game_level[col].median()
-                     game_level[col] = game_level[col].fillna(median_val if pd.notna(median_val) else 0)
-
-    # --- Final Check for Pitcher NaNs ---
-    # (Code remains the same)
-    final_nan_check = game_level[available_features].isnull().sum()
-    logger.info(f"PITCHER NaN counts after imputation:\n{final_nan_check[final_nan_check > 0]}")
-    if final_nan_check.sum() > 0:
-         logger.warning("Some PITCHER NaNs remain after imputation. Filling with 0.")
-         for col in available_features:
-              if game_level[col].isnull().any():
-                   game_level[col] = game_level[col].fillna(0)
+             logger.warning(f"KNN Imputation: Target column '{col}' not found in DataFrame.")
 
 
-    # --- Save Pitcher Checkpoint and Database ---
-    # (Code remains the same)
-    try:
-        logger.info(f"Saving final aggregated PITCHER data checkpoint: {pitcher_checkpoint}")
-        with open(pitcher_checkpoint, 'wb') as f:
-            pickle.dump(game_level, f)
-        logger.info("PITCHER checkpoint saved")
-    except Exception as e:
-        logger.error(f"Failed to save PITCHER checkpoint: {e}", exc_info=True)
+    # Check if any valid target columns still need imputation
+    cols_to_impute = [col for col in valid_target_cols if df_copy[col].isnull().any()]
+
+    if not cols_to_impute:
+        logger.info("No NaNs found in specified valid KNN target columns.")
+        return df_copy
+
+    # Use only numeric columns that don't have too many NaNs themselves as predictors
+    potential_predictors = [c for c in numeric_cols if c not in cols_to_impute and df_copy[c].isnull().sum() < len(df_copy) * 0.5]
+
+    if not potential_predictors:
+         logger.error("KNN Imputation: No suitable predictor columns found. Skipping KNN imputation.")
+         return df_copy
+
+    impute_df = df_copy[potential_predictors + cols_to_impute]
+
+    # Check for columns with all NaNs before imputation
+    all_nan_cols = impute_df.columns[impute_df.isnull().all()].tolist()
+    if all_nan_cols:
+        logger.warning(f"KNN Imputation: Columns {all_nan_cols} contain all NaNs. They cannot be imputed or used as predictors effectively. Skipping KNN.")
+        return df_copy # Or impute with median/zero first
 
     try:
-        logger.info("Saving final aggregated PITCHER data to database table 'game_level_pitchers'...")
-        with DBConnection() as conn:
-            if conn is None: raise ConnectionError("DB Connection failed.")
-            game_level.to_sql('game_level_pitchers', conn, if_exists='replace', index=False, chunksize=10000)
-            logger.info(f"Saved {len(game_level)} PITCHER records to game_level_pitchers table")
+        # Impute NaNs in predictors first (using median) before KNN
+        for p_col in potential_predictors:
+             if impute_df[p_col].isnull().any():
+                  impute_df[p_col] = impute_df[p_col].fillna(impute_df[p_col].median())
+
+        imputer = KNNImputer(n_neighbors=n_neighbors)
+        imputed_data = imputer.fit_transform(impute_df)
+        imputed_df = pd.DataFrame(imputed_data, columns=impute_df.columns, index=impute_df.index)
+
+        # Update original dataframe copy
+        for col in cols_to_impute:
+            df_copy[col] = imputed_df[col]
+        logger.info(f"KNN imputation complete for columns: {cols_to_impute}.")
     except Exception as e:
-        logger.error(f"Failed to save aggregated PITCHER data to database: {e}", exc_info=True)
+        logger.error(f"KNN imputation failed: {e}", exc_info=True)
 
+    return df_copy
 
-    total_time = time.time() - start_time
-    logger.info(f"PITCHER SQL aggregation completed in {total_time:.2f}s")
+# --- PITCHER AGGREGATION ---
 
-    return game_level
-
-
-def aggregate_statcast_batters_sql(use_checkpoint=True, force_reprocess=False):
+def aggregate_statcast_pitchers_sql(start_date=None, end_date=None): # Removed force_recompute
     """
-    Aggregate raw Statcast pitch-by-pitch data to TEAM/BATTER game level using SQL.
-    Excludes spring training, calculates team batting stats per game.
-
-    Args:
-        use_checkpoint (bool): Whether to try loading the FINAL aggregated result
-                               from a checkpoint first.
-        force_reprocess (bool): Force reprocessing even if checkpoint exists.
-
-    Returns:
-        pd.DataFrame: DataFrame with game-level team batting metrics.
+    Aggregates raw Statcast pitcher data to game level using SQL.
     """
+    logger.info("Starting PITCHER Statcast aggregation using SQL (Checkpoints disabled)...")
     start_time = time.time()
-    logger.info("Starting BATTER/TEAM Statcast aggregation using SQL...")
 
-    # Define checkpoint path for the FINAL aggregated data
-    batter_checkpoint = checkpoint_dir / 'team_game_level_sql.pkl'
-
-    # --- Checkpoint Loading ---
-    # (Code remains the same)
-    if use_checkpoint and not force_reprocess and batter_checkpoint.exists():
-        try:
-            logger.info(f"Loading from batter/team checkpoint: {batter_checkpoint}")
-            with open(batter_checkpoint, 'rb') as f:
-                team_game_level = pickle.load(f)
-
-            if isinstance(team_game_level, pd.DataFrame) and not team_game_level.empty:
-                if 'team' in team_game_level.columns and 'k_percent' in team_game_level.columns:
-                    logger.info(f"Successfully loaded {len(team_game_level)} team records from checkpoint")
-                    return team_game_level
-                else:
-                    logger.warning("Team checkpoint data missing required columns")
-            else:
-                logger.warning("Invalid or empty team checkpoint data")
-        except Exception as e:
-            logger.warning(f"Failed to load team checkpoint: {e}")
-
-
-    logger.info("Processing batter/team data using SQL aggregation (no valid checkpoint found)...")
-
-    # --- SQL Aggregation Query for Batters/Teams (SQLite Compatible - No Comments) ---
-    # **IMPORTANT**: Adjust the source table name 'statcast_pitchers' if needed!
-    sql_query_batters = """
-    WITH PitchLevelFlags AS (
+    # Define the SQL query for aggregation
+    # *** MODIFIED is_home calculation ***
+    sql = """
+    WITH GamePitcherStats AS (
         SELECT
-            game_pk,
-            game_date,
-            game_type,
-            home_team,
-            away_team,
-            inning_topbot,
-            at_bat_number,
-            pitch_number,
-            events,
-            description,
-            zone,
-            CASE
-                WHEN inning_topbot = 'Top' THEN away_team
-                ELSE home_team
-            END as batting_team,
-            CASE
-                WHEN inning_topbot = 'Top' THEN home_team
-                ELSE away_team
-            END as fielding_team,
-            ROW_NUMBER() OVER (PARTITION BY game_pk, at_bat_number ORDER BY pitch_number DESC) as pitch_rank_in_ab,
-            CASE WHEN events IN ('strikeout', 'strikeout_double_play') THEN 1 ELSE 0 END as is_strikeout_event,
-            CASE WHEN events IN ('walk', 'hit_by_pitch') THEN 1 ELSE 0 END as is_walk_event,
-            CASE WHEN events IN ('single', 'double', 'triple', 'home_run') THEN 1 ELSE 0 END as is_hit_event,
-            CASE WHEN description LIKE '%swing%' OR description LIKE '%foul%' OR description LIKE '%hit_into_play%' THEN 1 ELSE 0 END as is_swing,
-            CASE WHEN description LIKE '%foul%' OR description LIKE '%hit_into_play%' THEN 1 ELSE 0 END as is_contact,
-            CASE WHEN description IN ('swinging_strike', 'swinging_strike_blocked') THEN 1 ELSE 0 END as is_swinging_strike,
-            CASE WHEN zone BETWEEN 1 AND 9 THEN 1 ELSE 0 END as is_in_zone
-        FROM
-            statcast_pitchers
-        WHERE
-            game_type = 'R'
+            s.pitcher AS pitcher_id,
+            s.game_pk,
+            DATE(s.game_date) AS game_date,
+            MAX(s.player_name) AS player_name,
+            MAX(s.home_team) AS home_team,
+            MAX(s.away_team) AS away_team,
+            MAX(s.p_throws) AS p_throws,
+            MAX(CASE WHEN s.inning_topbot = 'Top' THEN 1 ELSE 0 END) AS is_home,
+            SUM(CASE WHEN s.events IN ('strikeout', 'strikeout_double_play') THEN 1 ELSE 0 END) AS strikeouts,
+            COUNT(DISTINCT s.batter) AS batters_faced,
+            COUNT(*) AS total_pitches,
+            SUM(CASE WHEN s.type = 'S' AND s.description IN ('swinging_strike', 'swinging_strike_blocked') THEN 1 ELSE 0 END) AS total_swinging_strikes,
+            SUM(CASE WHEN s.type = 'S' AND s.description = 'called_strike' THEN 1 ELSE 0 END) AS total_called_strikes,
+            SUM(CASE WHEN s.pitch_type IN ('FF', 'SI', 'FT', 'FC') THEN 1 ELSE 0 END) AS total_fastballs,
+            SUM(CASE WHEN s.pitch_type IN ('SL', 'CU', 'KC', 'CS', 'ST', 'SV') THEN 1 ELSE 0 END) AS total_breaking,
+            SUM(CASE WHEN s.pitch_type IN ('CH', 'FS', 'KN', 'EP', 'SC') THEN 1 ELSE 0 END) AS total_offspeed,
+            SUM(CASE WHEN s.zone BETWEEN 1 AND 9 THEN 1 ELSE 0 END) AS total_in_zone,
+            AVG(s.release_speed) AS avg_velocity,
+            MAX(s.release_speed) AS max_velocity,
+            AVG(s.release_spin_rate) AS avg_spin_rate,
+            AVG(s.pfx_x) AS avg_horizontal_break,
+            AVG(s.pfx_z) AS avg_vertical_break
+        FROM statcast_pitchers s
+        GROUP BY s.pitcher, s.game_pk, DATE(s.game_date)
     ),
-    TeamGameAgg AS (
+    GameInnings AS (
         SELECT
+            pitcher AS pitcher_id,
             game_pk,
-            game_date,
-            batting_team as team,
-            fielding_team as opponent,
-            MAX(home_team) as home_team,
-            MAX(away_team) as away_team,
-            MAX(CASE WHEN batting_team = home_team THEN 1 ELSE 0 END) as is_home,
-            COUNT(DISTINCT at_bat_number) as pa,
-            SUM(CASE WHEN pitch_rank_in_ab = 1 THEN is_strikeout_event ELSE 0 END) as strikeouts,
-            SUM(CASE WHEN pitch_rank_in_ab = 1 THEN is_walk_event ELSE 0 END) as walks,
-            SUM(CASE WHEN pitch_rank_in_ab = 1 THEN is_hit_event ELSE 0 END) as hits,
-            COUNT(*) as pitches_faced,
-            SUM(is_swing) as swings,
-            SUM(is_contact) as contact,
-            SUM(is_swinging_strike) as swinging_strikes,
-            SUM(is_in_zone) as zone_pitches,
-            SUM(CASE WHEN is_in_zone = 0 AND is_swing = 1 THEN 1 ELSE 0 END) as chases,
-            SUM(CASE WHEN is_in_zone = 1 AND is_swing = 1 THEN 1 ELSE 0 END) as zone_swings,
-            SUM(CASE WHEN is_in_zone = 1 AND is_contact = 1 THEN 1 ELSE 0 END) as zone_contact
-        FROM
-            PitchLevelFlags
-        GROUP BY
-            game_pk,
-            game_date,
-            batting_team,
-            fielding_team
+            COUNT(DISTINCT inning) + MAX(CASE WHEN outs_when_up = 1 THEN 0.1 WHEN outs_when_up = 2 THEN 0.2 ELSE 0 END) as innings_pitched_approx
+        FROM statcast_pitchers
+        GROUP BY pitcher, game_pk
     )
     SELECT
-        t.*,
-        CAST(STRFTIME('%Y', t.game_date) AS INTEGER) as season,
-        CAST(t.strikeouts AS REAL) / NULLIF(t.pa, 0) as k_percent,
-        CAST(t.walks AS REAL) / NULLIF(t.pa, 0) as bb_percent,
-        CAST(t.swings AS REAL) / NULLIF(t.pitches_faced, 0) as swing_percent,
-        CAST(t.contact AS REAL) / NULLIF(t.swings, 0) as contact_percent,
-        CAST(t.swinging_strikes AS REAL) / NULLIF(t.pitches_faced, 0) as swinging_strike_percent,
-        CAST(t.chases AS REAL) / NULLIF(t.pitches_faced - t.zone_pitches, 0) as chase_percent,
-        CAST(t.zone_contact AS REAL) / NULLIF(t.zone_swings, 0) as zone_contact_percent
-    FROM
-        TeamGameAgg t
-    ORDER BY
-        t.game_date, t.game_pk, t.team;
+        gps.*,
+        STRFTIME('%Y', gps.game_date) AS season,
+        gi.innings_pitched_approx AS innings_pitched,
+        CAST(gps.strikeouts AS REAL) / NULLIF(gps.batters_faced, 0) AS k_percent,
+        (CAST(gps.strikeouts AS REAL) * 9.0) / NULLIF(gi.innings_pitched_approx, 0) AS k_per_9,
+        CAST(gps.total_swinging_strikes AS REAL) / NULLIF(gps.total_pitches, 0) AS swinging_strike_percent,
+        CAST(gps.total_called_strikes AS REAL) / NULLIF(gps.total_pitches, 0) AS called_strike_percent,
+        CAST(gps.total_fastballs AS REAL) / NULLIF(gps.total_pitches, 0) AS fastball_percent,
+        CAST(gps.total_breaking AS REAL) / NULLIF(gps.total_pitches, 0) AS breaking_percent,
+        CAST(gps.total_offspeed AS REAL) / NULLIF(gps.total_pitches, 0) AS offspeed_percent,
+        CAST(gps.total_in_zone AS REAL) / NULLIF(gps.total_pitches, 0) AS zone_percent,
+        CASE
+            WHEN gps.is_home = 1 THEN gps.away_team
+            ELSE gps.home_team
+        END AS opponent_team
+    FROM GamePitcherStats gps
+    LEFT JOIN GameInnings gi ON gps.pitcher_id = gi.pitcher_id AND gps.game_pk = gi.game_pk
+    ORDER BY gps.game_date, gps.game_pk, gps.pitcher_id
     """
 
-    # --- Execute SQL Query ---
-    # (Code remains the same)
-    team_game_level = pd.DataFrame()
+    agg_df = pd.DataFrame()
+    try:
+        logger.info("Executing SQL query for PITCHER game-level aggregation...")
+        with DBConnection(DB_PATH) as conn:
+            # Load identifying columns from umpire_data
+            logger.info("Loading game identifiers from umpire_data...")
+            umpire_games_df = pd.read_sql_query("SELECT DISTINCT game_date, home_team, away_team FROM umpire_data", conn)
+            logger.debug(f"Loaded {len(umpire_games_df)} distinct games from umpire_data.")
+            if not umpire_games_df.empty:
+                 # Create composite key for umpire data
+                 umpire_games_df['game_date'] = pd.to_datetime(umpire_games_df['game_date']).dt.strftime('%Y-%m-%d')
+                 umpire_games_df['home_team'] = umpire_games_df['home_team'].str.strip()
+                 umpire_games_df['away_team'] = umpire_games_df['away_team'].str.strip()
+                 umpire_game_ids = set(umpire_games_df['game_date'] + '_' + umpire_games_df['away_team'] + '_' + umpire_games_df['home_team'])
+                 logger.debug(f"Created {len(umpire_game_ids)} unique game identifiers from umpire_data.")
+            else:
+                 logger.warning("Umpire data table is empty or query failed. Cannot filter based on umpire data.")
+                 umpire_game_ids = set()
+
+            # Execute main aggregation query
+            agg_df = pd.read_sql_query(sql, conn)
+            logger.info(f"SQL aggregation returned {len(agg_df)} PITCHER game-level records")
+
+            # --- DEBUG: Check date range BEFORE filtering ---
+            if not agg_df.empty:
+                 agg_df['game_date'] = pd.to_datetime(agg_df['game_date']).dt.strftime('%Y-%m-%d')
+                 min_date_agg = agg_df['game_date'].min()
+                 max_date_agg = agg_df['game_date'].max()
+                 logger.debug(f"Date range in aggregated data BEFORE umpire filter: {min_date_agg} to {max_date_agg}")
+                 logger.debug(f"  Count for 2025-04-14 in agg_df: {len(agg_df[agg_df['game_date'] == '2025-04-14'])}")
+                 logger.debug(f"  Count for 2025-04-15 in agg_df: {len(agg_df[agg_df['game_date'] == '2025-04-15'])}")
+            # --- END DEBUG ---
+
+        # Filter results based on games that have umpire data available
+        if not umpire_game_ids:
+             logger.warning("Skipping filtering based on umpire data as no umpire game identifiers were loaded.")
+        elif not agg_df.empty:
+            logger.info("Filtering PITCHER results based on available umpire data...")
+            original_count = len(agg_df)
+            # Create composite key in agg_df
+            try:
+                 agg_df['home_team'] = agg_df['home_team'].str.strip()
+                 agg_df['away_team'] = agg_df['away_team'].str.strip()
+                 agg_df['composite_game_id'] = agg_df['game_date'] + '_' + agg_df['away_team'] + '_' + agg_df['home_team']
+                 # Keep rows where composite_game_id is in the set from umpire_data
+                 agg_df = agg_df[agg_df['composite_game_id'].isin(umpire_game_ids)].copy()
+                 agg_df.drop(columns=['composite_game_id'], inplace=True) # Drop helper column
+                 logger.info(f"Filtered PITCHER records to {len(agg_df)} with umpire data (from {original_count})")
+            except KeyError as ke:
+                 logger.error(f"Missing key column for umpire filtering in aggregated data: {ke}. Skipping filter.")
+            except Exception as fe:
+                 logger.error(f"Error during umpire data filtering: {fe}. Skipping filter.")
+
+
+            # --- DEBUG: Check date range AFTER filtering ---
+            if not agg_df.empty:
+                 min_date_filt = agg_df['game_date'].min()
+                 max_date_filt = agg_df['game_date'].max()
+                 logger.debug(f"Date range in aggregated data AFTER umpire filter: {min_date_filt} to {max_date_filt}")
+                 logger.debug(f"  Count for 2025-04-14 after filter: {len(agg_df[agg_df['game_date'] == '2025-04-14'])}")
+                 logger.debug(f"  Count for 2025-04-15 after filter: {len(agg_df[agg_df['game_date'] == '2025-04-15'])}")
+            # --- END DEBUG ---
+        else:
+             logger.info("Aggregated DataFrame is empty, skipping umpire filtering.")
+
+        # Imputation for missing values
+        pitcher_impute_cols = ['avg_velocity', 'max_velocity', 'avg_spin_rate', 'avg_horizontal_break', 'avg_vertical_break']
+        agg_df = smart_impute(agg_df, 'pitcher_id', pitcher_impute_cols)
+        knn_target_cols = [col for col in pitcher_impute_cols if col in agg_df.columns and agg_df[col].isnull().any()]
+        if knn_target_cols:
+             agg_df = knn_impute_complex_features(agg_df, knn_target_cols)
+
+        logger.info(f"PITCHER NaN counts after imputation:\n{agg_df.isnull().sum()[agg_df.isnull().sum() > 0]}")
+
+        # --- Checkpoint saving removed ---
+
+        # Save to database
+        logger.info("Saving final aggregated PITCHER data to database table 'game_level_pitchers'...")
+        with DBConnection(DB_PATH) as conn:
+            agg_df.to_sql('game_level_pitchers', conn, if_exists='replace', index=False)
+        logger.info(f"Saved {len(agg_df)} PITCHER records to game_level_pitchers table")
+
+    except sqlite3.OperationalError as oe:
+         logger.error(f"SQL Operational Error during PITCHER aggregation: {oe}. Check query syntax and table/column names.")
+         return pd.DataFrame()
+    except Exception as e:
+        logger.error(f"Error during PITCHER SQL aggregation: {e}", exc_info=True)
+        return pd.DataFrame() # Return empty DataFrame on error
+
+    elapsed = time.time() - start_time
+    logger.info(f"PITCHER SQL aggregation completed in {elapsed:.2f}s")
+    return agg_df
+
+
+# --- TEAM/BATTER AGGREGATION ---
+
+def aggregate_statcast_batters_sql(start_date=None, end_date=None): # Removed force_recompute
+    """
+    Aggregates raw Statcast data to team game level using SQL.
+    Focuses on team offensive stats.
+    """
+    logger.info("Starting BATTER/TEAM Statcast aggregation using SQL (Checkpoints disabled)...")
+    start_time = time.time()
+
+    # Define the SQL query for team game-level aggregation
+    # *** MODIFIED is_home calculation ***
+    sql = """
+        WITH TeamGamePitches AS (
+            SELECT
+                game_pk,
+                DATE(game_date) AS game_date,
+                CASE WHEN inning_topbot = 'Top' THEN away_team ELSE home_team END AS team,
+                CASE WHEN inning_topbot = 'Top' THEN home_team ELSE away_team END AS opponent,
+                home_team,
+                away_team,
+                description,
+                type,
+                zone,
+                events,
+                balls,
+                strikes,
+                launch_speed,
+                launch_angle,
+                estimated_woba_using_speedangle AS est_woba,
+                woba_value,
+                woba_denom,
+                babip_value,
+                iso_value,
+                at_bat_number,
+                inning_topbot
+            FROM statcast_batters
+        )
+        SELECT
+            t.game_pk,
+            t.game_date,
+            t.team,
+            t.opponent,
+            t.home_team,
+            t.away_team,
+            MAX(CASE WHEN t.inning_topbot = 'Bot' THEN 1 ELSE 0 END) AS is_home,
+            COUNT(DISTINCT CASE WHEN t.events IS NOT NULL THEN t.at_bat_number || '_' || t.game_pk ELSE NULL END) AS pa,
+            SUM(CASE WHEN t.events IN ('strikeout', 'strikeout_double_play') THEN 1 ELSE 0 END) AS strikeouts,
+            SUM(CASE WHEN t.events = 'walk' THEN 1 ELSE 0 END) AS walks,
+            SUM(CASE WHEN t.events IN ('single', 'double', 'triple', 'home_run') THEN 1 ELSE 0 END) AS hits,
+            COUNT(*) AS pitches_faced,
+            SUM(CASE WHEN t.description IN ('swinging_strike', 'swinging_strike_blocked', 'foul', 'hit_into_play', 'foul_tip', 'hit_into_play_no_out', 'hit_into_play_score') THEN 1 ELSE 0 END) AS swings,
+            SUM(CASE WHEN t.description IN ('foul', 'hit_into_play', 'foul_tip', 'hit_into_play_no_out', 'hit_into_play_score') THEN 1 ELSE 0 END) AS contact,
+            SUM(CASE WHEN t.type = 'S' AND t.description IN ('swinging_strike', 'swinging_strike_blocked') THEN 1 ELSE 0 END) AS swinging_strikes,
+            SUM(CASE WHEN t.zone BETWEEN 1 AND 9 THEN 1 ELSE 0 END) AS zone_pitches,
+            SUM(CASE WHEN t.zone BETWEEN 11 AND 14 THEN 1 ELSE 0 END) AS chases,
+            SUM(CASE WHEN t.zone BETWEEN 1 AND 9 AND t.description IN ('swinging_strike', 'swinging_strike_blocked', 'foul', 'hit_into_play', 'foul_tip', 'hit_into_play_no_out', 'hit_into_play_score') THEN 1 ELSE 0 END) AS zone_swings,
+            SUM(CASE WHEN t.zone BETWEEN 1 AND 9 AND t.description IN ('foul', 'hit_into_play', 'foul_tip', 'hit_into_play_no_out', 'hit_into_play_score') THEN 1 ELSE 0 END) AS zone_contact,
+            STRFTIME('%Y', t.game_date) AS season,
+            CAST(SUM(CASE WHEN t.events IN ('strikeout', 'strikeout_double_play') THEN 1 ELSE 0 END) AS REAL) / NULLIF(COUNT(DISTINCT CASE WHEN t.events IS NOT NULL THEN t.at_bat_number || '_' || t.game_pk ELSE NULL END), 0) AS k_percent,
+            CAST(SUM(CASE WHEN t.events = 'walk' THEN 1 ELSE 0 END) AS REAL) / NULLIF(COUNT(DISTINCT CASE WHEN t.events IS NOT NULL THEN t.at_bat_number || '_' || t.game_pk ELSE NULL END), 0) AS bb_percent,
+            CAST(SUM(CASE WHEN t.description IN ('swinging_strike', 'swinging_strike_blocked', 'foul', 'hit_into_play', 'foul_tip', 'hit_into_play_no_out', 'hit_into_play_score') THEN 1 ELSE 0 END) AS REAL) / NULLIF(COUNT(*), 0) AS swing_percent,
+            CAST(SUM(CASE WHEN t.description IN ('foul', 'hit_into_play', 'foul_tip', 'hit_into_play_no_out', 'hit_into_play_score') THEN 1 ELSE 0 END) AS REAL) / NULLIF(SUM(CASE WHEN t.description IN ('swinging_strike', 'swinging_strike_blocked', 'foul', 'hit_into_play', 'foul_tip', 'hit_into_play_no_out', 'hit_into_play_score') THEN 1 ELSE 0 END), 0) AS contact_percent,
+            CAST(SUM(CASE WHEN t.type = 'S' AND t.description IN ('swinging_strike', 'swinging_strike_blocked') THEN 1 ELSE 0 END) AS REAL) / NULLIF(COUNT(*), 0) AS swinging_strike_percent,
+            CAST(SUM(CASE WHEN t.zone BETWEEN 11 AND 14 AND t.description IN ('swinging_strike', 'swinging_strike_blocked', 'foul', 'hit_into_play', 'foul_tip', 'hit_into_play_no_out', 'hit_into_play_score') THEN 1 ELSE 0 END) AS REAL)
+                / NULLIF(SUM(CASE WHEN t.zone BETWEEN 11 AND 14 THEN 1 ELSE 0 END), 0) AS chase_percent,
+            CAST(SUM(CASE WHEN t.zone BETWEEN 1 AND 9 AND t.description IN ('foul', 'hit_into_play', 'foul_tip', 'hit_into_play_no_out', 'hit_into_play_score') THEN 1 ELSE 0 END) AS REAL)
+                / NULLIF(SUM(CASE WHEN t.zone BETWEEN 1 AND 9 AND t.description IN ('swinging_strike', 'swinging_strike_blocked', 'foul', 'hit_into_play', 'foul_tip', 'hit_into_play_no_out', 'hit_into_play_score') THEN 1 ELSE 0 END), 0) AS zone_contact_percent
+        FROM TeamGamePitches t
+        GROUP BY t.game_pk, t.game_date, t.team, t.opponent, t.home_team, t.away_team
+        ORDER BY t.game_date, t.game_pk, t.team
+    """
+
+    agg_df = pd.DataFrame()
     try:
         logger.info("Executing SQL query for BATTER/TEAM game-level aggregation...")
-        with DBConnection() as conn:
-            if conn is None:
-                raise ConnectionError("DB Connection failed.")
-            team_game_level = pd.read_sql_query(sql_query_batters, conn)
-            logger.info(f"SQL aggregation returned {len(team_game_level)} TEAM game-level records")
+        with DBConnection(DB_PATH) as conn:
+             # Load identifying columns from umpire_data
+             logger.info("Loading game identifiers from umpire_data...")
+             umpire_games_df = pd.read_sql_query("SELECT DISTINCT game_date, home_team, away_team FROM umpire_data", conn)
+             logger.debug(f"Loaded {len(umpire_games_df)} distinct games from umpire_data.")
+             if not umpire_games_df.empty:
+                  # Create composite key for umpire data
+                  umpire_games_df['game_date'] = pd.to_datetime(umpire_games_df['game_date']).dt.strftime('%Y-%m-%d')
+                  umpire_games_df['home_team'] = umpire_games_df['home_team'].str.strip()
+                  umpire_games_df['away_team'] = umpire_games_df['away_team'].str.strip()
+                  umpire_game_ids = set(umpire_games_df['game_date'] + '_' + umpire_games_df['away_team'] + '_' + umpire_games_df['home_team'])
+                  logger.debug(f"Created {len(umpire_game_ids)} unique game identifiers from umpire_data.")
+             else:
+                  logger.warning("Umpire data table is empty or query failed. Cannot filter based on umpire data.")
+                  umpire_game_ids = set()
 
-            if 'game_date' in team_game_level.columns and not pd.api.types.is_datetime64_any_dtype(team_game_level['game_date']):
-                 team_game_level['game_date'] = pd.to_datetime(team_game_level['game_date'])
+             # Execute main aggregation query
+             agg_df = pd.read_sql_query(sql, conn)
+             logger.info(f"SQL aggregation returned {len(agg_df)} TEAM game-level records")
 
-    except Exception as e:
-        logger.error(f"Error executing BATTER/TEAM SQL aggregation query: {e}", exc_info=True)
-        return pd.DataFrame()
+             # --- DEBUG: Check date range BEFORE filtering ---
+             if not agg_df.empty:
+                  agg_df['game_date'] = pd.to_datetime(agg_df['game_date']).dt.strftime('%Y-%m-%d')
+                  min_date_agg = agg_df['game_date'].min()
+                  max_date_agg = agg_df['game_date'].max()
+                  logger.debug(f"Date range in aggregated TEAM data BEFORE umpire filter: {min_date_agg} to {max_date_agg}")
+                  logger.debug(f"  Count for 2025-04-14 in agg_df: {len(agg_df[agg_df['game_date'] == '2025-04-14'])}")
+                  logger.debug(f"  Count for 2025-04-15 in agg_df: {len(agg_df[agg_df['game_date'] == '2025-04-15'])}")
+             # --- END DEBUG ---
 
-    if team_game_level.empty:
-        logger.error("BATTER/TEAM SQL aggregation resulted in an empty DataFrame.")
-        return pd.DataFrame()
+        # Filter results based on games that have umpire data available
+        if not umpire_game_ids:
+             logger.warning("Skipping filtering based on umpire data as no umpire game identifiers were loaded.")
+        elif not agg_df.empty:
+            logger.info("Filtering TEAM results based on available umpire data...")
+            original_count = len(agg_df)
+            # Create composite key in agg_df
+            try:
+                 agg_df['home_team'] = agg_df['home_team'].str.strip()
+                 agg_df['away_team'] = agg_df['away_team'].str.strip()
+                 agg_df['composite_game_id'] = agg_df['game_date'] + '_' + agg_df['away_team'] + '_' + agg_df['home_team']
+                 # Keep rows where composite_game_id is in the set from umpire_data
+                 agg_df = agg_df[agg_df['composite_game_id'].isin(umpire_game_ids)].copy()
+                 agg_df.drop(columns=['composite_game_id'], inplace=True) # Drop helper column
+                 logger.info(f"Filtered TEAM records to {len(agg_df)} with umpire data (from {original_count})")
+            except KeyError as ke:
+                 logger.error(f"Missing key column for umpire filtering in aggregated data: {ke}. Skipping filter.")
+            except Exception as fe:
+                 logger.error(f"Error during umpire data filtering: {fe}. Skipping filter.")
 
-
-    # --- Optional: Filter Team Data by Umpire Data ---
-    # (Code remains the same, including the fix for table name)
-    logger.info("Filtering TEAM results based on available umpire data...")
-    try:
-        with DBConnection() as conn:
-            if conn is not None:
-                umpire_query = "SELECT DISTINCT game_date, home_team, away_team FROM umpire_data" # Corrected table name
-                umpire_df = pd.read_sql_query(umpire_query, conn)
-
-                if not umpire_df.empty and 'home_team' in team_game_level.columns and 'away_team' in team_game_level.columns:
-                    umpire_df['game_date'] = pd.to_datetime(umpire_df['game_date']).dt.normalize()
-                    team_game_level['game_date'] = pd.to_datetime(team_game_level['game_date']).dt.normalize()
-                    initial_count = len(team_game_level)
-                    team_game_level = pd.merge(
-                        team_game_level,
-                        umpire_df[['game_date', 'home_team', 'away_team']],
-                        on=['game_date', 'home_team', 'away_team'],
-                        how='inner'
-                    )
-                    logger.info(f"Filtered TEAM records to {len(team_game_level)} with umpire data (from {initial_count})")
-                elif 'home_team' not in team_game_level.columns or 'away_team' not in team_game_level.columns:
-                    logger.warning("Cannot filter TEAM data by umpire: home_team/away_team columns missing from SQL result.")
-                else:
-                    logger.warning("No umpire data found for TEAM filtering.")
-            else:
-                 logger.warning("DB connection failed, skipping TEAM umpire filtering.")
-    except Exception as e:
-        if "no such table: umpire_data" in str(e):
-             logger.error(f"Umpire filtering failed: Table 'umpire_data' not found in the database.", exc_info=False)
-             logger.warning("Proceeding without umpire filtering for teams.")
+            # --- DEBUG: Check date range AFTER filtering ---
+            if not agg_df.empty:
+                 min_date_filt = agg_df['game_date'].min()
+                 max_date_filt = agg_df['game_date'].max()
+                 logger.debug(f"Date range in aggregated TEAM data AFTER umpire filter: {min_date_filt} to {max_date_filt}")
+                 logger.debug(f"  Count for 2025-04-14 after filter: {len(agg_df[agg_df['game_date'] == '2025-04-14'])}")
+                 logger.debug(f"  Count for 2025-04-15 after filter: {len(agg_df[agg_df['game_date'] == '2025-04-15'])}")
+            # --- END DEBUG ---
         else:
-             logger.warning(f"Failed to filter TEAM data using umpire data: {e}", exc_info=True)
+             logger.info("Aggregated DataFrame is empty, skipping umpire filtering.")
 
 
-    if team_game_level.empty:
-        logger.warning("TEAM DataFrame is empty after optional umpire filtering. Proceeding without filter if possible.")
+        # Imputation for missing values
+        team_impute_cols = ['contact_percent', 'chase_percent', 'zone_contact_percent'] # Add others as needed
+        agg_df = smart_impute(agg_df, 'team', team_impute_cols)
 
+        logger.info(f"TEAM NaN counts after imputation:\n{agg_df.isnull().sum()[agg_df.isnull().sum() > 0]}")
 
-    # --- Team Imputation (Using Median) ---
-    # (Code remains the same)
-    logger.info("Performing median imputation for TEAM missing values...")
-    team_numeric_features = [
-        'k_percent', 'bb_percent', 'swing_percent', 'contact_percent',
-        'swinging_strike_percent', 'chase_percent', 'zone_contact_percent'
-    ]
-    team_available_features = [col for col in team_numeric_features if col in team_game_level.columns]
+        # --- Checkpoint saving removed ---
 
-    for col in team_available_features:
-        if team_game_level[col].isnull().sum() > 0:
-            logger.info(f"Imputing TEAM NaNs in '{col}' using team/global median...")
-            team_medians = team_game_level.groupby('team')[col].transform('median')
-            team_game_level[f'{col}_imputed_median'] = team_game_level[col].isnull()
-            team_game_level[col] = team_game_level[col].fillna(team_medians)
-            if team_game_level[col].isnull().sum() > 0:
-                global_median = team_game_level[col].median()
-                if pd.notna(global_median):
-                    team_game_level[col] = team_game_level[col].fillna(global_median)
-                    logger.info(f"  Used global median fallback ({global_median:.4f}) for TEAM '{col}'")
-                else:
-                    team_game_level[col] = team_game_level[col].fillna(0)
-                    logger.warning(f"  Global median for TEAM '{col}' is NaN. Used 0 as fallback.")
-
-    # --- Final Check for Team NaNs ---
-    # (Code remains the same)
-    final_nan_check_team = team_game_level[team_available_features].isnull().sum()
-    logger.info(f"TEAM NaN counts after imputation:\n{final_nan_check_team[final_nan_check_team > 0]}")
-    if final_nan_check_team.sum() > 0:
-         logger.warning("Some TEAM NaNs remain after imputation. Filling with 0.")
-         for col in team_available_features:
-              if team_game_level[col].isnull().any():
-                   team_game_level[col] = team_game_level[col].fillna(0)
-
-
-    # --- Save Team Checkpoint and Database ---
-    # (Code remains the same)
-    try:
-        logger.info(f"Saving final aggregated TEAM data checkpoint: {batter_checkpoint}")
-        with open(batter_checkpoint, 'wb') as f:
-            pickle.dump(team_game_level, f)
-        logger.info("TEAM checkpoint saved")
-    except Exception as e:
-        logger.error(f"Failed to save TEAM checkpoint: {e}", exc_info=True)
-
-    try:
+        # Save to database
         logger.info("Saving final aggregated TEAM data to database table 'game_level_team_stats'...")
-        with DBConnection() as conn:
-            if conn is None: raise ConnectionError("DB Connection failed.")
-            team_game_level.to_sql('game_level_team_stats', conn, if_exists='replace', index=False, chunksize=10000)
-            logger.info(f"Saved {len(team_game_level)} records to game_level_team_stats table")
+        with DBConnection(DB_PATH) as conn:
+            agg_df.to_sql('game_level_team_stats', conn, if_exists='replace', index=False)
+        logger.info(f"Saved {len(agg_df)} records to game_level_team_stats table")
+
+    except sqlite3.OperationalError as oe:
+         logger.error(f"SQL Operational Error during TEAM aggregation: {oe}. Check query syntax and table/column names.")
+         return pd.DataFrame()
     except Exception as e:
-        logger.error(f"Failed to save aggregated TEAM data to database: {e}", exc_info=True)
+        logger.error(f"Error during TEAM SQL aggregation: {e}", exc_info=True)
+        return pd.DataFrame() # Return empty DataFrame on error
+
+    elapsed = time.time() - start_time
+    logger.info(f"BATTER/TEAM SQL aggregation completed in {elapsed:.2f}s")
+    return agg_df
 
 
-    total_time = time.time() - start_time
-    logger.info(f"BATTER/TEAM SQL aggregation completed in {total_time:.2f}s")
-
-    return team_game_level
-
-
-# Example usage (called from engineer_features.py)
+# --- Main Execution (Example - usually called from engineer_features) ---
 if __name__ == "__main__":
-    # This part is just for testing the functions directly if needed
-    logger.info("Running aggregate_statcast functions directly for testing...")
+    logger.info("Running aggregate_statcast.py directly (for debugging/testing)...")
+    # Example: Run for a specific date range or full history
+    # force_recompute argument removed
+    logger.info("Running PITCHER aggregation...")
+    pitcher_agg = aggregate_statcast_pitchers_sql() # No force flag
+    logger.info(f"Pitcher aggregation returned {len(pitcher_agg)} rows.")
+    if not pitcher_agg.empty: logger.info(f"Pitcher date range: {pitcher_agg['game_date'].min()} to {pitcher_agg['game_date'].max()}")
 
-    # Test pitcher aggregation
-    logger.info("--- Testing Pitcher Aggregation ---")
-    pitcher_data = aggregate_statcast_pitchers_sql(force_reprocess=False) # Set True to force run
-    if not pitcher_data.empty:
-        logger.info("Pitcher test run completed successfully.")
-        # print(pitcher_data.head())
-        # print(pitcher_data.info())
-    else:
-        logger.error("Pitcher test run failed or produced no data.")
+    logger.info("Running TEAM aggregation...")
+    team_agg = aggregate_statcast_batters_sql() # No force flag
+    logger.info(f"Team aggregation returned {len(team_agg)} rows.")
+    if not team_agg.empty: logger.info(f"Team date range: {team_agg['game_date'].min()} to {team_agg['game_date'].max()}")
 
-    # Test batter/team aggregation
-    logger.info("--- Testing Batter/Team Aggregation ---")
-    team_data = aggregate_statcast_batters_sql(force_reprocess=False) # Set True to force run
-    if not team_data.empty:
-        logger.info("Batter/Team test run completed successfully.")
-        # print(team_data.head())
-        # print(team_data.info())
-    else:
-        logger.error("Batter/Team test run failed or produced no data.")
-
+    logger.info("Direct execution finished.")

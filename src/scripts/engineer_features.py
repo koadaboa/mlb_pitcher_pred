@@ -1,577 +1,460 @@
-# src/scripts/engineer_features.py (Refactored - Load Minimal Pitch Data for Platoon)
-import os
-import sys
-import logging
-from pathlib import Path
+# src/scripts/engineer_features.py
+
 import pandas as pd
 import numpy as np
-import time
 import argparse
+import logging
+from pathlib import Path
+import sys
+import time
 import pickle
 import gc
-from datetime import datetime, timedelta
-import traceback
-import warnings
-warnings.filterwarnings("ignore", category=DeprecationWarning)
+from category_encoders import TargetEncoder # Using TargetEncoder now
+from datetime import datetime, timedelta # Ensure timedelta is imported
+import joblib # For loading encoder object
 
-# Add project root to path if needed
-project_root = Path(__file__).resolve().parents[2]
-if str(project_root) not in sys.path:
-    sys.path.append(str(project_root))
-
-# Direct imports
-from src.data.utils import setup_logger, DBConnection
-# Import the NEW SQL-based aggregation functions
-from src.data.aggregate_statcast import aggregate_statcast_pitchers_sql, aggregate_statcast_batters_sql
-# Import feature creation functions (ensure create_pitcher_features is the main entry point)
-from src.features.pitcher_features import create_pitcher_features
-# Import config separately if needed, or access via StrikeoutModelConfig
-from src.config import StrikeoutModelConfig, DBConfig
+# Assuming script is run via python -m src.scripts.engineer_features
+try:
+    from src.config import DBConfig, StrikeoutModelConfig, LogConfig, FileConfig
+    from src.data.utils import setup_logger, DBConnection, find_latest_file # Added find_latest_file
+    # Import aggregation functions
+    from src.data.aggregate_statcast import aggregate_statcast_pitchers_sql, aggregate_statcast_batters_sql
+    # Import feature creation functions
+    from src.features.pitcher_features import create_pitcher_features # Assuming main function is here
+    MODULE_IMPORTS_OK = True
+except ImportError as e:
+    print(f"ERROR: Failed to import required modules: {e}")
+    MODULE_IMPORTS_OK = False
+    sys.exit(1) # Exit if essential modules are missing
 
 # Setup logger
-logger = setup_logger('engineer_features')
-
-# Create checkpoint directory
-checkpoint_dir = project_root / 'data' / 'checkpoints'
-checkpoint_dir.mkdir(parents=True, exist_ok=True)
-
-
-def load_team_batting_data():
-    """Load team batting data from database."""
-    logger.info("Loading team batting data (e.g., from team_batting table)...")
-    try:
-        with DBConnection() as conn:
-            if conn is None: raise ConnectionError("DB Connection failed.")
-            query = "SELECT * FROM team_batting"
-            df = pd.read_sql_query(query, conn)
-            logger.info(f"Loaded {len(df)} rows of team batting data")
-            return df
-    except Exception as e:
-        logger.warning(f"Could not load team batting data from 'team_batting': {e}. Continuing without it if possible.")
-        return pd.DataFrame()
-
-def load_umpire_data():
-    """Load umpire assignment data from database."""
-    logger.info("Loading umpire data...")
-    umpire_df = pd.DataFrame()
-    try:
-        with DBConnection() as conn:
-            if conn is None: raise ConnectionError("DB Connection failed.")
-            query = "SELECT * FROM umpire_data"
-            umpire_df = pd.read_sql_query(query, conn)
-            logger.info(f"Loaded {len(umpire_df)} rows of umpire data")
-            if not umpire_df.empty:
-                 umpire_df['game_date'] = pd.to_datetime(umpire_df['game_date']).dt.normalize()
-            return umpire_df
-    except Exception as e:
-        if "no such table: umpire_data" in str(e): logger.error(f"Error loading umpire data: Table 'umpire_data' not found.", exc_info=False)
-        else: logger.error(f"Error loading umpire data: {e}", exc_info=True)
-        return pd.DataFrame()
-
-# *** NEW FUNCTION to load minimal pitch data for platoon features ***
-def load_minimal_pitch_data():
-    """Load minimal columns from raw pitch data needed for platoon features."""
-    logger.info("Loading minimal pitch data for platoon features...")
-    # Define required columns
-    cols = ['pitcher_id', 'game_pk', 'game_date', 'at_bat_number', 'pitch_number', 'stand', 'events']
-    cols_str = ", ".join(f'"{c}"' for c in cols) # Quote column names if needed, adjust based on DB dialect
-
-    # Use the same source table as your aggregation query
-    # ** IMPORTANT: Adjust table name if necessary **
-    source_table = "statcast_pitchers"
-    query = f"SELECT {cols_str} FROM {source_table} WHERE game_type = 'R'" # Filter regular season
-
-    try:
-        with DBConnection() as conn:
-            if conn is None: raise ConnectionError("DB Connection failed.")
-            df = pd.read_sql_query(query, conn)
-            logger.info(f"Loaded {len(df)} rows of minimal pitch data from '{source_table}'")
-            if not df.empty:
-                 # Ensure date type is consistent
-                 df['game_date'] = pd.to_datetime(df['game_date']).dt.normalize()
-            return df
-    except Exception as e:
-        logger.error(f"Error loading minimal pitch data: {e}", exc_info=True)
-        return pd.DataFrame()
-
-
-def run_historical_feature_pipeline(args):
-    """
-    Run the complete historical feature engineering pipeline using SQL aggregations.
-    Loads minimal pitch data separately for platoon features.
-    Includes expanded target encoding.
-
-    Args:
-        args: Command-line arguments
-
-    Returns:
-        bool: Success status
-    """
-    logger.info("=== Starting Historical Feature Engineering Pipeline (SQL Aggregation) ===")
-    start_time = time.time()
-
-    combined_checkpoint = checkpoint_dir / 'combined_features_checkpoint_sql.pkl'
-    combined_df = pd.DataFrame()
-    use_checkpoint = not args.ignore_checkpoint
-
-    # Check for the FINAL combined features checkpoint
-    if use_checkpoint and combined_checkpoint.exists():
-        try:
-            logger.info(f"Attempting to load final combined features from checkpoint: {combined_checkpoint}")
-            with open(combined_checkpoint, 'rb') as f:
-                combined_df = pickle.load(f)
-            if isinstance(combined_df, pd.DataFrame) and not combined_df.empty and \
-               'strikeouts' in combined_df.columns and 'pitcher_id' in combined_df.columns:
-                logger.info(f"Loaded {len(combined_df)} final combined rows from checkpoint. Skipping aggregation and feature creation.")
-            else:
-                logger.warning("Combined checkpoint invalid or missing required columns. Rebuilding features.")
-                combined_df = pd.DataFrame()
-                use_checkpoint = False
-        except Exception as e:
-            logger.error(f"Failed to load combined checkpoint: {e}. Rebuilding features.")
-            use_checkpoint = False
-    else:
-        logger.info("No valid combined features checkpoint found. Running full pipeline...")
-        use_checkpoint = False
-
-    if combined_df.empty:
-        logger.info("Running aggregation and feature engineering steps...")
-
-        # STEP 1: Aggregate raw data using SQL functions
-        logger.info("STEP 1: Aggregating raw Statcast data using SQL functions...")
-        game_level_pitchers = aggregate_statcast_pitchers_sql(
-            use_checkpoint=(not args.ignore_checkpoint),
-            force_reprocess=args.ignore_checkpoint
-        )
-        if game_level_pitchers.empty: return False # Error logged in function
-        logger.info(f"Successfully aggregated/loaded {len(game_level_pitchers)} pitcher game records.")
-        logger.info(f"Columns returned by aggregate_statcast_pitchers_sql: {game_level_pitchers.columns.tolist()}")
-        if 'is_home' not in game_level_pitchers.columns: logger.error("FATAL: 'is_home' column IS MISSING immediately after aggregation!")
-        else: logger.info(f"'is_home' column is present. Value counts:\n{game_level_pitchers['is_home'].value_counts(dropna=False)}")
-
-        game_level_teams = aggregate_statcast_batters_sql(
-            use_checkpoint=(not args.ignore_checkpoint),
-            force_reprocess=args.ignore_checkpoint
-        )
-        if game_level_teams.empty: return False # Error logged in function
-        logger.info(f"Successfully aggregated/loaded {len(game_level_teams)} team game records.")
-
-        # STEP 2: Load supplementary & Platoon data
-        logger.info("STEP 2: Loading supplementary data (Team Batting, Umpires, Minimal Pitch)...")
-        team_batting_supp = load_team_batting_data()
-        umpire_data = load_umpire_data()
-        if umpire_data.empty: logger.warning("Umpire data is empty or failed to load. Umpire features cannot be created.")
-        # *** Load minimal pitch data needed for platoon features ***
-        minimal_pitch_data = load_minimal_pitch_data()
-        if minimal_pitch_data.empty: logger.warning("Minimal pitch data failed to load. Platoon features cannot be created.")
-
-
-        # STEP 3: Create pitcher features using aggregated data + minimal pitch data
-        logger.info("STEP 3: Creating pitcher features...")
-        pitcher_features_checkpoint = checkpoint_dir / 'pitcher_features_sql.pkl'
-        pitcher_features = pd.DataFrame()
-
-        if use_checkpoint and pitcher_features_checkpoint.exists():
-             try:
-                  logger.info(f"Loading pitcher features from checkpoint: {pitcher_features_checkpoint}")
-                  with open(pitcher_features_checkpoint, 'rb') as f: pitcher_features = pickle.load(f)
-                  if isinstance(pitcher_features, pd.DataFrame) and not pitcher_features.empty: logger.info(f"Loaded {len(pitcher_features)} pitcher features from checkpoint")
-                  else: logger.warning("Invalid pitcher features checkpoint. Recreating."); pitcher_features = pd.DataFrame()
-             except Exception as e: logger.warning(f"Failed to load pitcher features checkpoint: {e}. Recreating."); pitcher_features = pd.DataFrame()
-
-        if pitcher_features.empty:
-            try:
-                logger.info(f"Columns passed to create_pitcher_features: {game_level_pitchers.columns.tolist()}")
-                if 'is_home' not in game_level_pitchers.columns:
-                     logger.error("Cannot proceed to create_pitcher_features without 'is_home' column.")
-                     return False
-
-                # *** Pass the loaded minimal_pitch_data ***
-                pitcher_features = create_pitcher_features(
-                    game_level_pitchers, # Pass main dataframe positionally
-                    pitch_level_data=minimal_pitch_data, # Pass minimal pitch data
-                    team_batting_data=game_level_teams,
-                    umpire_data=umpire_data
-                )
-            except Exception as e:
-                 logger.error(f"Error calling create_pitcher_features: {e}", exc_info=True)
-                 pitcher_features = pd.DataFrame()
-
-            if pitcher_features.empty:
-                logger.error("Failed to create pitcher features. Exiting.")
-                del game_level_pitchers, game_level_teams, team_batting_supp, umpire_data, minimal_pitch_data; gc.collect()
-                return False
-
-            try:
-                logger.info(f"Saving pitcher features checkpoint: {pitcher_features_checkpoint}")
-                with open(pitcher_features_checkpoint, 'wb') as f: pickle.dump(pitcher_features, f)
-                logger.info("Pitcher features checkpoint saved")
-            except Exception as e: logger.error(f"Failed to save pitcher features checkpoint: {e}")
-
-        # Clean up large intermediate dataframes
-        del game_level_pitchers, game_level_teams, team_batting_supp, umpire_data, minimal_pitch_data; gc.collect()
-
-        # STEP 4: Final data cleanup
-        logger.info("STEP 4: Final data cleanup...")
-        for col in pitcher_features.select_dtypes(include=np.number).columns:
-            if pitcher_features[col].isnull().sum() > 0:
-                median_val = pitcher_features[col].median()
-                fill_val = median_val if pd.notna(median_val) else 0
-                # logger.info(f"Filling {pitcher_features[col].isnull().sum()} missing values in {col} with {fill_val:.4f}") # Reduce log verbosity
-                pitcher_features[col] = pitcher_features[col].fillna(fill_val)
-        logger.info("Final cleanup complete.")
-
-
-        combined_df = pitcher_features.copy()
-
-        try:
-            logger.info(f"Saving combined features checkpoint: {combined_checkpoint}")
-            with open(combined_checkpoint, 'wb') as f: pickle.dump(combined_df, f)
-            logger.info("Combined features checkpoint saved")
-        except Exception as e: logger.error(f"Failed to save combined features checkpoint: {e}")
-
-        del pitcher_features; gc.collect()
-
-    # --- Steps from here use the combined_df (either loaded or created) ---
-
-    if combined_df.empty:
-         logger.error("Combined features DataFrame is empty before train/test split. Exiting.")
-         return False
-
-    # STEP 5: Split into train/test
-    # (Code remains the same)
-    logger.info("STEP 5: Splitting into train/test...")
-    if 'season' not in combined_df.columns: logger.error("Missing 'season' column"); return False
-    TARGET_VARIABLE = 'strikeouts'
-    if TARGET_VARIABLE not in combined_df.columns: logger.error(f"Target '{TARGET_VARIABLE}' not found"); return False
-    train_seasons = StrikeoutModelConfig.DEFAULT_TRAIN_YEARS
-    test_seasons = StrikeoutModelConfig.DEFAULT_TEST_YEARS
-    logger.info(f"Train seasons: {train_seasons}")
-    logger.info(f"Test seasons: {test_seasons}")
-    combined_df['season'] = pd.to_numeric(combined_df['season'], errors='coerce')
-    combined_df = combined_df.dropna(subset=['season'])
-    combined_df['season'] = combined_df['season'].astype(int)
-    train_df = combined_df[combined_df['season'].isin(train_seasons)].copy()
-    test_df = combined_df[combined_df['season'].isin(test_seasons)].copy()
-    logger.info(f"Train set: {len(train_df)} rows, Test set: {len(test_df)} rows")
-    if train_df.empty: logger.error("Empty training set"); return False
-
-
-    # STEP 6: Apply target encoding for multiple categorical features
-    # (Code remains the same)
-    logger.info("STEP 6: Applying target encoding...")
-    columns_to_encode = ['umpire', 'home_team', 'opponent_team', 'p_throws']
-    encoding_map = {}
-    global_mean = train_df[TARGET_VARIABLE].mean()
-    logger.info(f"Global mean {TARGET_VARIABLE}: {global_mean:.4f}")
-    for column in columns_to_encode:
-        logger.info(f"  Target encoding column: {column}")
-        if column in train_df.columns:
-            encoding_map_col = train_df.groupby(column)[TARGET_VARIABLE].mean()
-            train_df[f'{column}_encoded'] = train_df[column].map(encoding_map_col)
-            if not test_df.empty and column in test_df.columns: test_df[f'{column}_encoded'] = test_df[column].map(encoding_map_col)
-            train_df[f'{column}_encoded'] = train_df[f'{column}_encoded'].fillna(global_mean)
-            if not test_df.empty and f'{column}_encoded' in test_df.columns: test_df[f'{column}_encoded'] = test_df[f'{column}_encoded'].fillna(global_mean)
-            encoding_map[column] = {'map': encoding_map_col.to_dict(), 'default': global_mean}
-            logger.info(f"    Encoded {len(encoding_map_col)} categories for {column}.")
-        else: logger.warning(f"    Column '{column}' not found in training data. Skipping target encoding for it.")
-    if encoding_map:
-        try:
-            output_dir = project_root / 'models'; output_dir.mkdir(exist_ok=True, parents=True)
-            map_file = output_dir / f'encoding_map_{datetime.now().strftime("%Y%m%d")}.pkl'
-            with open(map_file, 'wb') as f: pickle.dump(encoding_map, f)
-            logger.info(f"Saved consolidated encoding map to {map_file}")
-        except Exception as e: logger.error(f"Failed to save encoding map: {e}")
-    else: logger.warning("No columns were target encoded.")
-
-
-    # STEP 7: Save final train/test datasets to Database
-    # (Code remains the same)
-    logger.info("STEP 7: Saving final datasets to database...")
-    try:
-        with DBConnection() as conn:
-            if conn is None: raise ConnectionError("DB Connection failed.")
-            train_table = 'train_features'; test_table = 'test_features'
-            logger.info(f"Saving training features to '{train_table}' table...")
-            train_df.to_sql(train_table, conn, if_exists='replace', index=False, chunksize=10000)
-            logger.info(f"Saved {len(train_df)} training records to '{train_table}'")
-            if not test_df.empty:
-                logger.info(f"Saving test features to '{test_table}' table...")
-                test_df.to_sql(test_table, conn, if_exists='replace', index=False, chunksize=10000)
-                logger.info(f"Saved {len(test_df)} test records to '{test_table}'")
-            else: logger.info("Test set is empty. Skipping save.")
-    except Exception as e: logger.error(f"Failed to save final datasets to database: {e}", exc_info=True); return False
-
-
-    del train_df, test_df, combined_df; gc.collect()
-    total_time = time.time() - start_time
-    logger.info(f"=== Historical Feature Engineering Pipeline Completed in {total_time:.2f}s ===")
-    return True
-
-
-# Update function definition to accept args
-def generate_prediction_features(prediction_date_str, args):
-    """
-    Generate features for prediction on a specific date using game-level data.
-    Applies multiple target encodings based on saved map.
-    Note: Does not load minimal pitch data for platoon features in prediction.
-
-    Args:
-        prediction_date_str: Date string in YYYY-MM-DD format
-        args: Command-line arguments object (contains --ignore-checkpoint)
-
-    Returns:
-        bool: Success status
-    """
-    logger.info(f"=== Generating Prediction Features for {prediction_date_str} ===")
-    start_time = time.time()
-    use_checkpoint = not args.ignore_checkpoint # Determine if checkpoint should be used
-
-    prediction_checkpoint = checkpoint_dir / f'prediction_features_{prediction_date_str}_sql.pkl'
-
-    # *** MODIFIED CHECKPOINT LOGIC ***
-    if use_checkpoint and prediction_checkpoint.exists(): # Only check if use_checkpoint is True
-        try:
-            logger.info(f"Attempting to load from prediction checkpoint: {prediction_checkpoint}")
-            with open(prediction_checkpoint, 'rb') as f: prediction_features = pickle.load(f)
-            if isinstance(prediction_features, pd.DataFrame) and not prediction_features.empty:
-                logger.info(f"Loaded {len(prediction_features)} prediction records from checkpoint")
-                try: # Optional: Save to DB
-                    with DBConnection() as conn:
-                        if conn is not None: prediction_features.to_sql('prediction_features', conn, if_exists='replace', index=False); logger.info(f"Updated prediction_features table from checkpoint")
-                except Exception as e: logger.warning(f"Failed to update prediction table from checkpoint: {e}")
-                # Successfully loaded from checkpoint and updated DB, task is done
-                logger.info("=== Feature Engineering Finished Successfully (Loaded from Checkpoint) ===")
-                return True # Exit successfully after loading checkpoint
-            else:
-                logger.warning("Invalid or empty prediction checkpoint found. Regenerating features.")
-        except Exception as e:
-            logger.warning(f"Failed to load prediction checkpoint: {e}. Regenerating features.")
-    elif not use_checkpoint:
-         logger.info("Ignoring existing checkpoint as per --ignore-checkpoint flag.")
-    else: # No checkpoint exists
-         logger.info("No prediction checkpoint found. Generating features...")
-    # *** END MODIFIED CHECKPOINT LOGIC ***
-
-
-    # Parse date
-    # (Code remains the same)
-    try:
-        prediction_date = datetime.strptime(prediction_date_str, "%Y-%m-%d").date()
-        prediction_dt = datetime.combine(prediction_date, datetime.min.time())
-    except ValueError: logger.error(f"Invalid date format: {prediction_date_str}. Use YYYY-MM-DD."); return False
-
-
-    # STEP 1: Load LATEST historical GAME-LEVEL data
-    # (Code remains the same)
-    logger.info("STEP 1: Loading historical game-level pitcher data...")
-    try:
-        with DBConnection() as conn:
-            if conn is None: raise ConnectionError("DB Connection failed.")
-            query = f"SELECT * FROM game_level_pitchers WHERE game_date < '{prediction_date_str}'"
-            historical_df = pd.read_sql_query(query, conn)
-            logger.info(f"Loaded {len(historical_df)} historical game records from 'game_level_pitchers'")
-            if historical_df.empty: logger.error("No historical pitcher game-level data found."); return False
-            historical_df['game_date'] = pd.to_datetime(historical_df['game_date']).dt.normalize()
-            if 'is_home' not in historical_df.columns: logger.error("Historical data missing 'is_home' column!"); return False
-    except Exception as e: logger.error(f"Failed to load historical game-level data: {e}", exc_info=True); return False
-
-
-    # STEP 2: Load scheduled game/pitcher data for target date
-    # (Code remains the same)
-    logger.info("STEP 2: Loading scheduled games for prediction date...")
-    try:
-        with DBConnection() as conn:
-            if conn is None: raise ConnectionError("DB Connection failed.")
-            query = f"SELECT * FROM mlb_api WHERE game_date = '{prediction_date_str}'"
-            scheduled_games = pd.read_sql_query(query, conn)
-            if scheduled_games.empty: logger.error(f"No scheduled games found for {prediction_date_str} in 'mlb_api'."); return False
-            logger.info(f"Loaded {len(scheduled_games)} scheduled games")
-    except Exception as e: logger.error(f"Failed to load scheduled games: {e}", exc_info=True); return False
-
-
-    # STEP 3: Load supplementary data needed for feature creation
-    # (Code remains the same)
-    logger.info("STEP 3: Loading supplementary data (Team Batting Aggs, Umpires)...")
-    team_game_stats = pd.DataFrame()
-    try:
-         with DBConnection() as conn:
-              if conn is None: raise ConnectionError("DB Connection failed.")
-              query_teams = f"SELECT * FROM game_level_team_stats WHERE game_date < '{prediction_date_str}'"
-              team_game_stats = pd.read_sql_query(query_teams, conn)
-              logger.info(f"Loaded {len(team_game_stats)} historical team game stats")
-              if not team_game_stats.empty: team_game_stats['game_date'] = pd.to_datetime(team_game_stats['game_date']).dt.normalize()
-    except Exception as e: logger.error(f"Failed to load historical team game stats: {e}", exc_info=True)
-    umpire_data = load_umpire_data()
-
-
-    # STEP 4: Create prediction records shell
-    # (Code remains the same - already includes is_home)
-    logger.info("STEP 4: Creating prediction records shell...")
-    prediction_records = []
-    for _, game in scheduled_games.iterrows():
-        home_pitcher_id = pd.to_numeric(game.get('home_probable_pitcher_id'), errors='coerce')
-        away_pitcher_id = pd.to_numeric(game.get('away_probable_pitcher_id'), errors='coerce')
-        if pd.notna(home_pitcher_id): prediction_records.append({'pitcher_id': int(home_pitcher_id),'player_name': game.get('home_probable_pitcher_name'),'game_pk': game['gamePk'],'game_date': prediction_dt,'home_team': game['home_team_abbr'],'away_team': game['away_team_abbr'],'is_home': 1,'season': prediction_dt.year})
-        if pd.notna(away_pitcher_id): prediction_records.append({'pitcher_id': int(away_pitcher_id),'player_name': game.get('away_probable_pitcher_name'),'game_pk': game['gamePk'],'game_date': prediction_dt,'home_team': game['home_team_abbr'],'away_team': game['away_team_abbr'],'is_home': 0,'season': prediction_dt.year})
-    if not prediction_records: logger.error("No valid probable pitchers found."); return False
-    prediction_df = pd.DataFrame(prediction_records)
-    logger.info(f"Created {len(prediction_df)} prediction shells.")
-
-
-    # STEP 5: Combine historical and prediction data
-    # (Code remains the same)
-    logger.info("STEP 5: Combining historical and prediction data...")
-    for col in historical_df.columns:
-        if col not in prediction_df.columns: prediction_df[col] = np.nan
-    common_cols = list(set(historical_df.columns).intersection(prediction_df.columns))
-    if not common_cols: logger.error("No common columns found."); return False
-    if 'is_home' in historical_df.columns and 'is_home' not in common_cols: common_cols.append('is_home')
-    combined_df = pd.concat([historical_df[common_cols], prediction_df[common_cols]], ignore_index=True)
-    combined_df['game_date'] = pd.to_datetime(combined_df['game_date']).dt.normalize()
-    combined_df = combined_df.sort_values(by=['pitcher_id', 'game_date']).reset_index(drop=True)
-    del historical_df, prediction_df; gc.collect()
-
-
-    logger.info(f"DEBUG: Columns BEFORE Step 6 (Feature Engineering): {combined_df.columns.tolist()}") # ADD THIS
-
-    # STEP 6: Engineer features on combined data
-    logger.info("STEP 6: Engineering prediction features...")
-    featured_df = combined_df.copy() # Use the combined data
-    try:
-        # Import feature creation functions (ensure they are imported)
-        from src.features.pitcher_features import create_pitcher_features # Assuming this is the main wrapper now
-
-        # Make sure featured_df is passed correctly
-        # Ensure create_pitcher_features is designed to handle the combined df
-        # and the necessary supplementary dataframes (team_game_stats, umpire_data)
-        # Note: Minimal pitch data is NOT loaded here for prediction runs
-        featured_df = create_pitcher_features(
-            featured_df, # Pass the combined df
-            pitch_level_data=None, # Explicitly None for prediction
-            team_batting_data=team_game_stats, # Pass loaded team game stats
-            umpire_data=umpire_data # Pass loaded umpire data
-        )
-
-    except Exception as e:
-        logger.error(f"Error during feature creation step: {e}", exc_info=True)
-        return False
-
-    logger.info(f"DEBUG: Columns AFTER Step 6 (Feature Engineering): {featured_df.columns.tolist()}") # ADD THIS
-    del combined_df; gc.collect()
-
-
-    # STEP 7: Extract only prediction records for the target date
-    # (Code remains the same)
-    logger.info("STEP 7: Extracting prediction records...")
-    prediction_features = featured_df[featured_df['game_date'] == prediction_dt].copy()
-    del featured_df; gc.collect()
-    if prediction_features.empty: logger.error(f"No prediction features generated for {prediction_date_str}."); return False
-    logger.info(f"Generated {len(prediction_features)} records with features for prediction.")
-
-
-    # STEP 8: Apply MULTIPLE target encodings using saved map
-    # (Code remains the same - already handles multiple encodings)
-    logger.info("STEP 8: Applying target encodings...")
-    encoding_map = None
-    try:
-        models_dir = project_root / 'models'
-        encoding_files = list(models_dir.glob('encoding_map_*.pkl'))
-        if encoding_files:
-            latest_encoding = max(encoding_files, key=lambda x: x.stat().st_mtime)
-            with open(latest_encoding, 'rb') as f: encoding_map = pickle.load(f)
-            logger.info(f"Loaded encoding map from {latest_encoding}")
-        else: logger.warning("No encoding map found. Cannot apply target encodings.")
-    except Exception as e: logger.error(f"Failed to load encoding map: {e}", exc_info=True)
-
-    if encoding_map:
-        for column, enc_data in encoding_map.items():
-            logger.info(f"  Applying target encoding for column: {column}")
-            if column in prediction_features.columns:
-                col_map = enc_data.get('map', {}); default_val = enc_data.get('default', 0)
-                if prediction_features[column].dtype == 'object': prediction_features[column] = prediction_features[column].astype(str)
-                prediction_features[f'{column}_encoded'] = prediction_features[column].map(col_map).fillna(default_val)
-                logger.info(f"    Applied encoding for {column}.")
-            else: logger.warning(f"    Column '{column}' not found in prediction features. Skipping encoding for it.")
-
-
-    # STEP 9: Handle final missing values
-    # (Code remains the same)
-    logger.info("STEP 9: Handling final missing values...")
-    numeric_cols = prediction_features.select_dtypes(include=np.number).columns
-    for col in numeric_cols:
-        if prediction_features[col].isnull().sum() > 0:
-            fill_value = 0
-            logger.info(f"Filling {prediction_features[col].isnull().sum()} missing values in {col} with {fill_value}")
-            prediction_features[col] = prediction_features[col].fillna(fill_value)
-
-
-    # STEP 10: Saving prediction features
-    logger.info("STEP 10: Saving prediction features...")
-
-    # Ensure essential identifier columns are present (Keep this logic)
-    essential_cols = ['gamePk', 'pitcher_id', 'game_date', 'is_home', 'player_name', 'home_team', 'away_team', 'season', 'opponent_team']
-    existing_cols_in_df = [col for col in prediction_features.columns]
-    cols_to_save = [col for col in essential_cols if col in existing_cols_in_df] + \
-                   [col for col in existing_cols_in_df if col not in essential_cols]
-    missing_essentials = [col for col in essential_cols if col not in prediction_features.columns]
-    if missing_essentials:
-        logger.warning(f"Essential columns missing before final selection: {missing_essentials}.")
-
-    final_prediction_df_to_save = prediction_features[cols_to_save].copy()
-
-    # Save Checkpoint (using the final df)
-    try:
-        logger.info(f"Saving prediction checkpoint: {prediction_checkpoint}")
-        with open(prediction_checkpoint, 'wb') as f: pickle.dump(final_prediction_df_to_save, f)
-        logger.info("Prediction checkpoint saved")
-    except Exception as e: logger.error(f"Failed to save prediction checkpoint: {e}")
-
-    # Save to Database (using the final df)
-    try:
-        with DBConnection() as conn:
-            if conn is None: raise ConnectionError("DB Connection failed.")
-            logger.info("Saving prediction features to 'prediction_features' table...")
-
-            # --- >>>> ADD THE DEBUG LINE HERE <<<< ---
-            logger.info(f"DEBUG: Columns ACTUALLY being saved to DB: {final_prediction_df_to_save.columns.tolist()}")
-            # --- >>>> END DEBUG LINE <<<< ---
-
-            # Save the potentially modified dataframe
-            final_prediction_df_to_save.to_sql('prediction_features', conn, if_exists='replace', index=False, chunksize=10000) # The line AFTER the debug print
-            logger.info(f"Saved {len(final_prediction_df_to_save)} prediction records to database")
-    except Exception as e: logger.error(f"Failed to save prediction features to database: {e}", exc_info=True); return False
-
-
-
-    total_time = time.time() - start_time
-    logger.info(f"=== Prediction Feature Generation Completed in {total_time:.2f}s ===")
-    return True
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run MLB feature engineering pipeline (SQL Aggregation).")
-    parser.add_argument("--real-world", action="store_true", help="Generate features for prediction on a specific date.")
-    parser.add_argument("--prediction-date", type=str, help="Date (YYYY-MM-DD) for prediction features.")
-    parser.add_argument("--ignore-checkpoint", action="store_true", help="Ignore existing checkpoints and rebuild all features/aggregations.")
-
-    args = parser.parse_args()
-    success = False
-
-    try:
-        if args.real_world:
-            if not args.prediction_date: logger.error("--prediction-date is required with --real-world"); sys.exit(1)
-            success = generate_prediction_features(args.prediction_date, args) # <-- Pass args here
+LogConfig.LOG_DIR.mkdir(parents=True, exist_ok=True) # Ensure log dir exists
+logger = setup_logger('engineer_features', LogConfig.LOG_DIR / 'engineer_features.log', level=logging.DEBUG)
+
+# --- Argument Parser ---
+def parse_args():
+    """Parses command-line arguments."""
+    parser = argparse.ArgumentParser(description="Engineer Features for MLB Strikeout Prediction Model.")
+    parser.add_argument("--prediction-date", type=str, default=None,
+                        help="If specified, generate features only for this date (YYYY-MM-DD) for prediction.")
+    parser.add_argument("--real-world", action="store_true",
+                        help="Use when running for actual predictions (affects data loading/saving).")
+    return parser.parse_args()
+
+# --- Target Encoding Function ---
+def apply_target_encoding(train_df, test_df, target_col, cols_to_encode, min_samples_leaf=20, smoothing=10.0):
+    """Applies target encoding smoothing and saves the fitted encoder."""
+    logger.info(f"Applying target encoding...")
+
+    train_df = train_df.copy()
+    test_df = test_df.copy()
+
+    # Ensure target is numeric and handle potential NaNs before fitting encoder
+    train_df[target_col] = pd.to_numeric(train_df[target_col], errors='coerce')
+    test_df[target_col] = pd.to_numeric(test_df[target_col], errors='coerce')
+    train_df_clean = train_df.dropna(subset=[target_col]).copy() # Fit encoder only on non-NaN target rows
+    if len(train_df_clean) < len(train_df):
+         logger.warning(f"Dropped {len(train_df) - len(train_df_clean)} rows with NaN target before fitting encoder.")
+
+    logger.info(f"Global mean {target_col} (used for fit): {train_df_clean[target_col].mean():.4f}")
+
+    # Ensure columns to encode exist and handle potential NaNs before fitting
+    valid_cols_to_encode = []
+    placeholder = 'MISSING_CATEGORY'
+    for col in cols_to_encode:
+        if col in train_df.columns:
+             # Fill NaNs in categorical column with a placeholder before encoding
+             train_df[col] = train_df[col].fillna(placeholder)
+             test_df[col] = test_df[col].fillna(placeholder)
+             train_df_clean[col] = train_df_clean[col].fillna(placeholder) # Apply to clean df too
+             valid_cols_to_encode.append(col)
         else:
-            # Assuming run_historical_feature_pipeline also needs args for its checkpoint logic
-            success = run_historical_feature_pipeline(args)
-    except Exception as e:
-        logger.error(f"Unhandled exception in main execution: {e}", exc_info=True)
-        success = False
+             logger.warning(f"Column '{col}' not found for target encoding.")
 
-    if success:
-        logger.info("=== Feature Engineering Finished Successfully ===")
-        sys.exit(0)
-    else:
-        logger.error("=== Feature Engineering Finished With Errors ===")
-        sys.exit(1)
+    if not valid_cols_to_encode:
+         logger.warning("No valid columns found for target encoding.")
+         return train_df, test_df, None # Return original dfs if no encoding happened
+
+    encoder = TargetEncoder(cols=valid_cols_to_encode, min_samples_leaf=min_samples_leaf, smoothing=smoothing)
+
+    # Fit on training data ONLY (with NaN target rows removed)
+    encoder.fit(train_df_clean[valid_cols_to_encode], train_df_clean[target_col])
+
+    # Transform both original train and test data (including rows that had NaN target)
+    train_encoded = encoder.transform(train_df[valid_cols_to_encode])
+    test_encoded = encoder.transform(test_df[valid_cols_to_encode])
+
+    # Rename encoded columns
+    encoded_cols_map = {col: f"{col}_encoded" for col in valid_cols_to_encode}
+    train_encoded = train_encoded.rename(columns=encoded_cols_map) # No inplace
+    test_encoded = test_encoded.rename(columns=encoded_cols_map) # No inplace
+
+    # Combine back with original dataframes (dropping original categorical columns)
+    train_df_out = pd.concat([train_df.drop(columns=valid_cols_to_encode), train_encoded], axis=1)
+    test_df_out = pd.concat([test_df.drop(columns=valid_cols_to_encode), test_encoded], axis=1)
+
+    # Save the fitted encoder object
+    try:
+         encoder_path = Path(FileConfig.MODELS_DIR) / f"target_encoder_{datetime.now().strftime('%Y%m%d')}.pkl"
+         encoder_path.parent.mkdir(parents=True, exist_ok=True)
+         with open(encoder_path, 'wb') as f:
+              pickle.dump(encoder, f) # Save the entire encoder object
+         logger.info(f"Saved fitted TargetEncoder object to {encoder_path}")
+    except Exception as e:
+         logger.error(f"Failed to save target encoder object: {e}")
+
+    return train_df_out, test_df_out, encoder # Return encoder for optional immediate use
+
+# --- Umpire Prediction Function ---
+def predict_home_plate_umpire(game_date_dt, home_team_abbr, away_team_abbr, schedule_df, historical_umpire_df):
+    """
+    Predicts the home plate umpire based on series rotation.
+
+    Args:
+        game_date_dt (datetime.date): The date of the game to predict.
+        home_team_abbr (str): Home team abbreviation.
+        away_team_abbr (str): Away team abbreviation.
+        schedule_df (pd.DataFrame): DataFrame containing master_schedule data.
+        historical_umpire_df (pd.DataFrame): DataFrame with historical umpire assignments.
+
+    Returns:
+        str: Predicted home plate umpire name, or 'Unknown' if prediction fails.
+    """
+    try:
+        if schedule_df.empty or historical_umpire_df.empty:
+            logger.warning("Schedule or historical umpire data missing for prediction.")
+            return "Unknown"
+
+        game_date_str = game_date_dt.strftime('%Y-%m-%d')
+        yesterday_dt = game_date_dt - timedelta(days=1)
+        yesterday_str = yesterday_dt.strftime('%Y-%m-%d')
+
+        # Find games in the series involving these teams around the target date
+        # Look back a few days to establish the series pattern
+        lookback_days = 4
+        start_series_check_dt = game_date_dt - timedelta(days=lookback_days)
+
+        series_games = schedule_df[
+            (schedule_df['game_date'] >= start_series_check_dt) &
+            (schedule_df['game_date'] <= game_date_dt) &
+            (schedule_df['home_team'] == home_team_abbr) &
+            (schedule_df['away_team'] == away_team_abbr)
+        ].sort_values('game_date')
+
+        if len(series_games) <= 1:
+            logger.debug(f"Cannot predict umpire for {away_team_abbr} @ {home_team_abbr} on {game_date_str}: First game of series or insufficient history.")
+            return "Unknown" # Likely first game of series
+
+        # Find the game played *yesterday* within this identified series
+        previous_game = series_games[series_games['game_date'] == yesterday_dt]
+
+        if previous_game.empty:
+            logger.warning(f"Cannot predict umpire for {game_date_str}: No game found yesterday ({yesterday_str}) in the identified series for {away_team_abbr} @ {home_team_abbr}.")
+            # Could potentially look back 2 days if yesterday was an off-day in the series
+            return "Unknown"
+
+        # Get umpire crew from yesterday's game
+        prev_game_umpires = historical_umpire_df[
+            (historical_umpire_df['game_date'] == yesterday_str) &
+            (historical_umpire_df['home_team'] == home_team_abbr) &
+            (historical_umpire_df['away_team'] == away_team_abbr)
+        ]
+
+        if prev_game_umpires.empty:
+            logger.warning(f"Cannot predict umpire for {game_date_str}: Missing umpire data for previous game ({yesterday_str}) for {away_team_abbr} @ {home_team_abbr}.")
+            return "Unknown"
+
+        # Apply rotation logic: Yesterday's 1B -> Today's HP
+        # Assumes columns 'first_base_umpire', etc. exist in historical_umpire_df
+        prev_1b_ump = prev_game_umpires['first_base_umpire'].iloc[0]
+
+        if pd.isna(prev_1b_ump) or not prev_1b_ump:
+            logger.warning(f"Cannot predict umpire for {game_date_str}: Previous 1B umpire name is missing for {yesterday_str}.")
+            return "Unknown"
+
+        logger.info(f"Predicted HP Umpire for {game_date_str} ({away_team_abbr} @ {home_team_abbr}): {prev_1b_ump} (was 1B yesterday)")
+        return prev_1b_ump
+
+    except Exception as e:
+        logger.error(f"Error predicting umpire for {game_date_str} ({away_team_abbr} @ {home_team_abbr}): {e}", exc_info=True)
+        return "Unknown"
+
+
+# --- Main Feature Engineering Pipeline ---
+def run_feature_pipeline(args):
+    """Runs the full feature engineering pipeline."""
+    start_pipeline_time = time.time()
+    db_path = Path(DBConfig.PATH)
+    prediction_mode = args.prediction_date is not None
+
+    if prediction_mode:
+         logger.info(f"=== Starting PREDICTION Feature Engineering for Date: {args.prediction_date} ===")
+         output_table = "prediction_features" # Target table for base features
+         prediction_date_dt = datetime.strptime(args.prediction_date, '%Y-%m-%d').date()
+
+         logger.info("STEP 1 & 2: Loading supplementary data for prediction...")
+         try:
+              with DBConnection(db_path) as conn:
+                   # Load MASTER SCHEDULE for series identification
+                   schedule_query = "SELECT game_date, home_team, away_team FROM master_schedule"
+                   schedule_df = pd.read_sql_query(schedule_query, conn)
+                   schedule_df['game_date'] = pd.to_datetime(schedule_df['game_date']).dt.date
+                   logger.info(f"Loaded {len(schedule_df)} schedule records.")
+
+                   # Load HISTORICAL UMPIRE data (including all positions if available)
+                   umpire_cols = ['game_date', 'home_team', 'away_team', 'home_plate_umpire',
+                                  'first_base_umpire', 'second_base_umpire', 'third_base_umpire']
+                   umpire_query = f"SELECT {', '.join(umpire_cols)} FROM espn_umpire_data WHERE DATE(game_date) < '{args.prediction_date}'"
+                   historical_umpire_df = pd.read_sql_query(umpire_query, conn)
+                   historical_umpire_df['game_date'] = pd.to_datetime(historical_umpire_df['game_date']).dt.strftime('%Y-%m-%d') # Standardize format
+                   logger.info(f"Loaded {len(historical_umpire_df)} historical umpire records.")
+
+                   # Load game_level_team_stats for opponent features (up to yesterday)
+                   max_hist_date = (prediction_date_dt - timedelta(days=1)).strftime('%Y-%m-%d')
+                   team_stats_cols = ['game_pk', 'team', 'opponent', 'game_date', 'k_percent', 'bb_percent', 'swing_percent', 'contact_percent', 'swinging_strike_percent', 'chase_percent', 'zone_contact_percent']
+                   team_stats_query = f"SELECT {', '.join(team_stats_cols)} FROM game_level_team_stats WHERE DATE(game_date) <= '{max_hist_date}'"
+                   game_level_team_stats = pd.read_sql_query(team_stats_query, conn)
+                   logger.info(f"Loaded {len(game_level_team_stats)} historical team stat records.")
+
+                   # Load minimal pitch data if needed for platoon (up to yesterday)
+                   minimal_pitch_df = pd.DataFrame()
+                   if True: # Assuming platoon features are needed
+                        logger.info("Loading minimal pitch data for platoon features (prediction)...")
+                        pitch_cols = ['pitcher', 'game_pk', 'game_date', 'stand', 'events']
+                        pitch_query = f"SELECT {', '.join(pitch_cols)} FROM statcast_pitchers WHERE DATE(game_date) <= '{max_hist_date}'"
+                        minimal_pitch_df = pd.read_sql_query(pitch_query, conn)
+                        logger.info(f"Loaded {len(minimal_pitch_df)} minimal pitch records.")
+
+                   # Load historical game_level_pitcher data for lags/trends (up to yesterday)
+                   pitcher_stats_query = f"SELECT * FROM game_level_pitchers WHERE DATE(game_date) <= '{max_hist_date}'"
+                   game_level_pitcher_stats = pd.read_sql_query(pitcher_stats_query, conn)
+                   logger.info(f"Loaded {len(game_level_pitcher_stats)} historical pitcher stat records.")
+
+                   # Load BASELINE pitcher data FOR THE PREDICTION DATE
+                   pred_baseline_query = f"SELECT * FROM game_level_pitchers WHERE DATE(game_date) = '{args.prediction_date}'"
+                   pred_baseline_df = pd.read_sql_query(pred_baseline_query, conn)
+                   logger.info(f"Loaded {len(pred_baseline_df)} baseline pitcher records for {args.prediction_date}.")
+                   if pred_baseline_df.empty:
+                        logger.error(f"No baseline pitcher data found for prediction date {args.prediction_date}. Run data fetching/aggregation.")
+                        sys.exit(1)
+
+         except Exception as e:
+              logger.error(f"Error loading supplementary data for prediction: {e}", exc_info=True)
+              sys.exit(1)
+
+         logger.info("STEP 3a: Predicting umpires for prediction date...")
+         predicted_umpires = []
+         # Ensure 'game_date' is datetime.date for comparison
+         pred_baseline_df['game_date_dt'] = pd.to_datetime(pred_baseline_df['game_date']).dt.date
+         for _, row in pred_baseline_df.iterrows():
+             pred_ump = predict_home_plate_umpire(
+                 row['game_date_dt'],
+                 row['home_team'],
+                 row['away_team'],
+                 schedule_df,
+                 historical_umpire_df # Pass df with all umpire positions
+             )
+             predicted_umpires.append({
+                 'game_date': row['game_date'], # Keep original string/datetime format
+                 'home_team': row['home_team'],
+                 'away_team': row['away_team'],
+                 'umpire': pred_ump # Predicted HP umpire
+             })
+         pred_baseline_df = pred_baseline_df.drop(columns=['game_date_dt']) # Drop helper column
+         umpire_df_pred = pd.DataFrame(predicted_umpires)
+         # Convert game_date to string to match historical umpire_df before passing
+         umpire_df_pred['game_date'] = pd.to_datetime(umpire_df_pred['game_date']).dt.strftime('%Y-%m-%d')
+         logger.info(f"Predicted umpires for {len(umpire_df_pred)} games.")
+
+         logger.info("STEP 3b: Creating pitcher features for prediction date...")
+         # Combine historical and prediction baseline for feature calculation context
+         combined_pitcher_stats = pd.concat([game_level_pitcher_stats, pred_baseline_df], ignore_index=True)
+
+         # Call feature creation function - pass the *predicted* umpire data
+         final_pred_features = create_pitcher_features(
+              pitcher_data=combined_pitcher_stats, # Pass combined data for context
+              team_stats_data=game_level_team_stats,
+              umpire_data=umpire_df_pred, # Pass DataFrame with predicted 'umpire' column
+              pitch_data=minimal_pitch_df
+         )
+
+         # Filter results back down to only the prediction date
+         final_pred_features = final_pred_features[
+              pd.to_datetime(final_pred_features['game_date']).dt.strftime('%Y-%m-%d') == args.prediction_date
+         ].copy()
+         logger.info(f"Generated {len(final_pred_features)} rows of features for prediction date.")
+
+         if final_pred_features.empty:
+              logger.error("Feature generation resulted in empty dataframe for prediction date.")
+              sys.exit(1)
+
+         # Apply target encoding using saved encoder object
+         logger.info("STEP 4: Applying target encoding using saved encoder object...")
+         try:
+              model_dir = Path(FileConfig.MODELS_DIR)
+              encoder_path = find_latest_file(model_dir, "target_encoder_*.pkl") # Find the saved encoder object
+              if not encoder_path:
+                   logger.error("Could not find target encoder .pkl file in models directory. Cannot apply encoding for prediction.")
+                   sys.exit(1)
+              logger.info(f"Loading TargetEncoder object from: {encoder_path}")
+              with open(encoder_path, 'rb') as f:
+                   encoder = pickle.load(f) # Load the fitted encoder
+
+              cols_to_encode = StrikeoutModelConfig.TARGET_ENCODING_COLS
+              valid_cols_to_encode = [col for col in cols_to_encode if col in final_pred_features.columns]
+
+              if valid_cols_to_encode:
+                   logger.info(f" Applying loaded target encoding to: {valid_cols_to_encode}")
+                   # Fill NaNs with placeholder before transforming
+                   placeholder = 'MISSING_CATEGORY' # Must match placeholder used during training fit
+                   for col in valid_cols_to_encode:
+                       final_pred_features[col] = final_pred_features[col].fillna(placeholder)
+
+                   # Use the loaded encoder's transform method
+                   pred_encoded = encoder.transform(final_pred_features[valid_cols_to_encode])
+
+                   encoded_cols_map = {col: f"{col}_encoded" for col in valid_cols_to_encode}
+                   pred_encoded = pred_encoded.rename(columns=encoded_cols_map) # No inplace
+
+                   # Combine back, dropping original columns
+                   final_pred_features = pd.concat([final_pred_features.drop(columns=valid_cols_to_encode), pred_encoded], axis=1)
+              else:
+                   logger.warning("No valid columns found for target encoding during prediction.")
+
+         except Exception as e:
+              logger.error(f"Error applying target encoding during prediction: {e}", exc_info=True)
+              sys.exit(1)
+
+         logger.info("STEP 5: Saving prediction features...")
+         try:
+              with DBConnection(db_path) as conn:
+                   final_pred_features.to_sql(output_table, conn, if_exists='replace', index=False)
+              logger.info(f"Saved {len(final_pred_features)} prediction records to '{output_table}'")
+         except Exception as e:
+              logger.error(f"Error saving prediction features: {e}", exc_info=True)
+              sys.exit(1)
+
+    else: # --- Historical/Training Mode ---
+         logger.info("=== Starting Historical Feature Engineering Pipeline (SQL Aggregation) ===")
+         logger.info("Running aggregation and feature engineering steps (Checkpoints disabled)...")
+
+         logger.info("STEP 1: Aggregating raw Statcast data using SQL functions...")
+         try:
+              game_level_pitcher_stats = aggregate_statcast_pitchers_sql()
+              logger.info(f"Successfully aggregated/loaded {len(game_level_pitcher_stats)} pitcher game records.")
+              if game_level_pitcher_stats.empty: raise ValueError("Pitcher aggregation returned empty DataFrame.")
+
+              game_level_team_stats = aggregate_statcast_batters_sql()
+              logger.info(f"Successfully aggregated/loaded {len(game_level_team_stats)} team game records.")
+              if game_level_team_stats.empty: raise ValueError("Team aggregation returned empty DataFrame.")
+         except Exception as e:
+              logger.error(f"Error during data aggregation step: {e}", exc_info=True); sys.exit(1)
+
+         logger.info("STEP 2: Loading supplementary data (Umpires, Minimal Pitch)...")
+         try:
+              with DBConnection(db_path) as conn:
+                   # Load HISTORICAL UMPIRE data - selecting only HP Umpire and renaming
+                   umpire_query = "SELECT game_date, home_team, away_team, home_plate_umpire FROM espn_umpire_data"
+                   umpire_df_hist = pd.read_sql_query(umpire_query, conn)
+                   # Rename for the create_pitcher_features function
+                   umpire_df_hist = umpire_df_hist.rename(columns={'home_plate_umpire': 'umpire'}) # No inplace
+                   logger.info(f"Loaded and prepared {len(umpire_df_hist)} historical umpire records.")
+
+                   # Load minimal pitch data if needed
+                   minimal_pitch_df = pd.DataFrame()
+                   if True: # Assuming platoon features needed
+                        logger.info("Loading minimal pitch data for platoon features...")
+                        pitch_cols = ['pitcher', 'game_pk', 'game_date', 'stand', 'events']
+                        pitch_query = f"SELECT {', '.join(pitch_cols)} FROM statcast_pitchers"
+                        minimal_pitch_df = pd.read_sql_query(pitch_query, conn)
+                        logger.info(f"Loaded {len(minimal_pitch_df)} minimal pitch records.")
+         except Exception as e:
+              logger.error(f"Error loading supplementary data: {e}", exc_info=True); sys.exit(1)
+
+         logger.info("STEP 3: Creating pitcher features...")
+         try:
+              # Pass the actual historical umpire data
+              combined_features = create_pitcher_features(
+                   pitcher_data=game_level_pitcher_stats,
+                   team_stats_data=game_level_team_stats,
+                   umpire_data=umpire_df_hist, # Pass df with actual 'umpire' column
+                   pitch_data=minimal_pitch_df
+              )
+              logger.info("Finished creating pitcher features.")
+              if combined_features.empty: logger.error("Feature creation resulted in empty DataFrame."); sys.exit(1)
+              del game_level_pitcher_stats, game_level_team_stats, umpire_df_hist, minimal_pitch_df; gc.collect()
+         except Exception as e:
+              logger.error(f"Error during create_pitcher_features: {e}", exc_info=True); sys.exit(1)
+
+         logger.info("STEP 4: Final data cleanup...")
+         logger.info("Final cleanup complete.")
+
+         logger.info("STEP 5: Splitting into train/test...")
+         try:
+              if 'season' not in combined_features.columns: logger.error("'season' column missing."); sys.exit(1)
+              combined_features['season'] = pd.to_numeric(combined_features['season'], errors='coerce')
+
+              train_years = set(StrikeoutModelConfig.DEFAULT_TRAIN_YEARS)
+              test_years = set(StrikeoutModelConfig.DEFAULT_TEST_YEARS)
+              logger.info(f"Train seasons: {tuple(sorted(list(train_years)))}")
+              logger.info(f"Test seasons: {tuple(sorted(list(test_years)))}")
+
+              train_df = combined_features[combined_features['season'].isin(train_years)].copy()
+              test_df = combined_features[combined_features['season'].isin(test_years)].copy()
+
+              logger.info(f"Train set: {len(train_df)} rows, Test set: {len(test_df)} rows")
+              if train_df.empty or test_df.empty: logger.error("Train or test set empty."); sys.exit(1)
+              del combined_features; gc.collect()
+         except Exception as e:
+              logger.error(f"Error during train/test split: {e}", exc_info=True); sys.exit(1)
+
+         logger.info("STEP 6: Applying target encoding...")
+         cols_to_encode = StrikeoutModelConfig.TARGET_ENCODING_COLS
+         target_col = StrikeoutModelConfig.TARGET_VARIABLE
+         try:
+              if target_col not in train_df.columns: logger.error(f"Target '{target_col}' not found."); sys.exit(1)
+              train_df[target_col] = pd.to_numeric(train_df[target_col], errors='coerce')
+              if train_df[target_col].isnull().any():
+                   logger.warning(f"NaNs found in target variable '{target_col}'. Dropping rows.")
+                   train_df = train_df.dropna(subset=[target_col]) # Use assignment
+
+              valid_cols_to_encode = [col for col in cols_to_encode if col in train_df.columns]
+              if not valid_cols_to_encode:
+                   logger.warning("No valid columns found for target encoding.")
+                   train_features = train_df
+                   test_features = test_df
+              else:
+                   logger.info(f" Applying target encoding to: {valid_cols_to_encode}")
+                   train_features, test_features, _ = apply_target_encoding(
+                        train_df, test_df, target_col, valid_cols_to_encode
+                   )
+              del train_df, test_df; gc.collect()
+         except Exception as e:
+              logger.error(f"Error during target encoding: {e}", exc_info=True); sys.exit(1)
+
+         logger.info("STEP 7: Saving final datasets to database...")
+         try:
+              with DBConnection(db_path) as conn:
+                   logger.info("Saving training features to 'train_features' table...")
+                   train_features.to_sql('train_features', conn, if_exists='replace', index=False)
+                   logger.info(f"Saved {len(train_features)} training records to 'train_features'")
+
+                   logger.info("Saving test features to 'test_features' table...")
+                   test_features.to_sql('test_features', conn, if_exists='replace', index=False)
+                   logger.info(f"Saved {len(test_features)} test records to 'test_features'")
+         except Exception as e:
+              logger.error(f"Error saving final datasets: {e}", exc_info=True); sys.exit(1)
+    # --- End Historical/Training Mode ---
+
+    end_pipeline_time = time.time()
+    logger.info(f"=== Feature Engineering Pipeline Completed in {(end_pipeline_time - start_pipeline_time):.2f}s ===")
+
+# --- Main Execution Block ---
+if __name__ == "__main__":
+    if not MODULE_IMPORTS_OK:
+        sys.exit("Exiting: Failed module imports.")
+
+    args = parse_args()
+    logger.info("=== Feature Engineering Started ===")
+    run_feature_pipeline(args)
+    logger.info("=== Feature Engineering Finished Successfully ===")

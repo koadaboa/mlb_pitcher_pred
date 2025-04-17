@@ -119,9 +119,9 @@ def scrape_probable_pitchers(target_date_str, team_mapping_df):
         for game_container in game_containers:
             game_pk = None; home_team_id = None; away_team_id = None # Ensure defined
             try:
-                # Extract gamePk
-                game_pk_str = game_container.get('data-gamepk'); game_pk = int(game_pk_str) if game_pk_str and game_pk_str.isdigit() else None
-                if not game_pk: logger.warning("No gamePk found. Skipping container."); continue
+                # Extract game_pk
+                game_pk_str = game_container.get('data-game_pk'); game_pk = int(game_pk_str) if game_pk_str and game_pk_str.isdigit() else None
+                if not game_pk: logger.warning("No game_pk found. Skipping container."); continue
 
                 # Extract Team IDs from attributes
                 game_info_div = game_container.find('div', class_=lambda x: x and 'probable-pitchers__game' in x.split())
@@ -161,17 +161,17 @@ def scrape_probable_pitchers(target_date_str, team_mapping_df):
 
                 # Create final data dict (using target_date_str as game_date)
                 game_data = {
-                    "gamePk": game_pk, "game_date": target_date_str, # Use the input date
+                    "game_pk": game_pk, "game_date": target_date_str, # Use the input date
                     "home_team_name": home_team_name, "away_team_name": away_team_name,
                     "home_probable_pitcher_name": home_pitcher_name, "home_probable_pitcher_id": home_pitcher_id,
                     "away_probable_pitcher_name": away_pitcher_name, "away_probable_pitcher_id": away_pitcher_id,
                     "home_team_id": home_team_id, "away_team_id": away_team_id,
-                    "home_team_abbr": home_team_abbr, "away_team_abbr": away_team_abbr,
+                    "home_team": home_team_abbr, "away_team": away_team_abbr,
                 }
                 scraped_games.append(game_data)
 
             except Exception as e: 
-                logger.error(f"Error parsing game container (GamePK: {game_pk if game_pk else 'Unknown'}): {e}.")
+                logger.error(f"Error parsing game container (Game_PK: {game_pk if game_pk else 'Unknown'}): {e}.")
                 continue
 
         logger.info(f"Successfully scraped {len(scraped_games)} games with non-TBD probable pitchers for {target_date_str}.")

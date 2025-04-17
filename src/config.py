@@ -19,11 +19,22 @@ class StrikeoutModelConfig:
     DEFAULT_TEST_YEARS = (2024, 2025)
     OPTIMIZATION_METRICS = ["within_1_strikeout", "within_2_strikeouts", "over_under_accuracy"]
     TARGET_VARIABLE = 'strikeouts'
+    TARGET_VARIABLE_GLOBAL_MEAN = 4.5 # Example: Add this if needed for prediction encoding fillna
     OPTUNA_TRIALS = 100
     OPTUNA_TIMEOUT = 3600
     FINAL_ESTIMATORS = 100
     EARLY_STOPPING_ROUNDS = 10
     VERBOSE_FIT = True
+    # --- ADD THIS LINE ---
+    TARGET_ENCODING_COLS = [
+        'p_throws',         # Pitcher throwing hand (L/R)
+        'opponent_team',    # Opponent team abbreviation/ID
+        'home_team',        # Home team abbreviation/ID (if needed separately)
+        'umpire',           # Umpire name (if created and merged)
+        'ballpark'          # Ballpark name (if created and merged)
+        # Add any other categorical columns you intend to encode
+    ]
+    # --- END ADDITION ---
 
 class LogConfig:
     # Define Log directory relative to project root
