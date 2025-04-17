@@ -30,7 +30,7 @@ class StrikeoutModelConfig:
         'p_throws',         # Pitcher throwing hand (L/R)
         'opponent_team',    # Opponent team abbreviation/ID
         'home_team',        # Home team abbreviation/ID (if needed separately)
-        'umpire',           # Umpire name (if created and merged)
+        'home_plate_umpire',           # Umpire name (if created and merged)
         'ballpark'          # Ballpark name (if created and merged)
         # Add any other categorical columns you intend to encode
     ]

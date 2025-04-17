@@ -113,106 +113,98 @@ def create_trend_features(df, metrics, windows=[3, 5], group_col='pitcher_id', d
 def create_rest_features(df, group_col='pitcher_id', date_col='game_date'):
     """Creates features related to pitcher rest and recent workload."""
     logger.info("Creating pitcher rest features...")
-    df_copy = df.copy() # Work on a copy
+    # Start with a fresh index guaranteed to be unique
+    df_copy = df.copy().reset_index(drop=True)
 
-    # --- START: Pre-processing before rolling ---
+    # --- Pre-processing ---
     logger.debug("Preprocessing data before rolling calculations...")
     try:
         df_copy[date_col] = pd.to_datetime(df_copy[date_col])
 
-        # 1. Ensure uniqueness based on pitcher and date FIRST
+        # Ensure uniqueness based on pitcher and date FIRST
         duplicates_mask = df_copy.duplicated(subset=[group_col, date_col], keep=False)
         if duplicates_mask.any():
             num_duplicates = duplicates_mask.sum()
-            logger.warning(f"Found {num_duplicates} rows involved in duplicate {group_col}/{date_col} entries. Keeping the first entry.")
-            original_row_count = len(df_copy)
-            df_copy = df_copy.drop_duplicates(subset=[group_col, date_col], keep='first')
-            logger.info(f"Resolved duplicates. Row count changed from {original_row_count} to {len(df_copy)}.")
+            logger.warning(f"Found {num_duplicates} duplicate {group_col}/{date_col} entries. Keeping first.")
+            df_copy = df_copy.drop_duplicates(subset=[group_col, date_col], keep='first').reset_index(drop=True) # Reset index after drop
 
-        # 2. Explicitly sort *again* right before setting index
-        df_copy = df_copy.sort_values(by=[group_col, date_col])
-        logger.debug("Ensured data is sorted by group and date before setting index.")
-
-        # 3. Set index and check overall monotonicity (for debugging)
-        df_indexed = df_copy.set_index(date_col)
-        if not df_indexed.index.is_monotonic_increasing:
-            logger.warning("Index is not strictly monotonic overall after setting. Group-level check will occur during rolling.")
-
-        # 4. Group by pitcher ID
-        grouped = df_indexed.groupby(group_col)
-        logger.debug("Data preprocessing complete.")
+        # Explicitly sort *again* right before setting index
+        df_copy = df_copy.sort_values(by=[group_col, date_col]).reset_index(drop=True) # Assign sorted df and reset index
+        logger.debug("Ensured data is sorted by group and date.")
 
     except Exception as preproc_e:
         logger.error(f"Error during preprocessing in create_rest_features: {preproc_e}", exc_info=True)
         # Add default columns and return if preprocessing fails
-        df_copy['days_since_last_game'] = np.nan
-        df_copy['rest_days_4_less'] = 0
-        df_copy['rest_days_5'] = 0
-        df_copy['rest_days_6_more'] = 0
-        df_copy['extended_rest'] = 0
-        df_copy['ip_last_15d'] = np.nan
+        df_copy['days_since_last_game'] = np.nan; df_copy['rest_days_4_less'] = 0
+        df_copy['rest_days_5'] = 0; df_copy['rest_days_6_more'] = 0
+        df_copy['extended_rest'] = 0; df_copy['ip_last_15d'] = np.nan
         df_copy['pitches_last_15d'] = np.nan
         return df_copy
-    # --- END: Pre-processing before rolling ---
+    # --- END Pre-processing ---
 
+    # Days since last game (calculated on the sorted df_copy)
+    # Ensure group_col exists
+    if group_col not in df_copy.columns:
+         logger.error(f"Grouping column '{group_col}' not found for rest days calculation.")
+         df_copy['days_since_last_game'] = np.nan
+    else:
+         df_copy['days_since_last_game'] = df_copy.groupby(group_col)[date_col].diff().dt.days
 
-    # Days since last game (calculated on the potentially modified df_copy)
-    # Need to calculate diff on the original structure before setting index
-    df_copy['days_since_last_game'] = df_copy.groupby(group_col)[date_col].diff().dt.days
-
-    # Rest day categories (example)
+    # Rest day categories
     df_copy['rest_days_4_less'] = (df_copy['days_since_last_game'] <= 4).astype(int)
     df_copy['rest_days_5'] = (df_copy['days_since_last_game'] == 5).astype(int)
     df_copy['rest_days_6_more'] = (df_copy['days_since_last_game'] >= 6).astype(int)
     df_copy['extended_rest'] = (df_copy['days_since_last_game'] > 7).astype(int)
 
-    # Recent workload calculations using the pre-processed df_indexed and grouped
-    logger.info("Calculating rolling workload (IP)...")
-    ip_col = 'innings_pitched'
-    if ip_col in df_copy.columns: # Check df_copy for original column presence
+    # --- Rolling Workload Calculation ---
+    # Use original index for joining results back later
+    df_copy['original_index'] = df_copy.index
+    # Set datetime index for rolling
+    df_indexed = df_copy.set_index(date_col)
+
+    ip_col = 'innings_pitched'; pitches_col = 'total_pitches'
+    ip_workload_col = 'ip_last_15d'; pitches_workload_col = 'pitches_last_15d'
+    # Initialize workload columns
+    df_copy[ip_workload_col] = np.nan
+    df_copy[pitches_workload_col] = np.nan
+
+    # Group by pitcher ID on the time-indexed DataFrame
+    grouped_pitcher_time = df_indexed.groupby(group_col)
+
+    if ip_col in df_indexed.columns:
+        logger.info("Calculating rolling workload (IP)...")
         try:
-            rolling_ip = grouped[ip_col].shift(1).rolling('15D', closed='left').sum()
-            rolling_ip.name = 'ip_last_15d'
-            df_copy = pd.merge(df_copy, rolling_ip.reset_index(), on=[group_col, date_col], how='left')
+            # Calculate rolling sum - handle potential errors within calculation
+            rolling_ip_series = grouped_pitcher_time[ip_col].shift(1) \
+                                    .rolling('15D', closed='left').sum()
+            # Map results back to the original index using the time index
+            df_copy[ip_workload_col] = df_copy['original_index'].map(rolling_ip_series)
         except ValueError as ve:
-            if "monotonic" in str(ve).lower():
-                logger.error(f"ValueError during rolling IP calculation (non-monotonic index within a group): {ve}")
-                # (Keep enhanced debugging from previous step here if needed)
-                df_copy['ip_last_15d'] = np.nan
-            else:
-                logger.error(f"Unexpected ValueError during rolling IP calculation: {ve}")
-                df_copy['ip_last_15d'] = np.nan
+            logger.error(f"ValueError during rolling IP (likely non-monotonic index within a group): {ve}. IP workload remains NaN.")
         except Exception as e:
              logger.error(f"Error calculating rolling IP: {e}", exc_info=True)
-             df_copy['ip_last_15d'] = np.nan
     else:
-        logger.warning(f"Column '{ip_col}' not found for workload calculation.")
-        df_copy['ip_last_15d'] = np.nan
+        logger.warning(f"Column '{ip_col}' not found for IP workload calculation.")
 
-    logger.info("Calculating rolling workload (Pitches)...")
-    pitches_col = 'total_pitches'
-    if pitches_col in df_copy.columns:
+    if pitches_col in df_indexed.columns:
+        logger.info("Calculating rolling workload (Pitches)...")
         try:
-            rolling_pitches = grouped[pitches_col].shift(1).rolling('15D', closed='left').sum()
-            rolling_pitches.name = 'pitches_last_15d'
-            df_copy = pd.merge(df_copy, rolling_pitches.reset_index(), on=[group_col, date_col], how='left')
+            rolling_pitches_series = grouped_pitcher_time[pitches_col].shift(1) \
+                                         .rolling('15D', closed='left').sum()
+            df_copy[pitches_workload_col] = df_copy['original_index'].map(rolling_pitches_series)
         except ValueError as ve:
-             if "monotonic" in str(ve).lower():
-                  logger.error(f"ValueError during rolling Pitches calculation (non-monotonic index within a group): {ve}")
-                  # (Keep enhanced debugging from previous step here if needed)
-                  df_copy['pitches_last_15d'] = np.nan
-             else:
-                  logger.error(f"Unexpected ValueError during rolling Pitches calculation: {ve}")
-                  df_copy['pitches_last_15d'] = np.nan
+             logger.error(f"ValueError during rolling Pitches (likely non-monotonic index within a group): {ve}. Pitches workload remains NaN.")
         except Exception as e:
              logger.error(f"Error calculating rolling Pitches: {e}", exc_info=True)
-             df_copy['pitches_last_15d'] = np.nan
     else:
-        logger.warning(f"Column '{pitches_col}' not found for workload calculation.")
-        df_copy['pitches_last_15d'] = np.nan
+        logger.warning(f"Column '{pitches_col}' not found for Pitches workload calculation.")
+
+    # Drop the helper index column
+    final_df = df_copy.drop(columns=['original_index'])
 
     logger.info("Completed rest feature creation.")
-    return df_copy
+    # Return the dataframe with the original index structure (potentially modified by drop_duplicates)
+    return final_df
 
 def create_arsenal_features(df, arsenal_metrics, effectiveness_metric='swinging_strike_percent', group_col='pitcher_id', date_col='game_date'):
     """Creates features related to pitch arsenal usage and effectiveness trends."""
@@ -328,108 +320,139 @@ def create_opponent_features(pitcher_df, team_stats_df, opponent_metrics, group_
 
 
 def create_umpire_features(pitcher_df, umpire_df, historical_metric='k_per_9'):
-    """Merges umpire assignments and calculates historical umpire tendencies."""
-    logger.info("Creating umpire features...")
+    """
+    Merges umpire assignments and calculates historical umpire tendencies.
+    Uses 'home_plate_umpire' as the expected column name in umpire_df.
+    """
+    logger.info("Creating umpire features using 'home_plate_umpire'...")
     result_df = pitcher_df.copy() # Work on copy
     umpire_data_copy = umpire_df.copy() # Work on copy
 
-    # Ensure types are correct for merging
+    ump_col = 'home_plate_umpire' # Define the standard umpire column name
+    hist_ump_col = f'umpire_historical_{historical_metric}'
+    boost_col = 'pitcher_umpire_k_boost'
+
+    # --- Prepare merge keys ---
     try:
-        result_df['game_date'] = pd.to_datetime(result_df['game_date']).dt.strftime('%Y-%m-%d')
-        umpire_data_copy['game_date'] = pd.to_datetime(umpire_data_copy['game_date']).dt.strftime('%Y-%m-%d')
-        # Strip whitespace from team names in both dataframes before merge
+        # Create string version of date for reliable merging
+        result_df['game_date_str'] = pd.to_datetime(result_df['game_date']).dt.strftime('%Y-%m-%d')
+        umpire_data_copy['game_date_str'] = pd.to_datetime(umpire_data_copy['game_date']).dt.strftime('%Y-%m-%d')
+        # Strip whitespace from team names
         for col in ['home_team', 'away_team']:
              if col in result_df.columns and result_df[col].dtype == 'object':
-                  result_df[col] = result_df[col].str.strip()
+                  result_df[col] = result_df[col].astype(str).str.strip()
              if col in umpire_data_copy.columns and umpire_data_copy[col].dtype == 'object':
-                  umpire_data_copy[col] = umpire_data_copy[col].str.strip()
-        ump_col = 'umpire' # Use the correct column name from umpire_data
-        if ump_col in umpire_data_copy.columns and umpire_data_copy[ump_col].dtype == 'object':
-             umpire_data_copy[ump_col] = umpire_data_copy[ump_col].str.strip()
+                  umpire_data_copy[col] = umpire_data_copy[col].astype(str).str.strip()
+
+        # Check if umpire_df is valid for merging
+        merge_cols = ['game_date_str', 'home_team', 'away_team']
+        if umpire_data_copy is None or umpire_data_copy.empty:
+             logger.warning("Umpire data (umpire_df) is empty. Cannot merge.")
+             result_df[ump_col] = 'Unknown' # Add placeholder column
+        elif not all(col in umpire_data_copy.columns for col in merge_cols + [ump_col]):
+            logger.error(f"Umpire data (umpire_df) is missing required columns for merge: {merge_cols + [ump_col]}. Cannot merge.")
+            result_df[ump_col] = 'Unknown' # Add placeholder column
+        else:
+            # Ensure umpire name is string before merge
+            umpire_data_copy[ump_col] = umpire_data_copy[ump_col].astype(str).str.strip()
+            # --- Merge umpire name ---
+            logger.info(f"Merging umpire assignments using {merge_cols}...")
+            original_len = len(result_df)
+            # Select only needed columns and drop duplicates from umpire data before merge
+            ump_subset_to_merge = umpire_data_copy[merge_cols + [ump_col]].drop_duplicates(subset=merge_cols, keep='first')
+            result_df = pd.merge(
+                result_df,
+                ump_subset_to_merge,
+                on=merge_cols,
+                how='left'
+            )
+            if len(result_df) != original_len:
+                 logger.warning(f"Umpire merge changed row count from {original_len} to {len(result_df)}. Check input data.")
+
+        # --- Ensure umpire column exists and fill NaNs ---
+        if ump_col not in result_df.columns:
+             logger.warning(f"Umpire column '{ump_col}' was not added by the merge. Filling with 'Unknown'.")
+             result_df[ump_col] = 'Unknown'
+        else:
+             missing_umps = result_df[ump_col].isnull().sum()
+             if missing_umps > 0:
+                  logger.info(f"Filling {missing_umps} missing umpire matches with 'Unknown'.")
+                  # Use .loc to avoid SettingWithCopyWarning if result_df is a slice
+                  result_df.loc[:, ump_col] = result_df[ump_col].fillna('Unknown')
+             # Convert to string just in case
+             result_df.loc[:, ump_col] = result_df[ump_col].astype(str)
 
     except Exception as e:
-         logger.error(f"Error preparing columns for umpire merge: {e}")
-         # Add default columns and return
-         result_df['umpire'] = 'Unknown'
-         result_df['umpire_historical_k_per_9'] = np.nan
-         result_df['pitcher_umpire_k_boost'] = np.nan
-         return result_df # Return result_df
+         logger.error(f"Error preparing columns or merging umpire data: {e}", exc_info=True)
+         result_df[ump_col] = 'Unknown' # Ensure column exists even on error
 
-    # Merge umpire name based on date, home_team, away_team
-    merge_cols = ['game_date', 'home_team', 'away_team']
-    ump_col = 'umpire' # Define umpire column name
-    cols_to_merge_from_ump = merge_cols + [ump_col]
-
-    if not all(col in result_df.columns for col in merge_cols):
-         logger.error(f"Missing columns required for umpire merge in main df: {[c for c in merge_cols if c not in result_df.columns]}")
-         result_df[ump_col] = 'Unknown'
-    elif not all(col in umpire_data_copy.columns for col in cols_to_merge_from_ump):
-         logger.error(f"Missing columns required for umpire merge in umpire_df: {[c for c in cols_to_merge_from_ump if c not in umpire_data_copy.columns]}")
-         result_df[ump_col] = 'Unknown'
-    else:
-        logger.info(f"Merging umpire assignments using {merge_cols}...")
-        original_len = len(result_df)
-        # Select only needed columns from umpire data before merge
-        ump_subset_to_merge = umpire_data_copy[cols_to_merge_from_ump].drop_duplicates(subset=merge_cols, keep='first')
-        # Use assignment for merge
-        result_df = pd.merge(
-            result_df,
-            ump_subset_to_merge,
-            on=merge_cols,
-            how='left'
-        )
-        if len(result_df) != original_len:
-             # This can happen if pitcher_df had duplicate game_date/home/away combos
-             logger.warning(f"Umpire merge changed row count from {original_len} to {len(result_df)}. Check for duplicates in input pitcher_df.")
-        # Fill missing umpires if any
-        missing_umps = result_df[ump_col].isnull().sum()
-        if missing_umps > 0:
-             logger.warning(f"Could not find umpire match for {missing_umps} records. Filling with 'Unknown'.")
-             # Use assignment for fillna
-             result_df[ump_col] = result_df[ump_col].fillna('Unknown')
-        logger.info(f"Merged umpire assignments. Found umpire for {original_len - missing_umps} / {original_len} records.")
-
-    # Calculate historical umpire tendency (e.g., average K/9 in games they HP'd)
+    # --- Calculate historical umpire tendency ---
     logger.info(f"Calculating historical umpire tendencies based on '{historical_metric}'...")
-    hist_ump_col = f'umpire_historical_{historical_metric}'
-    boost_col = f'pitcher_umpire_k_boost' # Use consistent naming
+    # Initialize columns even if calculation fails
+    result_df[hist_ump_col] = np.nan
+    result_df[boost_col] = np.nan
 
-    if historical_metric in result_df.columns and ump_col in result_df.columns:
-        # Calculate average of the metric per umpire historically (use data BEFORE current game)
-        result_df['game_date_dt'] = pd.to_datetime(result_df['game_date'])
-        # Use assignment for sort_values
-        result_df = result_df.sort_values(by=[ump_col, 'game_date_dt'])
-        # Group by umpire, shift the metric, calculate expanding mean
-        # Use assignment to add new column
-        result_df[hist_ump_col] = result_df.groupby(ump_col)[historical_metric].shift(1).expanding().mean()
-        # Use assignment for drop
-        result_df = result_df.drop(columns=['game_date_dt'])
-
-        # Impute missing historical values (e.g., first game for umpire) with global mean
-        global_metric_mean = result_df[historical_metric].mean()
-        missing_hist = result_df[hist_ump_col].isnull().sum()
-        if missing_hist > 0:
-             logger.info(f"Filling {missing_hist} missing umpire historical {historical_metric} with global average: {global_metric_mean:.4f}")
-             # Use assignment instead of inplace
-             result_df[hist_ump_col] = result_df[hist_ump_col].fillna(global_metric_mean)
-
-        # Create interaction term (e.g., pitcher's recent K/9 vs umpire's historical K/9)
-        ewma_k_metric = f'ewma_10g_{historical_metric}' # Example EWMA column
-        if ewma_k_metric in result_df.columns:
-             # Use assignment to add new column
-             result_df[boost_col] = result_df[ewma_k_metric] - result_df[hist_ump_col]
-        else:
-             logger.warning(f"Could not create pitcher-umpire interaction: '{ewma_k_metric}' missing.")
-             result_df[boost_col] = np.nan
-
+    if historical_metric not in result_df.columns:
+        logger.error(f"Required metric '{historical_metric}' not found for historical umpire calc.")
+    elif ump_col not in result_df.columns:
+         logger.error(f"Umpire column '{ump_col}' missing unexpectedly before tendency calc.")
     else:
-        logger.warning(f"Required columns ('{historical_metric}', '{ump_col}') not found for historical umpire calculation.")
-        result_df[hist_ump_col] = np.nan
-        result_df[boost_col] = np.nan
+        try:
+            result_df['game_date_dt'] = pd.to_datetime(result_df['game_date_str']) # Use dt for sorting
+            result_df_sorted = result_df.sort_values(by=[ump_col, 'game_date_dt']) # Work on sorted copy
 
+            # Calculate expanding mean *only* on historical, known umpires
+            mask_known_ump = result_df_sorted[ump_col] != 'Unknown'
+            known_ump_metric_series = result_df_sorted.loc[mask_known_ump, historical_metric]
+
+            if not known_ump_metric_series.empty:
+                 # Calculate shifted expanding mean within each known umpire group
+                 hist_tendency = result_df_sorted.loc[mask_known_ump].groupby(ump_col)[historical_metric].shift(1).expanding().mean()
+                 # Assign calculated values back using the index from hist_tendency
+                 result_df_sorted.loc[hist_tendency.index, hist_ump_col] = hist_tendency
+            else:
+                 logger.warning("No data with known umpires to calculate historical tendency.")
+
+            # Impute missing historical values after calculation
+            global_metric_mean = result_df_sorted.loc[mask_known_ump, historical_metric].mean() # Recalculate mean on valid data
+            fill_value_hist = global_metric_mean if pd.notna(global_metric_mean) else 0
+            missing_hist_mask = result_df_sorted[hist_ump_col].isnull()
+            missing_hist_count = missing_hist_mask.sum()
+            if missing_hist_count > 0:
+                 logger.info(f"Filling {missing_hist_count} missing umpire historical {historical_metric} with average ({fill_value_hist:.4f}) or 0 fallback.")
+                 result_df_sorted.loc[missing_hist_mask, hist_ump_col] = fill_value_hist
+
+            # Create interaction term
+            ewma_k_metric = f'ewma_10g_{historical_metric}'
+            if ewma_k_metric in result_df_sorted.columns:
+                 result_df_sorted[boost_col] = result_df_sorted[ewma_k_metric] - result_df_sorted[hist_ump_col]
+                 boost_nan_mask = result_df_sorted[boost_col].isnull()
+                 boost_nan_count = boost_nan_mask.sum()
+                 if boost_nan_count > 0:
+                      logger.info(f"Filling {boost_nan_count} NaNs in '{boost_col}' with 0.")
+                      result_df_sorted.loc[boost_nan_mask, boost_col] = 0
+            else:
+                 logger.warning(f"Could not create pitcher-umpire interaction: '{ewma_k_metric}' missing.")
+                 # boost_col already initialized to NaN
+
+            # Assign results back to the original DataFrame index structure
+            result_df[hist_ump_col] = result_df_sorted[hist_ump_col]
+            result_df[boost_col] = result_df_sorted[boost_col]
+
+            result_df = result_df.drop(columns=['game_date_dt'], errors='ignore')
+
+        except Exception as e:
+            logger.error(f"Error during historical umpire tendency calculation: {e}", exc_info=True)
+            # Ensure columns exist with NaN if calculation fails
+            result_df[hist_ump_col] = np.nan
+            result_df[boost_col] = np.nan
+
+    # --- Final Cleanup ---
+    # Drop helper date string column
+    result_df = result_df.drop(columns=['game_date_str'], errors='ignore')
 
     logger.info("Completed umpire feature creation.")
-    return result_df # Return modified df
+    return result_df
 
 def create_platoon_features(df, pitch_data, group_col='pitcher_id', date_col='game_date'):
     """Creates features based on pitcher performance vs LHB/RHB."""
@@ -573,91 +596,109 @@ def final_cleanup_and_imputation(df):
     return df_copy # Return modified df
 
 # --- Main Feature Pipeline Function ---
-def create_pitcher_features(pitcher_data, team_stats_data, umpire_data, pitch_data):
+def create_pitcher_features(pitcher_data, # In train mode, this is all historical data. In pred mode, this is ONLY the prediction baseline rows.
+                            historical_pitcher_stats, # ONLY provided in prediction mode. Contains calculated historical data up to day before prediction.
+                            team_stats_data, # Historical team stats
+                            umpire_data, # Historical umpires (train) or Predicted umpires (pred)
+                            pitch_data, # Historical minimal pitch data
+                            prediction_mode=False # Flag to indicate mode
+                           ):
     """
     Orchestrates the creation of all pitcher-related features.
-
-    Args:
-        pitcher_data (pd.DataFrame): Game-level pitcher stats (e.g., from game_level_pitchers).
-                                      MUST contain 'pitcher_id', 'game_pk', 'game_date',
-                                      'home_team', 'away_team', 'opponent_team'.
-        team_stats_data (pd.DataFrame): Game-level team stats (e.g., from game_level_team_stats).
-        umpire_data (pd.DataFrame): Umpire assignments (game_date, home_team, away_team, umpire).
-        pitch_data (pd.DataFrame): Minimal pitch-level data (for platoon splits).
-
-    Returns:
-        pd.DataFrame: DataFrame with all features included. Returns empty DataFrame on critical error.
+    Handles prediction mode by merging pre-calculated historical context.
     """
-    logger.info("Starting pitcher feature engineering pipeline...")
+    logger.info(f"Starting pitcher feature engineering pipeline (Prediction Mode: {prediction_mode})...")
+
+    # Input validation
     if pitcher_data is None or pitcher_data.empty:
-        logger.error("Input pitcher_data is None or empty. Cannot create features.")
+        logger.error("Input pitcher_data (baseline features) is None or empty. Cannot create features.")
+        return pd.DataFrame()
+    if prediction_mode and (historical_pitcher_stats is None or historical_pitcher_stats.empty):
+        logger.error("Prediction mode requires historical_pitcher_stats, but it's missing or empty.")
         return pd.DataFrame()
 
-    # Ensure pitcher_data is a copy to avoid modifying the original DataFrame outside this function
+
+    # Ensure pitcher_data is a copy
     features_df = pitcher_data.copy()
+    logger.info(f"Input baseline data shape: {features_df.shape}")
 
-    logger.info(f"Input data shape to feature engineering: {features_df.shape}")
-
-    # Check for essential columns early
-    required_cols = ['pitcher_id', 'game_pk', 'game_date', 'home_team', 'away_team', 'opponent_team']
-    missing = [c for c in required_cols if c not in features_df.columns]
-    if missing:
-         logger.error(f"Input pitcher_data missing required columns: {missing}. Cannot proceed.")
-         return pd.DataFrame()
-
-
-    # Define metric groups - check if columns exist in input df
-    recency_metrics_all = ['strikeouts', 'batters_faced', 'innings_pitched', 'total_pitches',
-                           'avg_velocity', 'max_velocity', 'zone_percent', 'swinging_strike_percent',
-                           'fastball_percent', 'breaking_percent', 'offspeed_percent',
-                           'k_percent', 'k_per_9']
-    trend_metrics_all = ['strikeouts', 'innings_pitched', 'batters_faced', 'swinging_strike_percent',
-                         'avg_velocity', 'k_percent', 'k_per_9']
+    # --- Define Metric Groups ---
+    # (These definitions remain the same)
+    recency_metrics_all = ['strikeouts', 'batters_faced', 'innings_pitched', 'total_pitches', 'avg_velocity', 'max_velocity', 'zone_percent', 'swinging_strike_percent', 'fastball_percent', 'breaking_percent', 'offspeed_percent', 'k_percent', 'k_per_9']
+    trend_metrics_all = ['strikeouts', 'innings_pitched', 'batters_faced', 'swinging_strike_percent', 'avg_velocity', 'k_percent', 'k_per_9']
     arsenal_metrics_all = ['fastball_percent', 'breaking_percent', 'offspeed_percent']
-    opponent_metrics_all = ['k_percent', 'bb_percent', 'swing_percent', 'contact_percent',
-                            'swinging_strike_percent', 'chase_percent', 'zone_contact_percent'] # From game_level_team_stats
+    opponent_metrics_all = ['k_percent', 'bb_percent', 'swing_percent', 'contact_percent', 'swinging_strike_percent', 'chase_percent', 'zone_contact_percent']
 
-    # Filter metrics based on columns actually present in the input dataframes
-    recency_metrics = [m for m in recency_metrics_all if m in features_df.columns]
-    trend_metrics = [m for m in trend_metrics_all if m in features_df.columns]
-    arsenal_metrics = [m for m in arsenal_metrics_all if m in features_df.columns]
-    opponent_metrics = [m for m in opponent_metrics_all if team_stats_data is not None and m in team_stats_data.columns]
+    # --- Historical Feature Calculation (Done Differently for Train vs. Pred) ---
+    if prediction_mode:
+        logger.info("Prediction Mode: Selecting latest historical features...")
+        # historical_pitcher_stats should contain pre-calculated lags/EWMAs up to the day before prediction_date
+        # We need to select the *most recent* record for each pitcher_id needed for prediction.
+        required_pitcher_ids = features_df['pitcher_id'].unique()
 
-    # Pipeline Steps (wrap each major step in try-except)
-    try:
+        # Filter historical stats to only include pitchers needed for prediction
+        hist_filtered = historical_pitcher_stats[historical_pitcher_stats['pitcher_id'].isin(required_pitcher_ids)].copy()
+
+        # Sort by pitcher and date, then keep the last (most recent) entry for each pitcher
+        hist_latest = hist_filtered.sort_values(by=['pitcher_id', 'game_date']).drop_duplicates(subset=['pitcher_id'], keep='last')
+
+        # Identify columns generated by historical calculations (lags, EWMAs, trends, rest, arsenal)
+        # This requires knowing the output column names from those functions.
+        # Example (adjust based on actual function outputs):
+        hist_feature_cols = [col for col in hist_latest.columns if col.startswith(('ewma_', '_lag', '_change', '_volatility', '_last2g', 'days_since', 'rest_days', 'ip_last', 'pitches_last', '_vs_baseline', 'significant_velo', 'k_trend_'))]
+        cols_to_merge = ['pitcher_id'] + hist_feature_cols
+
+        logger.info(f"Merging {len(cols_to_merge)-1} latest historical features onto prediction baseline...")
+        # Merge the latest historical features onto the prediction baseline df
+        features_df = pd.merge(features_df, hist_latest[cols_to_merge], on='pitcher_id', how='left')
+
+        # Impute missing historical features (e.g., for pitchers with no history)
+        # Use median from the historical data used for the merge
+        for col in hist_feature_cols:
+             if col in features_df.columns and features_df[col].isnull().any():
+                  median_val = hist_latest[col].median() # Use median from latest historical
+                  fill_val = median_val if pd.notna(median_val) else 0 # Fallback to 0
+                  nan_count = features_df[col].isnull().sum()
+                  logger.info(f"Imputing {nan_count} missing values in '{col}' (likely new pitcher) with median {fill_val:.4f} (or 0).")
+                  features_df[col] = features_df[col].fillna(fill_val)
+
+    else: # Training Mode: Calculate historical features directly on the combined train/test baseline data
+        logger.info("Training Mode: Calculating historical features...")
+        # Filter metrics based on columns actually present in the baseline data
+        recency_metrics = [m for m in recency_metrics_all if m in features_df.columns]
+        trend_metrics = [m for m in trend_metrics_all if m in features_df.columns]
+        arsenal_metrics = [m for m in arsenal_metrics_all if m in features_df.columns]
+
+        # Apply historical calculations directly to features_df
         features_df = create_recency_weighted_features(features_df, recency_metrics)
-        logger.info(f"Shape after recency features: {features_df.shape}")
-
         features_df = create_trend_features(features_df, trend_metrics)
-        logger.info(f"Shape after trend features: {features_df.shape}")
-        # DEBUG LOGGING ADDED HERE
-        logger.debug(f"Columns BEFORE create_rest_features: {features_df.columns.tolist()}") # <-- ADDED
-
-        features_df = create_rest_features(features_df)
-        logger.info(f"Shape after rest features: {features_df.shape}")
-        # DEBUG LOGGING ADDED HERE
-        logger.debug(f"Columns AFTER create_rest_features: {features_df.columns.tolist()}") # <-- ADDED
-        if 'fastball_percent_lag1' not in features_df.columns and 'fastball_percent' in trend_metrics : # Check if it should exist
-            logger.error("CRITICAL DEBUG: 'fastball_percent_lag1' is MISSING after create_rest_features!")
-            # Optionally: raise Exception("Lag column lost after rest features") to stop execution
-
+        features_df = create_rest_features(features_df) # This needs careful review of index handling
         features_df = create_arsenal_features(features_df, arsenal_metrics)
-        logger.info(f"Shape after arsenal features: {features_df.shape}")
+        # Check for NaNs introduced here if necessary
+
+    # --- Contextual Features (Applied to the result in both modes) ---
+    try:
+        # Filter opponent metrics based on columns available in historical team_stats_data
+        opponent_metrics = [m for m in opponent_metrics_all if team_stats_data is not None and m in team_stats_data.columns]
+        if not opponent_metrics: logger.warning("No valid opponent metrics found in team_stats_data.")
 
         features_df = create_opponent_features(features_df, team_stats_data, opponent_metrics)
         logger.info(f"Shape after opponent features: {features_df.shape}")
 
-        features_df = create_umpire_features(features_df, umpire_data)
+        # Umpire features: Use the umpire_data provided (predicted or actual)
+        features_df = create_umpire_features(features_df, umpire_data, historical_metric='k_per_9') # Use k_per_9 as example metric
         logger.info(f"Shape after umpire features: {features_df.shape}")
 
+        # Platoon features: Needs historical pitch_data
         features_df = create_platoon_features(features_df, pitch_data)
         logger.info(f"Shape after platoon features: {features_df.shape}")
 
         # Final Cleanup
         features_df = final_cleanup_and_imputation(features_df)
+        logger.info(f"Shape after final cleanup: {features_df.shape}")
 
     except Exception as e:
-        logger.error(f"Error occurred during feature creation steps: {e}", exc_info=True)
+        logger.error(f"Error occurred during contextual feature creation steps: {e}", exc_info=True)
         return pd.DataFrame() # Return empty DataFrame on error
 
     logger.info(f"Completed pitcher feature engineering. Final shape: {features_df.shape}")

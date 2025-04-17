@@ -78,107 +78,101 @@ def extract_player_id_from_link(link_href):
 # --- Main Scraping Function (MODIFIED to accept date and build URL) ---
 def scrape_probable_pitchers(target_date_str, team_mapping_df):
     """
-    Scrapes MLB.com for probable pitchers for a SPECIFIC DATE.
-    Uses the provided team mapping to identify team IDs/abbreviations.
-
-    Args:
-        target_date_str (str): The target date in 'YYYY-MM-DD' format.
-        team_mapping_df (pd.DataFrame): DataFrame loaded from the team_mapping table.
-
-    Returns:
-        list: A list of dictionaries, each containing game and probable pitcher info.
-              Returns empty list on failure.
+    Scrape MLB.com for probable pitchers on a specific date.
+    Returns a list of dicts, each with exactly:
+      game_date,
+      home_team (3‑letter abbr),
+      away_team (3‑letter abbr),
+      home_pitcher_name,
+      home_pitcher_id,
+      away_pitcher_name,
+      away_pitcher_id
     """
+    # fallback empty mapping
     if team_mapping_df is None or team_mapping_df.empty:
-         logger.warning("Team mapping data missing/empty. Team names/abbrs will be missing.")
-         team_mapping_df = pd.DataFrame(columns=['team_id', 'team_name', 'team_abbr']) # Empty placeholder
+        team_mapping_df = pd.DataFrame(columns=['team_id','team_name','team_abbr'])
 
-    # Construct the target URL using the date
-    target_url = f"{BASE_URL_PROBABLE}{target_date_str}"
-    logger.info(f"Attempting to scrape probable pitchers from: {target_url}")
-    scraped_games = []
+    # build a quick lookup for team_id → abbr
+    id_to_abbr = dict(zip(
+        team_mapping_df['team_id'], 
+        team_mapping_df['team_abbr']
+    ))
 
+    # construct URL
+    url = f"{BASE_URL_PROBABLE}{target_date_str}"
+    time.sleep(DataConfig.RATE_LIMIT_PAUSE)
     try:
-        time.sleep(DataConfig.RATE_LIMIT_PAUSE)
-        response = requests.get(target_url, headers=HEADERS, timeout=20)
-        # Check if the page for the specific date exists (MLB.com might 404 for dates too far out/past)
-        if response.status_code == 404:
-             logger.warning(f"Page not found (404) for date {target_date_str} at {target_url}. No games to scrape.")
-             return [] # Return empty list, not an error
-        response.raise_for_status() # Raise errors for other issues (5xx, etc.)
-        soup = BeautifulSoup(response.content, 'html.parser')
+        resp = requests.get(url, headers=HEADERS, timeout=20)
+        if resp.status_code == 404:
+            return []  # no games that day
+        resp.raise_for_status()
+    except Exception as e:
+        logger.error(f"HTTP error for {url}: {e}")
+        return []
 
-        # --- Game Container Parsing (Using selectors from previous version) ---
-        game_containers = soup.find_all('div', class_=lambda x: x and 'probable-pitchers__matchup' in x.split())
-        if not game_containers:
-            logger.error(f"Could not find game containers on {target_url}. Scraping failed.")
-            return []
+    soup = BeautifulSoup(resp.content, 'html.parser')
+    containers = soup.find_all(
+        'div',
+        class_=lambda c: c and 'probable-pitchers__matchup' in c.split()
+    )
+    if not containers:
+        logger.warning(f"No matchups found on {url}.")
+        return []
 
-        logger.info(f"Found {len(game_containers)} potential game containers for {target_date_str}.")
+    results = []
+    for mc in containers:
+        # --- team IDs & abbrs ---
+        game_div = mc.find(
+            'div',
+            class_=lambda c: c and 'probable-pitchers__game' in c.split()
+        )
+        if not game_div:
+            continue
 
-        for game_container in game_containers:
-            game_pk = None; home_team_id = None; away_team_id = None # Ensure defined
-            try:
-                # Extract game_pk
-                game_pk_str = game_container.get('data-game_pk'); game_pk = int(game_pk_str) if game_pk_str and game_pk_str.isdigit() else None
-                if not game_pk: logger.warning("No game_pk found. Skipping container."); continue
+        try:
+            away_tid = int(game_div['data-team-id-away'])
+            home_tid = int(game_div['data-team-id-home'])
+        except Exception:
+            continue
 
-                # Extract Team IDs from attributes
-                game_info_div = game_container.find('div', class_=lambda x: x and 'probable-pitchers__game' in x.split())
-                if game_info_div:
-                    away_id_str = game_info_div.get('data-team-id-away'); home_id_str = game_info_div.get('data-team-id-home')
-                    away_team_id = int(away_id_str) if away_id_str and away_id_str.isdigit() else None
-                    home_team_id = int(home_id_str) if home_id_str and home_id_str.isdigit() else None
-                else: logger.warning(f"No 'probable-pitchers__game' div for {game_pk}")
+        away_abbr = id_to_abbr.get(away_tid)
+        home_abbr = id_to_abbr.get(home_tid)
 
-                # Lookup Team Names/Abbrs using Scraped IDs
-                home_team_name, home_team_abbr = None, None; away_team_name, away_team_abbr = None, None
-                if home_team_id is not None:
-                    home_match = team_mapping_df[team_mapping_df['team_id'] == home_team_id]
-                    if not home_match.empty: home_team_name=home_match.iloc[0]['team_name']; home_team_abbr=home_match.iloc[0]['team_abbr']
-                    else: logger.warning(f"Could not map home_team_id: {home_team_id}")
-                if away_team_id is not None:
-                    away_match = team_mapping_df[team_mapping_df['team_id'] == away_team_id]
-                    if not away_match.empty: away_team_name=away_match.iloc[0]['team_name']; away_team_abbr=away_match.iloc[0]['team_abbr']
-                    else: logger.warning(f"Could not map away_team_id: {away_team_id}")
+        # --- pitcher blocks ---
+        blocks = mc.find_all('div', class_='probable-pitchers__pitcher-summary')
+        if len(blocks) < 2:
+            continue
 
-                # Extract Pitchers
-                pitcher_summaries = game_container.find_all('div', class_='probable-pitchers__pitcher-summary')
-                away_pitcher_name, away_pitcher_id = None, None; home_pitcher_name, home_pitcher_id = None, None
-                if len(pitcher_summaries) >= 1:
-                    name_div = pitcher_summaries[0].find('div', class_='probable-pitchers__pitcher-name'); link_tag = name_div.find('a', href=True) if name_div else None
-                    if link_tag: away_pitcher_name=link_tag.get_text(strip=True); away_pitcher_id=extract_player_id_from_link(link_tag['href'])
-                    elif name_div: away_pitcher_name=name_div.get_text(strip=True)
-                if len(pitcher_summaries) >= 2:
-                    name_div = pitcher_summaries[1].find('div', class_='probable-pitchers__pitcher-name'); link_tag = name_div.find('a', href=True) if name_div else None
-                    if link_tag: home_pitcher_name=link_tag.get_text(strip=True); home_pitcher_id=extract_player_id_from_link(link_tag['href'])
-                    elif name_div: home_pitcher_name=name_div.get_text(strip=True)
+        def parse_pitcher(block):
+            name_div = block.find('div', class_='probable-pitchers__pitcher-name')
+            link = name_div.find('a', href=True) if name_div else None
+            if link:
+                nm = link.get_text(strip=True)
+                pid = extract_player_id_from_link(link['href'])
+            else:
+                nm = name_div.get_text(strip=True) if name_div else None
+                pid = None
+            return nm, pid
 
-                # Handle TBD
-                if not away_pitcher_name or "tbd" in away_pitcher_name.lower() or not home_pitcher_name or "tbd" in home_pitcher_name.lower():
-                    logger.info(f"Skipping game {game_pk} due to TBD pitcher.")
-                    continue
+        away_name, away_pid = parse_pitcher(blocks[0])
+        home_name, home_pid = parse_pitcher(blocks[1])
 
-                # Create final data dict (using target_date_str as game_date)
-                game_data = {
-                    "game_pk": game_pk, "game_date": target_date_str, # Use the input date
-                    "home_team_name": home_team_name, "away_team_name": away_team_name,
-                    "home_probable_pitcher_name": home_pitcher_name, "home_probable_pitcher_id": home_pitcher_id,
-                    "away_probable_pitcher_name": away_pitcher_name, "away_probable_pitcher_id": away_pitcher_id,
-                    "home_team_id": home_team_id, "away_team_id": away_team_id,
-                    "home_team": home_team_abbr, "away_team": away_team_abbr,
-                }
-                scraped_games.append(game_data)
+        # skip if TBD or missing
+        if not away_name or 'tbd' in away_name.lower() or not home_name or 'tbd' in home_name.lower():
+            continue
 
-            except Exception as e: 
-                logger.error(f"Error parsing game container (Game_PK: {game_pk if game_pk else 'Unknown'}): {e}.")
-                continue
+        results.append({
+            "game_date":          target_date_str,
+            "home_team":          home_abbr,
+            "away_team":          away_abbr,
+            "home_pitcher_name":  home_name,
+            "home_pitcher_id":    home_pid,
+            "away_pitcher_name":  away_name,
+            "away_pitcher_id":    away_pid,
+        })
 
-        logger.info(f"Successfully scraped {len(scraped_games)} games with non-TBD probable pitchers for {target_date_str}.")
-        return scraped_games # Return only the list now
-
-    except requests.exceptions.RequestException as e: logger.error(f"HTTP Error fetching {target_url}: {e}"); return []
-    except Exception as e: logger.error(f"Unexpected error scraping {target_date_str}: {e}"); logger.error(traceback.format_exc()); return []
+    logger.info(f"Scraped {len(results)} matchups for {target_date_str}")
+    return results
 
 # --- Example Usage Block Modified ---
 if __name__ == "__main__":

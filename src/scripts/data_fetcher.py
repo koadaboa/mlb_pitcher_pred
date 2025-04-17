@@ -403,30 +403,84 @@ class DataFetcher:
 
     # --- fetch_scraped_pitcher_data (No changes needed) ---
     def fetch_scraped_pitcher_data(self):
-        # (Keep this function identical to the previous version)
-        if not self.args.mlb_api: logger.info("Skipping pitcher scrape (--mlb-api not set)."); return True
-        if not self.args.date: logger.error("--mlb-api requires --date."); return False
-        if not MODULE_IMPORTS_OK or 'scrape_probable_pitchers' not in globals() or 'load_team_mapping' not in globals(): logger.error("Scraper/mapping fn not available."); return False
-        if 'requests' not in sys.modules or 'bs4' not in sys.modules: logger.error("'requests'/'bs4' required."); return False
-        target_date_str = self.target_fetch_date_obj.strftime("%Y-%m-%d"); logger.info(f"Starting pitcher scraping for: {target_date_str}")
-        if self.team_mapping_df is None: logger.error("Team mapping needed but not loaded."); return False
-        daily_pitcher_data = scrape_probable_pitchers(target_date_str, self.team_mapping_df)
+        """Scrape and store only the seven desired columns, replacing the mlb_api table."""
+        if not self.args.mlb_api:
+            logger.info("Skipping pitcher scrape (--mlb-api not set).")
+            return True
+
+        if not self.args.date:
+            logger.error("--mlb-api requires --date.")
+            return False
+
+        logger.info(f"Starting pitcher scraping for: {self.target_fetch_date_obj.strftime('%Y-%m-%d')}")
+        if self.team_mapping_df is None:
+            logger.error("Team mapping needed but not loaded.")
+            return False
+
+        # 1) scrape
+        daily_pitcher_data = scrape_probable_pitchers(
+            self.target_fetch_date_obj.strftime("%Y-%m-%d"),
+            self.team_mapping_df
+        )
+
+        # 2) if we got anything back, turn into a DataFrame and keep only the seven fields
         if daily_pitcher_data:
             try:
                 pdf = pd.DataFrame(daily_pitcher_data)
-                if 'game_date' not in pdf.columns or pdf['game_date'].isnull().all(): pdf['game_date'] = target_date_str
-                exp_cols = ['gamePk','game_date','home_team_id','home_team_name','home_team_abbr','away_team_id','away_team_name','away_team_abbr','home_probable_pitcher_id','home_probable_pitcher_name','away_probable_pitcher_id','away_probable_pitcher_name']
-                for col in exp_cols:
-                     if col not in pdf.columns: pdf[col] = pd.NA
-                for col_id in ['gamePk','home_team_id','away_team_id','home_probable_pitcher_id','away_probable_pitcher_id']: pdf[col_id] = pd.to_numeric(pdf[col_id], errors='coerce').astype('Int64')
-                pdf = pdf[exp_cols]; logger.info(f"Storing {len(pdf)} scraped entries for {target_date_str} (replacing)...")
-                success = store_data_to_sql(pdf, 'mlb_api', self.db_path, if_exists='replace')
-                if success: self.checkpoint_manager.add_processed_mlb_api_date(target_date_str); logger.info(f"Stored scraped data for {target_date_str}.")
-                else: logger.error(f"Failed store scraped data for {target_date_str}."); return False
-            except Exception as e: logger.error(f"Error proc/store scraped {target_date_str}: {e}"); logger.error(traceback.format_exc()); return False
-        elif daily_pitcher_data is None: logger.error(f"Scraping failed critically for {target_date_str}."); return False
-        else: logger.info(f"No pitchers scraped for {target_date_str}.")
-        logger.info(f"Pitcher scraping finished for {target_date_str}."); self.checkpoint_manager.save_overall_checkpoint()
+
+                # Ensure game_date column exists
+                if 'game_date' not in pdf.columns or pdf['game_date'].isnull().all():
+                    pdf['game_date'] = self.target_fetch_date_obj.strftime("%Y-%m-%d")
+
+                # Rename to your preferred storage column names:
+                pdf = pdf.rename(columns={
+                    "home_team":           "home_team_abbr",
+                    "away_team":           "away_team_abbr",
+                    "home_pitcher_name":   "home_probable_pitcher_name",
+                    "away_pitcher_name":   "away_probable_pitcher_name",
+                    "home_pitcher_id":     "home_probable_pitcher_id",
+                    "away_pitcher_id":     "away_probable_pitcher_id",
+                })
+
+                # Select and order exactly the seven columns you want:
+                pdf = pdf[[
+                    "game_date",
+                    "home_team_abbr",
+                    "away_team_abbr",
+                    "home_probable_pitcher_name",
+                    "home_probable_pitcher_id",
+                    "away_probable_pitcher_name",
+                    "away_probable_pitcher_id"
+                ]]
+
+                logger.info(f"Storing {len(pdf)} scraped entries for {self.target_fetch_date_obj} (replacing)...")
+
+                # 3) replace the table with only these seven columns
+                success = store_data_to_sql(
+                    pdf,
+                    'mlb_api',
+                    self.db_path,
+                    if_exists='replace'   # DROP & recreate with our seven columns
+                )
+                if success:
+                    self.checkpoint_manager.add_processed_mlb_api_date(
+                        self.target_fetch_date_obj.strftime("%Y-%m-%d")
+                    )
+                    logger.info(f"Stored scraped data for {self.target_fetch_date_obj}.")
+                else:
+                    logger.error(f"Failed store scraped data for {self.target_fetch_date_obj}.")
+                    return False
+
+            except Exception as e:
+                logger.error(f"Error processing/storing scraped data: {e}")
+                logger.error(traceback.format_exc())
+                return False
+
+        else:
+            logger.info(f"No pitchers scraped for {self.target_fetch_date_obj}.")
+
+        logger.info(f"Pitcher scraping finished for {self.target_fetch_date_obj}.")
+        self.checkpoint_manager.save_overall_checkpoint()
         return True
 
     # --- run Method (MODIFIED to use single_date_historical_mode flag) ---
