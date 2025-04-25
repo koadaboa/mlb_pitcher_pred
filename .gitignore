@@ -12,6 +12,7 @@ models/
 logs/
 plots/
 notebooks/
+*.csv
 
 # windsurf rules
 .windsurfrules

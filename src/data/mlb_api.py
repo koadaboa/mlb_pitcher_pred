@@ -81,6 +81,7 @@ def scrape_probable_pitchers(target_date_str, team_mapping_df):
     Scrape MLB.com for probable pitchers on a specific date.
     Returns a list of dicts, each with exactly:
       game_date,
+      game_pk,
       home_team (3‑letter abbr),
       away_team (3‑letter abbr),
       home_pitcher_name,
@@ -138,6 +139,13 @@ def scrape_probable_pitchers(target_date_str, team_mapping_df):
         away_abbr = id_to_abbr.get(away_tid)
         home_abbr = id_to_abbr.get(home_tid)
 
+        # --- game PK ---
+        game_pk_str = mc.get('data-gamepk') or mc.get('data-game-pk') or mc.get('data-game_pk')
+        game_pk = int(game_pk_str) if game_pk_str and game_pk_str.isdigit() else None
+        if not game_pk:
+            logger.warning("No game_pk found. Skipping container.")
+            continue
+
         # --- pitcher blocks ---
         blocks = mc.find_all('div', class_='probable-pitchers__pitcher-summary')
         if len(blocks) < 2:
@@ -163,6 +171,7 @@ def scrape_probable_pitchers(target_date_str, team_mapping_df):
 
         results.append({
             "game_date":          target_date_str,
+            "game_pk":            game_pk,
             "home_team":          home_abbr,
             "away_team":          away_abbr,
             "home_pitcher_name":  home_name,

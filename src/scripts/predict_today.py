@@ -10,6 +10,7 @@ import json
 import argparse
 import logging
 import sys
+import subprocess  # run feature pipeline
 from datetime import datetime
 from pathlib import Path
 
@@ -54,6 +55,14 @@ def parse_args():
 def predict_strikeouts(args):
     """Loads data, finds artifacts, generates predictions, and saves results."""
     logger.info(f"Starting predictions for date: {args.prediction_date} using model type: {args.model_type}")
+    # Ensure features are generated for this date
+    logger.info(f"Running feature pipeline for date: {args.prediction_date}")
+    try:
+        subprocess.check_call([sys.executable, "-m", "src.scripts.run_feature_pipeline", "--prediction-date", args.prediction_date])
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Feature pipeline failed: {e}")
+        sys.exit(e.returncode)
+
     db_path = Path(DBConfig.PATH)
     model_dir = Path(FileConfig.MODELS_DIR)
     model_dir.mkdir(parents=True, exist_ok=True) # Ensure model dir exists
@@ -170,6 +179,20 @@ def predict_strikeouts(args):
         logger.error(f"Features required by the model are missing from the prediction data: {missing_features}")
         logger.error("Cannot proceed with prediction. Check feature engineering step.")
         sys.exit(1)
+
+    # --- *** VERIFY Feature List Correctness *** ---
+    # Use TARGET_ENCODING_COLS imported from config
+    original_categorical_cols = StrikeoutModelConfig.TARGET_ENCODING_COLS
+
+    # Check if the feature_columns list loaded from the file accidentally contains originals
+    originals_in_feature_list = [col for col in original_categorical_cols if col in feature_columns]
+    if originals_in_feature_list:
+         logger.error(f"CRITICAL: The loaded feature list ({feature_list_path.name}) contains original categorical columns that should have been encoded: {originals_in_feature_list}")
+         logger.error(f"Model expects encoded features only. Ensure the feature list saved during training (e.g., in {model_dir}) is correct.")
+         sys.exit(1)
+    else:
+         logger.info("Verified: Loaded feature list does not contain original categorical columns from config.")
+    # --- *** END VERIFICATION *** ---
 
     X_pred = pred_data[feature_columns].copy()
 

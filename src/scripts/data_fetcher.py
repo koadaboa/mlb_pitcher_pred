@@ -1,3 +1,4 @@
+# src/scripts/data_fetcher.py
 import sqlite3
 import pandas as pd
 import numpy as np
@@ -30,18 +31,7 @@ try:
     MODULE_IMPORTS_OK = True
 except ImportError as e:
     print(f"ERROR: Imports failed: {e}"); MODULE_IMPORTS_OK = False
-    # Dummy definitions (same as before)
-    def setup_logger(n, level=logging.INFO, log_file=None): logging.basicConfig(level=level); return logging.getLogger(n)
-    def ensure_dir(p): Path(p).mkdir(parents=True, exist_ok=True)
-    class DBConnection:
-        def __init__(self,p):self.p=p; self.conn=None
-        def __enter__(self): import sqlite3; print("WARN: Dummy DB"); self.conn=sqlite3.connect(self.p); return self.conn
-        def __exit__(self,t,v,tb):
-            if self.conn: self.conn.close()
-    class DBConfig: PATH="data/pitcher_stats.db"; BATCH_SIZE=1000
-    class DataConfig: SEASONS=[2024]; RATE_LIMIT_PAUSE=1; CHUNK_SIZE = 14
-    def scrape_probable_pitchers(tds, tm): return []
-    def load_team_mapping(p): return None
+    
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
@@ -102,33 +92,31 @@ class DataFetcher:
     def __init__(self, args):
         if not MODULE_IMPORTS_OK: raise ImportError("Modules not imported.")
         self.args = args; self.db_path = project_root / DBConfig.PATH
-        # *** MODIFIED: Determine mode based on --date presence for historical runs ***
         self.single_date_historical_mode = (not args.mlb_api and args.date is not None)
 
         if self.single_date_historical_mode:
              logger.info("Running in Single-Date Historical Fetch mode.")
              try: self.target_fetch_date_obj = datetime.strptime(args.date, "%Y-%m-%d").date()
              except ValueError: logger.error(f"Invalid date: {args.date}."); sys.exit(1)
-             self.seasons_to_fetch = [self.target_fetch_date_obj.year] # Only fetch target year
-             self.end_date_limit = self.target_fetch_date_obj # End limit is the target date
+             self.seasons_to_fetch = [self.target_fetch_date_obj.year]
+             self.end_date_limit = self.target_fetch_date_obj
         elif args.mlb_api:
              logger.info("Running in MLB API Scraper mode.")
              if not args.date: logger.error("--mlb-api requires --date."); sys.exit(1)
              try: self.target_fetch_date_obj = datetime.strptime(args.date, "%Y-%m-%d").date()
              except ValueError: logger.error(f"Invalid date: {args.date}."); sys.exit(1)
-             self.seasons_to_fetch = [] # No historical seasons needed
+             self.seasons_to_fetch = []
              self.end_date_limit = self.target_fetch_date_obj
-        else: # Default historical backfill mode (no --date or --mlb-api)
+        else: # Default historical backfill mode
              logger.info("Running in Full Historical Backfill mode.")
              self.seasons_to_fetch = sorted(args.seasons if args.seasons else DataConfig.SEASONS)
-             self.end_date_limit = date.today() - timedelta(days=1) # Default to yesterday
-             self.target_fetch_date_obj = self.end_date_limit # Set target for consistency
+             self.end_date_limit = date.today() - timedelta(days=1)
+             self.target_fetch_date_obj = self.end_date_limit
 
         self.end_date_limit_str = self.end_date_limit.strftime('%Y-%m-%d')
         logger.info(f"Effective End Date Limit: {self.end_date_limit_str}")
         logger.info(f"Seasons to consider for fetching: {self.seasons_to_fetch}")
 
-        # Rest of init remains the same
         self.checkpoint_manager = CheckpointManager()
         signal.signal(signal.SIGINT, self.handle_interrupt); signal.signal(signal.SIGTERM, self.handle_interrupt)
         try: pb.cache.enable()
@@ -154,29 +142,28 @@ class DataFetcher:
             try:
                 with DBConnection(self.db_path) as conn:
                     cursor = conn.cursor(); cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='pitcher_mapping'")
-                    if cursor.fetchone():
-                        pm = pd.read_sql_query("SELECT * FROM pitcher_mapping", conn)
-                        if not pm.empty:
-                            if 'pitcher_id' not in pm.columns and 'key_mlbam' in pm.columns: logger.warning("Renaming key_mlbam->pitcher_id."); pm.rename(columns={'key_mlbam': 'pitcher_id'}, inplace=True)
-                            if 'pitcher_id' in pm.columns and 'name' in pm.columns: logger.info(f"Loaded {len(pm)} mappings."); return pm
-                            else: logger.error("Mapping missing columns. Refetching.")
-                        else: logger.warning("Mapping table empty. Refetching.")
-                    else: logger.warning("Mapping table not found. Refetching.")
+                    if cursor.fetchone(): pm = pd.read_sql_query("SELECT * FROM pitcher_mapping", conn)
+                    else: logger.warning("Mapping table not found."); pm = pd.DataFrame()
+                if not pm.empty:
+                    if 'pitcher_id' not in pm.columns and 'key_mlbam' in pm.columns: pm.rename(columns={'key_mlbam': 'pitcher_id'}, inplace=True)
+                    if 'pitcher_id' in pm.columns and 'name' in pm.columns: logger.info(f"Loaded {len(pm)} mappings."); return pm
+                    else: logger.error("Mapping missing columns. Refetching.")
+                else: logger.warning("Mapping table empty. Refetching.")
             except Exception as e: logger.warning(f"Failed load mapping ({e}). Refetching.")
             self.checkpoint_manager.current_checkpoint['pitcher_mapping_completed'] = False
         logger.info(f"Fetching new pitcher mappings...");
         try: pl = self.fetch_with_retries(pb.chadwick_register)
         except Exception as e: logger.error(f"Chadwick failed: {e}"); return pd.DataFrame()
-        ap = []; seasons_for_map = [s for s in (self.args.seasons or DataConfig.SEASONS) if s <= self.end_date_limit.year] # Use full season list for map
+        ap = []; seasons_for_map = sorted(DataConfig.SEASONS) # Use full season list for map
         for season in tqdm(seasons_for_map, desc="Mapping pitchers"):
-            try:
-                ps = self.fetch_with_retries(pb.pitching_stats, season, season, qual=1); g, gs = ('G', 'GS')
-                if ps.empty or g not in ps.columns or gs not in ps.columns: continue
-                cutoff = (season == self.end_date_limit.year); crit = (ps[gs] >= 1) if cutoff else ((ps[gs] >= 3)|((ps[gs]/ps[g].replace(0,1)>=0.5)&(ps[g]>=5)))
-                st = ps[crit].copy(); idc = 'playerid' if 'playerid' in st.columns else 'IDfg'
-                if st.empty or idc not in st.columns: continue
-                st['is_starter']=1; st['season']=season; st=st.rename(columns={idc:'key_fangraphs'}); ap.append(st[['key_fangraphs','is_starter','season']])
-            except Exception as e: logger.error(f"Error mapping {season}: {e}")
+             try:
+                  ps = self.fetch_with_retries(pb.pitching_stats, season, season, qual=1); g, gs = ('G', 'GS')
+                  if ps.empty or g not in ps.columns or gs not in ps.columns: continue
+                  crit = (ps[gs] >= 1) if season == date.today().year else ((ps[gs] >= 3)|((ps[gs]/ps[g].replace(0,1)>=0.5)&(ps[g]>=5)))
+                  st = ps[crit].copy(); idc = 'playerid' if 'playerid' in st.columns else 'IDfg'
+                  if st.empty or idc not in st.columns: continue
+                  st['is_starter']=1; st['season']=season; st=st.rename(columns={idc:'key_fangraphs'}); ap.append(st[['key_fangraphs','is_starter','season']])
+             except Exception as e: logger.error(f"Error mapping {season}: {e}")
         if not ap: logger.error("No starter data."); return pd.DataFrame()
         apdf=pd.concat(ap,ignore_index=True); plf=pl[['key_fangraphs','key_mlbam','name_first','name_last']].dropna(subset=['key_fangraphs','key_mlbam'])
         try:
@@ -193,22 +180,39 @@ class DataFetcher:
         else: logger.error("Final mapping empty."); return pd.DataFrame()
         return fm
 
-    # --- fetch_statcast_for_pitcher (MODIFIED for single date mode) ---
+    # --- fetch_statcast_for_pitcher (MODIFIED for conditional fetch) ---
     def fetch_statcast_for_pitcher(self, pitcher_id, name, seasons_list):
         """ Fetch Statcast data for a single pitcher. """
-        # In single date mode, always fetch the target date, ignore checkpoint
         if self.single_date_historical_mode:
-            s_str = self.target_fetch_date_obj.strftime("%Y-%m-%d")
-            e_str = s_str # Fetch only one day
+            target_date_str = self.target_fetch_date_obj.strftime("%Y-%m-%d")
             target_season = self.target_fetch_date_obj.year
-            logger.debug(f" -> Fetch P {name} ({pitcher_id}) for single date: {s_str}")
+
+            # *** ADDED: Check if data already exists for this date ***
+            data_exists = False
             try:
-                pd_data = self.fetch_with_retries(pb.statcast_pitcher, s_str, e_str, pitcher_id)
+                with DBConnection(self.db_path) as conn:
+                    cursor = conn.cursor()
+                    query = "SELECT COUNT(*) FROM statcast_pitchers WHERE DATE(game_date) = ? AND pitcher = ?"
+                    cursor.execute(query, (target_date_str, pitcher_id))
+                    count = cursor.fetchone()[0]
+                    if count > 0:
+                        data_exists = True
+            except Exception as e:
+                logger.warning(f"DB check failed for pitcher {pitcher_id} on {target_date_str}: {e}. Will attempt fetch.")
+
+            if data_exists:
+                logger.debug(f" -> Skipping P fetch {name} ({pitcher_id}): Data already exists for {target_date_str}")
+                return pd.DataFrame() # Return empty, indicating skip or no new data
+            # *** END ADDED CHECK ***
+
+            # Proceed with fetch only if data doesn't exist
+            logger.debug(f" -> Fetch P {name} ({pitcher_id}) for single date: {target_date_str}")
+            try:
+                pd_data = self.fetch_with_retries(pb.statcast_pitcher, target_date_str, target_date_str, pitcher_id)
                 if not pd_data.empty:
-                    pd_data['pitcher_id'] = pitcher_id
+                    pd_data['pitcher_id'] = pitcher_id # Already correct, but ensure consistency
                     pd_data['season'] = target_season
                     logger.debug(f" -> Fetched {len(pd_data)} rows")
-                    # Combine logic (simple case for single date)
                     try:
                         num_cols = ['release_speed','release_spin_rate','launch_speed','launch_angle']
                         for col in num_cols:
@@ -217,14 +221,14 @@ class DataFetcher:
                         return pd_data
                     except Exception as e: logger.error(f"Error processing P {name} single date: {e}"); return pd.DataFrame()
                 else:
-                    return pd.DataFrame() # No data for that specific date
+                    return pd.DataFrame()
             except Exception as e:
-                logger.error(f" -> Error fetching P {name} ({pitcher_id}) single date {s_str}: {e}")
+                logger.error(f" -> Error fetching P {name} ({pitcher_id}) single date {target_date_str}: {e}")
                 return pd.DataFrame()
         else: # Original historical backfill logic using checkpoints
             if self.checkpoint_manager.is_pitcher_processed(pitcher_id):
                 return pd.DataFrame() # Skip if already processed historically
-
+            # ... (rest of historical backfill logic for this function remains the same) ...
             all_data = []; logger.debug(f"Hist fetch P: {name} ({pitcher_id})")
             relevant_seasons = [s for s in seasons_list if s <= self.end_date_limit.year]
             for s in relevant_seasons:
@@ -244,32 +248,25 @@ class DataFetcher:
                 return cd
             except Exception as e: logger.error(f"Error combine Hist Statcast {name}: {e}"); return pd.DataFrame()
 
-    # --- fetch_all_pitchers (MODIFIED for single date mode) ---
+    # --- fetch_all_pitchers (No changes needed in the structure, only calls modified function) ---
     def fetch_all_pitchers(self, pitcher_mapping):
         """Fetch data for pitchers."""
+        # (Structure remains the same, calls the modified fetch_statcast_for_pitcher)
         if pitcher_mapping is None or pitcher_mapping.empty: logger.error("Mapping empty."); return False
         try: pitcher_mapping['pitcher_id'] = pitcher_mapping['pitcher_id'].astype(int)
         except Exception as e: logger.error(f"Bad pitcher_id: {e}"); return False
-
         p_list = list(zip(pitcher_mapping['pitcher_id'], pitcher_mapping['name']))
-
         if self.single_date_historical_mode:
             logger.info(f"Fetching pitcher Statcast for single date: {self.target_fetch_date_obj.strftime('%Y-%m-%d')}")
-            fetch_args = [(pid, name, []) for pid, name in p_list] # Seasons list is ignored in single date mode
-            total_to_process = len(fetch_args)
-            logger.info(f"Processing {total_to_process} pitchers for the specified date.")
+            fetch_args = [(pid, name, []) for pid, name in p_list] # Seasons list ignored
+            total_to_process = len(fetch_args); logger.info(f"Checking/Processing {total_to_process} pitchers.")
         else: # Historical backfill mode
             fetch_args = [(pid, name, self.seasons_to_fetch) for pid, name in p_list if not self.checkpoint_manager.is_pitcher_processed(pid)]
-            total_to_process = len(fetch_args);
-            processed_count_prev = len(p_list) - total_to_process
+            total_to_process = len(fetch_args); processed_count_prev = len(p_list) - total_to_process
             logger.info(f"{len(p_list)} mapped. Skipping {processed_count_prev} processed. Fetching {total_to_process} historically.")
             if not fetch_args: logger.info("No new pitchers need historical fetching."); return True
-
         proc_c = 0; success_flag = True; data_stored_count = 0
         mode_desc = "Pitcher Statcast (Single Date)" if self.single_date_historical_mode else "Pitcher Statcast (Historical)"
-
-        # --- Parallel/Sequential Execution Logic ---
-        # This part remains largely the same, but the checkpoint logic inside differs
         if self.args.parallel:
             workers = min(12, os.cpu_count() or 1); logger.info(f"Using PARALLEL fetch ({workers} workers).")
             with ThreadPoolExecutor(max_workers=workers) as executor:
@@ -279,20 +276,13 @@ class DataFetcher:
                     try:
                         data = future.result()
                         if data is not None and not data.empty:
-                             # Use append for single date mode, could lead to duplicates if run many times
-                             # A better approach might involve checking if the specific game_pk already exists
-                             save_mode = 'append' # Append works for both modes here
+                             save_mode = 'append'
                              s_ok = store_data_to_sql(data, 'statcast_pitchers', self.db_path, if_exists=save_mode)
-                             if s_ok:
-                                 data_stored_count += len(data)
-                                 # Only checkpoint in historical backfill mode
-                                 if not self.single_date_historical_mode: self.checkpoint_manager.add_processed_pitcher(pid)
-                                 logger.debug(f"Stored {len(data)} for {name}")
+                             if s_ok: data_stored_count += len(data); logger.debug(f"Stored {len(data)} for {name}")
                              else: logger.warning(f"Failed store {name}."); success_flag = False
-                        elif data is not None and not self.single_date_historical_mode:
-                             self.checkpoint_manager.add_processed_pitcher(pid); logger.debug(f"No hist data {name}. Marked processed.")
+                        # Checkpointing only happens in historical mode below (implicitly handled by condition)
+                        if data is not None and not self.single_date_historical_mode: self.checkpoint_manager.add_processed_pitcher(pid)
                         proc_c += 1
-                        # Save checkpoint more frequently in historical mode
                         if not self.single_date_historical_mode and proc_c % 100 == 0: self.checkpoint_manager.save_overall_checkpoint()
                     except Exception as exc: logger.error(f"Pitcher {name} exception: {exc}"); success_flag = False
         else: # Sequential
@@ -303,39 +293,31 @@ class DataFetcher:
                     if data is not None and not data.empty:
                         save_mode = 'append'
                         s_ok = store_data_to_sql(data, 'statcast_pitchers', self.db_path, if_exists=save_mode)
-                        if s_ok:
-                            data_stored_count += len(data)
-                            if not self.single_date_historical_mode: self.checkpoint_manager.add_processed_pitcher(pid)
-                            logger.debug(f"Stored {len(data)} for {name}")
+                        if s_ok: data_stored_count += len(data); logger.debug(f"Stored {len(data)} for {name}")
                         else: logger.warning(f"Failed store {name}."); success_flag = False
-                    elif data is not None and not self.single_date_historical_mode:
-                        self.checkpoint_manager.add_processed_pitcher(pid)
+                    # Checkpointing only happens in historical mode below (implicitly handled by condition)
+                    if data is not None and not self.single_date_historical_mode: self.checkpoint_manager.add_processed_pitcher(pid)
                     proc_c += 1
                     if not self.single_date_historical_mode and (proc_c % 100 == 0 or proc_c == total_to_process): self.checkpoint_manager.save_overall_checkpoint()
                 except Exception as e: logger.error(f"Critical error pitcher {name}: {e}"); logger.error(traceback.format_exc()); success_flag = False
-        # Final checkpoint save for historical mode
         if not self.single_date_historical_mode: self.checkpoint_manager.save_overall_checkpoint()
         logger.info(f"Pitcher Statcast fetching phase complete. Processed {proc_c}/{total_to_process}. Stored {data_stored_count} new rows.");
         return success_flag
 
-    # --- fetch_team_batting_data (MODIFIED for single date mode) ---
+    # --- fetch_team_batting_data (Identical, skips in single-date mode) ---
     def fetch_team_batting_data(self):
         """ Fetch team batting data. Skips if in single date mode. """
         if self.single_date_historical_mode:
             logger.info("Skipping team batting fetch in single-date mode.")
             return True
-        # Original historical backfill logic
         if self.checkpoint_manager.is_completed('team_batting'): logger.info("Team batting done, skipping."); return True
         logger.info(f"Fetching team batting up to {self.end_date_limit.year}"); ad = []
-        # Use the originally configured seasons for historical backfill
         seasons_hist = sorted(self.args.seasons if self.args.seasons else DataConfig.SEASONS)
         seasons_to_check = [s for s in seasons_hist if s <= self.end_date_limit.year]
         for s in tqdm(seasons_to_check, desc="Fetching Team Batting"):
             try:
                 td = self.fetch_with_retries(pb.team_batting, s, s)
-                if not td.empty:
-                    if 'Season' not in td.columns: td['Season'] = s
-                    ad.append(td)
+                if not td.empty: td['Season'] = s; ad.append(td)
             except Exception as e: logger.error(f"Error team batting {s}: {e}")
         if not ad: logger.warning("No team batting fetched."); self.checkpoint_manager.mark_completed('team_batting'); return True
         cd = pd.concat(ad, ignore_index=True); logger.info(f"Storing {len(cd)} team batting records...")
@@ -344,13 +326,33 @@ class DataFetcher:
         else: logger.error("Failed store team batting.")
         return success
 
-    # --- fetch_batter_data_efficient (MODIFIED for single date mode) ---
+    # --- fetch_batter_data_efficient (MODIFIED for conditional fetch) ---
     def fetch_batter_data_efficient(self):
         """Fetch batter Statcast data."""
         if self.single_date_historical_mode:
-            # Fetch only the single specified date
             target_date_str = self.target_fetch_date_obj.strftime('%Y-%m-%d')
             target_season = self.target_fetch_date_obj.year
+
+            # *** ADDED: Check if data already exists for this date ***
+            data_exists = False
+            try:
+                with DBConnection(self.db_path) as conn:
+                    cursor = conn.cursor()
+                    # Use parameterized query for safety, though date format is controlled
+                    query = "SELECT COUNT(*) FROM statcast_batters WHERE DATE(game_date) = ?"
+                    cursor.execute(query, (target_date_str,))
+                    count = cursor.fetchone()[0]
+                    if count > 0:
+                        data_exists = True
+            except Exception as e:
+                logger.warning(f"DB check failed for batters on {target_date_str}: {e}. Will attempt fetch.")
+
+            if data_exists:
+                logger.info(f"Skipping batter fetch: Data already exists for {target_date_str}")
+                return True # Indicate success as no action needed
+            # *** END ADDED CHECK ***
+
+            # Proceed with fetch only if data doesn't exist
             logger.info(f"Fetching batter Statcast for single date: {target_date_str}")
             try:
                 pdata = self.fetch_with_retries(pb.statcast, start_dt=target_date_str, end_dt=target_date_str)
@@ -360,7 +362,6 @@ class DataFetcher:
                     if col in pdata.columns: pdata[col]=pd.to_numeric(pdata[col],errors='coerce')
                 pdata.dropna(subset=['batter','pitcher','game_pk'],inplace=True)
                 pr = len(pdata);
-                # Use append - could lead to duplicates if run multiple times for same date without clearing table first
                 success=store_data_to_sql(pdata,'statcast_batters',self.db_path,if_exists='append')
                 if success: logger.info(f"Stored {pr} batter rows for {target_date_str}.")
                 else: logger.error(f"Failed store batter data for {target_date_str}.")
@@ -369,8 +370,8 @@ class DataFetcher:
         else:
             # Original historical backfill logic using checkpoints
             logger.info(f"Starting historical batter Statcast fetch up to {self.end_date_limit_str}")
+            # ... (rest of historical backfill logic for this function remains the same) ...
             stored_hist = 0
-            # Use the originally configured seasons for historical backfill
             seasons_hist = sorted(self.args.seasons if self.args.seasons else DataConfig.SEASONS)
             seasons_to_check = [s for s in seasons_hist if s <= self.end_date_limit.year]
             for s in seasons_to_check:
@@ -378,7 +379,7 @@ class DataFetcher:
                 s_end_dt=self.end_date_limit if s==self.end_date_limit.year else e_limit
                 if s_end_dt < s_dt: continue
                 ranges = []; cs_dt = s_dt
-                chunk_days = DataConfig.CHUNK_SIZE or 14 # Get chunk size from config
+                chunk_days = DataConfig.CHUNK_SIZE or 14
                 while cs_dt <= s_end_dt: ce_dt=min(cs_dt+timedelta(days=chunk_days-1),s_end_dt); ranges.append((cs_dt.strftime("%Y-%m-%d"),ce_dt.strftime("%Y-%m-%d"))); cs_dt=ce_dt+timedelta(days=1)
                 logger.info(f"{len(ranges)} ranges for {s}."); proc_r = 0
                 for s_str, e_str in tqdm(ranges, desc=f"Proc {s} Batter Ranges"):
@@ -401,91 +402,35 @@ class DataFetcher:
             logger.info(f"Hist batter fetch complete. Stored {stored_hist} new rows."); self.checkpoint_manager.save_overall_checkpoint()
             return True
 
-    # --- fetch_scraped_pitcher_data (No changes needed) ---
+    # --- fetch_scraped_pitcher_data (Identical) ---
     def fetch_scraped_pitcher_data(self):
         """Scrape and store only the seven desired columns, replacing the mlb_api table."""
-        if not self.args.mlb_api:
-            logger.info("Skipping pitcher scrape (--mlb-api not set).")
-            return True
-
-        if not self.args.date:
-            logger.error("--mlb-api requires --date.")
-            return False
-
+        # (Keep identical to previous version)
+        if not self.args.mlb_api: logger.info("Skipping pitcher scrape (--mlb-api not set)."); return True
+        if not self.args.date: logger.error("--mlb-api requires --date."); return False
         logger.info(f"Starting pitcher scraping for: {self.target_fetch_date_obj.strftime('%Y-%m-%d')}")
-        if self.team_mapping_df is None:
-            logger.error("Team mapping needed but not loaded.")
-            return False
-
-        # 1) scrape
-        daily_pitcher_data = scrape_probable_pitchers(
-            self.target_fetch_date_obj.strftime("%Y-%m-%d"),
-            self.team_mapping_df
-        )
-
-        # 2) if we got anything back, turn into a DataFrame and keep only the seven fields
+        if self.team_mapping_df is None: logger.error("Team mapping needed but not loaded."); return False
+        daily_pitcher_data = scrape_probable_pitchers(self.target_fetch_date_obj.strftime("%Y-%m-%d"), self.team_mapping_df)
         if daily_pitcher_data:
             try:
                 pdf = pd.DataFrame(daily_pitcher_data)
-
-                # Ensure game_date column exists
-                if 'game_date' not in pdf.columns or pdf['game_date'].isnull().all():
-                    pdf['game_date'] = self.target_fetch_date_obj.strftime("%Y-%m-%d")
-
-                # Rename to your preferred storage column names:
-                pdf = pdf.rename(columns={
-                    "home_team":           "home_team_abbr",
-                    "away_team":           "away_team_abbr",
-                    "home_pitcher_name":   "home_probable_pitcher_name",
-                    "away_pitcher_name":   "away_probable_pitcher_name",
-                    "home_pitcher_id":     "home_probable_pitcher_id",
-                    "away_pitcher_id":     "away_probable_pitcher_id",
-                })
-
-                # Select and order exactly the seven columns you want:
-                pdf = pdf[[
-                    "game_date",
-                    "home_team_abbr",
-                    "away_team_abbr",
-                    "home_probable_pitcher_name",
-                    "home_probable_pitcher_id",
-                    "away_probable_pitcher_name",
-                    "away_probable_pitcher_id"
-                ]]
-
+                if 'game_date' not in pdf.columns or pdf['game_date'].isnull().all(): pdf['game_date'] = self.target_fetch_date_obj.strftime("%Y-%m-%d")
+                pdf = pdf.rename(columns={"home_team":"home_team_abbr","away_team":"away_team_abbr","home_pitcher_name":"home_probable_pitcher_name","away_pitcher_name":"away_probable_pitcher_name","home_pitcher_id":"home_probable_pitcher_id","away_pitcher_id":"away_probable_pitcher_id","game_pk":"game_pk"})
+                pdf = pdf[["game_date","game_pk","home_team_abbr","away_team_abbr","home_probable_pitcher_name","home_probable_pitcher_id","away_probable_pitcher_name","away_probable_pitcher_id"]]
                 logger.info(f"Storing {len(pdf)} scraped entries for {self.target_fetch_date_obj} (replacing)...")
-
-                # 3) replace the table with only these seven columns
-                success = store_data_to_sql(
-                    pdf,
-                    'mlb_api',
-                    self.db_path,
-                    if_exists='replace'   # DROP & recreate with our seven columns
-                )
-                if success:
-                    self.checkpoint_manager.add_processed_mlb_api_date(
-                        self.target_fetch_date_obj.strftime("%Y-%m-%d")
-                    )
-                    logger.info(f"Stored scraped data for {self.target_fetch_date_obj}.")
-                else:
-                    logger.error(f"Failed store scraped data for {self.target_fetch_date_obj}.")
-                    return False
-
-            except Exception as e:
-                logger.error(f"Error processing/storing scraped data: {e}")
-                logger.error(traceback.format_exc())
-                return False
-
-        else:
-            logger.info(f"No pitchers scraped for {self.target_fetch_date_obj}.")
-
+                success = store_data_to_sql(pdf,'mlb_api',self.db_path,if_exists='replace')
+                if success: self.checkpoint_manager.add_processed_mlb_api_date(self.target_fetch_date_obj.strftime("%Y-%m-%d")); logger.info(f"Stored scraped data for {self.target_fetch_date_obj}.")
+                else: logger.error(f"Failed store scraped data for {self.target_fetch_date_obj}."); return False
+            except Exception as e: logger.error(f"Error processing/storing scraped data: {e}"); logger.error(traceback.format_exc()); return False
+        else: logger.info(f"No pitchers scraped for {self.target_fetch_date_obj}.")
         logger.info(f"Pitcher scraping finished for {self.target_fetch_date_obj}.")
         self.checkpoint_manager.save_overall_checkpoint()
         return True
 
-    # --- run Method (MODIFIED to use single_date_historical_mode flag) ---
+    # --- run Method (Identical - calls modified fetch methods) ---
     def run(self):
         """Run the main data fetching pipeline."""
+        # (Keep identical to previous version - it calls the modified fetch methods)
         logger.info(f"--- Starting Data Fetching Pipeline ---")
         start_time = time.time(); pipeline_success = True
         try:
@@ -495,15 +440,13 @@ class DataFetcher:
                 if not self.fetch_scraped_pitcher_data(): pipeline_success = False
             elif self.single_date_historical_mode:
                 logger.info(f"Running in Single-Date Historical Fetch mode for {self.target_fetch_date_obj.strftime('%Y-%m-%d')}...")
-                # Steps for single date historical fetch (skip mapping?, skip team batting?)
                 logger.info("[Single Date Step 1/2] Fetching Pitcher Statcast Data...")
-                pitcher_mapping = self.fetch_pitcher_id_mapping() # Still need mapping to know WHO to fetch
+                pitcher_mapping = self.fetch_pitcher_id_mapping()
                 if pitcher_mapping is not None and not pitcher_mapping.empty:
                     if not self.fetch_all_pitchers(pitcher_mapping): pipeline_success = False
                 else: logger.warning("Skipping pitcher Statcast fetch: mapping failed/empty.")
                 logger.info("[Single Date Step 2/2] Fetching Batter Statcast Data...")
                 if not self.fetch_batter_data_efficient(): pipeline_success = False
-                # Skipping team batting data fetch in single date mode
             else: # Full Historical Backfill mode
                 logger.info("Running in Full Historical Backfill mode...")
                 logger.info("[Historical Step 1/4] Fetching Pitcher ID Mapping...")
@@ -517,67 +460,50 @@ class DataFetcher:
                 if not self.fetch_team_batting_data(): pipeline_success = False
                 logger.info("[Historical Step 4/4] Fetching Batter Statcast Data...")
                 if not self.fetch_batter_data_efficient(): pipeline_success = False
-        except Exception as e:
-            logger.error(f"Unhandled exception in pipeline: {e}"); logger.error(traceback.format_exc()); pipeline_success = False
-        finally:
-            total_time = time.time() - start_time; logger.info("Final checkpoint save."); self.checkpoint_manager.save_overall_checkpoint()
-            logger.info(f"--- Data Fetching Pipeline Finished in {total_time:.2f} seconds ---")
+        except Exception as e: logger.error(f"Unhandled exception in pipeline: {e}"); logger.error(traceback.format_exc()); pipeline_success = False
+        finally: total_time = time.time() - start_time; 
+        logger.info("Final checkpoint save."); self.checkpoint_manager.save_overall_checkpoint()
+        logger.info(f"--- Data Fetching Pipeline Finished in {total_time:.2f} seconds ---")
         return pipeline_success
 
-# --- store_data_to_sql function (Keep improved logging version) ---
+# --- store_data_to_sql function (Identical) ---
 def store_data_to_sql(df, table_name, db_path, if_exists='append'):
     """Stores DataFrame to SQLite table with dynamic chunksize and robust logging."""
-    if df is None or df.empty: logger.debug(f"Empty DataFrame provided for '{table_name}'. Skipping save."); return True # Return True if empty DF
+    # (Keep identical to previous version)
+    if df is None or df.empty: logger.debug(f"Empty DataFrame provided for '{table_name}'. Skipping save."); return True
     db_path_str = str(db_path); num_columns = len(df.columns)
-    if num_columns == 0: logger.warning(f"DataFrame for '{table_name}' has 0 columns."); return False # Cannot save df with 0 columns
+    if num_columns == 0: logger.warning(f"DataFrame for '{table_name}' has 0 columns."); return False
     SQLITE_MAX_VARS = 30000; pandas_chunksize = max(1, SQLITE_MAX_VARS // num_columns); pandas_chunksize = min(pandas_chunksize, 1000)
     variables_per_chunk = num_columns * pandas_chunksize
     logger.info(f"Storing {len(df)} records to '{table_name}' (mode: {if_exists}, chunksize: {pandas_chunksize}, vars/chunk: ~{variables_per_chunk})...")
-    conn = None # Initialize conn outside try
+    conn = None; db_conn_context = None
     try:
-        # Establish connection using context manager principles but allowing explicit close
-        db_conn_context = DBConnection(db_path_str)
-        conn = db_conn_context.__enter__() # Manually enter context
-
+        db_conn_context = DBConnection(db_path_str); conn = db_conn_context.__enter__()
         if conn is None: raise ConnectionError("DB connection failed.")
-
         if if_exists == 'replace':
             logger.info(f"Attempting to drop table '{table_name}' before replacing...")
-            try:
-                cursor=conn.cursor(); cursor.execute(f"DROP TABLE IF EXISTS \"{table_name}\""); conn.commit()
-                logger.info(f"Dropped existing table '{table_name}' (if any).")
-            except Exception as drop_e:
-                # Log warning but proceed, to_sql with 'replace' might handle it
-                logger.warning(f"Could not explicitly drop table {table_name}: {drop_e}")
-
-        # The core save operation
+            try: cursor=conn.cursor(); cursor.execute(f"DROP TABLE IF EXISTS \"{table_name}\""); conn.commit(); logger.info(f"Dropped existing table '{table_name}' (if any).")
+            except Exception as drop_e: logger.warning(f"Could not explicitly drop table {table_name}: {drop_e}")
         df.to_sql(name=table_name, con=conn, if_exists=if_exists, index=False, chunksize=pandas_chunksize, method='multi')
-
-        logger.info(f"Finished storing data to '{table_name}'.")
-        db_conn_context.__exit__(None, None, None) # Manually exit context
-        return True # Explicit success return
-
+        logger.info(f"Finished storing data to '{table_name}'."); db_conn_context.__exit__(None, None, None); return True
     except sqlite3.OperationalError as oe:
-         # Specific SQLite errors
-         logger.error(f"SQLite OperationalError storing to '{table_name}': {oe}", exc_info=True) # Add exc_info
+         logger.error(f"SQLite OperationalError storing to '{table_name}': {oe}", exc_info=True)
          if 'too many SQL variables' in str(oe): logger.error(f"DYNAMIC CHUNKSIZE ({pandas_chunksize}) FAILED for {num_columns} columns.")
          elif 'has no column named' in str(oe): logger.error(f"Schema mismatch? Table '{table_name}'. Check if table exists with correct columns.")
-         # Log traceback here as well
-         logger.error(traceback.format_exc())
-         if conn: db_conn_context.__exit__(type(oe), oe, oe.__traceback__) # Ensure connection close on error
-         return False # Explicit failure return
+         logger.error(traceback.format_exc());
+         if conn and db_conn_context: db_conn_context.__exit__(type(oe), oe, oe.__traceback__);
+         return False
     except Exception as e:
-         # Catch any other exceptions
-         logger.error(f"General Error storing data to '{table_name}': {e}", exc_info=True) # Add exc_info
-         logger.error(traceback.format_exc()) # Log the full traceback
-         if conn: db_conn_context.__exit__(type(e), e, e.__traceback__) # Ensure connection close on error
-         return False # Explicit failure return
+         logger.error(f"General Error storing data to '{table_name}': {e}", exc_info=True); logger.error(traceback.format_exc())
+         if conn and db_conn_context: db_conn_context.__exit__(type(e), e, e.__traceback__);
+         return False
+
 # --- Argument Parser and Main Execution Block (Identical) ---
 def parse_args():
     # (Keep identical to previous version)
     parser = argparse.ArgumentParser(description="Fetch MLB data (Statcast, Team) OR scrape probable pitchers for a specific date.")
-    parser.add_argument("--date", type=str, help="Target date (YYYY-MM-DD) for scrape OR single-date historical fetch OR historical end date limit.") # Updated help
-    parser.add_argument("--seasons", type=int, nargs="+", default=None, help=f"Seasons for historical backfill (default: from config {DataConfig.SEASONS})") # Default None
+    parser.add_argument("--date", type=str, help="Target date (YYYY-MM-DD) for scrape OR single-date historical fetch OR historical end date limit.")
+    parser.add_argument("--seasons", type=int, nargs="+", default=None, help=f"Seasons for historical backfill (default: from config {DataConfig.SEASONS})")
     parser.add_argument("--parallel", action="store_true", help="Use parallel fetch for pitcher Statcast.")
     parser.add_argument("--mlb-api", action="store_true", help="ONLY scrape probable pitchers for the SINGLE date specified by --date.")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging.")

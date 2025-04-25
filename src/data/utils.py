@@ -174,3 +174,27 @@ def find_latest_file(directory, pattern):
     except Exception as e:
         logger.error(f"Unexpected error in find_latest_file: {e}", exc_info=True)
         return None
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+def log_nan_counts(df, df_name="DataFrame", columns=None):
+    """Logs NaN counts and percentages for specified columns or all columns."""
+    if columns is None:
+        columns = df.columns
+    
+    logging.info(f"--- NaN Report for {df_name} ---")
+    total_rows = len(df)
+    if total_rows == 0:
+        logging.info("DataFrame is empty.")
+        return
+
+    nan_info = df[columns].isna().sum()
+    nan_info = nan_info[nan_info > 0] # Only report columns with NaNs
+
+    if nan_info.empty:
+        logging.info("No NaNs found in the specified columns.")
+    else:
+        nan_percentage = (nan_info / total_rows) * 100
+        nan_summary = pd.DataFrame({'NaN Count': nan_info, 'NaN Percentage': nan_percentage.round(2)})
+        logging.info(f"\nTotal Rows: {total_rows}\nNaN Summary (Columns with NaNs):\n{nan_summary.to_string()}")
+    logging.info(f"--- End NaN Report for {df_name} ---")
