@@ -1,5 +1,3 @@
-# src/scripts/generate_basic_features.py
-
 import pandas as pd
 import numpy as np
 import argparse
@@ -26,14 +24,15 @@ except ImportError as e:
     MODULE_IMPORTS_OK = False
 else:
     LogConfig.LOG_DIR.mkdir(parents=True, exist_ok=True)
-    logger = setup_logger('generate_basic_features', LogConfig.LOG_DIR / 'generate_basic_features.log')
+    logger = setup_logger('generate_features', LogConfig.LOG_DIR / 'generate_features.log')
 
 # --- Configuration (Using WINDOW_SIZES from config) ---
 # Define base metrics for different groups
 PITCHER_METRICS_FOR_ROLLING = [
     'k_percent', 'swinging_strike_percent', 'avg_velocity',
     'k_percent_vs_lhb', 'swinging_strike_percent_vs_lhb',
-    'k_percent_vs_rhb', 'swinging_strike_percent_vs_rhb'
+    'k_percent_vs_rhb', 'swinging_strike_percent_vs_rhb',
+    'fastball_percent', 'breaking_percent', 'offspeed_percent'
 ]
 OPPONENT_METRICS_FOR_ROLLING = [
     'k_percent', 'swinging_strike_percent', # Overall team K% / SwStr%
