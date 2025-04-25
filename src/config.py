@@ -50,7 +50,7 @@ class DataConfig:
 
 class StrikeoutModelConfig:
     RANDOM_STATE = 3
-    WINDOW_SIZES = [3, 5, 10]
+    WINDOW_SIZES = [3, 5, 10, 25]
     DEFAULT_TRAIN_YEARS = (2016, 2017, 2018, 2019, 2021, 2022, 2023)
     DEFAULT_TEST_YEARS = (2024, 2025)
     # Number of CV splits for Optuna objective

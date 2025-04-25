@@ -8,34 +8,35 @@ from pathlib import Path
 import logging
 import time
 import gc
-from datetime import datetime # Ensure datetime is imported
+from datetime import datetime
 
-# Assuming script is run via engineer_features or standalone with similar setup
+# --- Setup Project Root & Logging ---
 try:
-    # Added FileConfig assumption if needed for checkpoints (though removed)
-    from src.config import DBConfig, LogConfig, FileConfig
-    from src.data.utils import setup_logger, DBConnection
+    from src.config import DBConfig, LogConfig
+    from src.data.utils import setup_logger, DBConnection # Ensure DBConnection is imported
     MODULE_IMPORTS_OK = True
-except ImportError:
+except ImportError as e:
     MODULE_IMPORTS_OK = False
-    # Basic fallbacks if config/utils are not found
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     logger = logging.getLogger('aggregate_statcast_fallback')
-    DB_PATH = Path("./data/mlb_data.db") # Default path
-    class DBConnection: # Basic context manager
-        def __init__(self, db_path=DB_PATH): self.db_path = db_path
+    DB_PATH = Path("./data/mlb_data.db")
+    class DBConnection: # Basic fallback
+        def __init__(self, db_path=None): self.db_path = db_path if db_path else Path("./data/mlb_data.db")
         def __enter__(self): self.conn = sqlite3.connect(self.db_path); return self.conn
-        def __exit__(self,et,ev,tb): self.conn.close()
+        def __exit__(self,et,ev,tb):
+            if self.conn:
+                if et: self.conn.rollback()
+                else: self.conn.commit()
+                self.conn.close()
 else:
-    # Setup logger using imported function
     LogConfig.LOG_DIR.mkdir(parents=True, exist_ok=True)
-    logger = setup_logger('aggregate_statcast', LogConfig.LOG_DIR / 'aggregate_statcast.log', level=logging.DEBUG) # Use DEBUG level
+    logger = setup_logger('aggregate_statcast', LogConfig.LOG_DIR / 'aggregate_statcast.log', level=logging.DEBUG)
     DB_PATH = Path(DBConfig.PATH)
 
 # --- Constants ---
 ID_COLS_TO_EXCLUDE_FROM_DOWNCAST = ['pitcher', 'batter', 'game_pk', 'pitcher_id']
 
-# --- Memory Optimization Helper ---
+# --- Helper Functions --- (optimize_dtypes, smart_impute, knn_impute_complex_features remain unchanged)
 def optimize_dtypes(df):
     """Attempt to reduce memory usage by downcasting dtypes, excluding specified ID columns."""
     logger.debug("Optimizing dtypes...")
@@ -56,32 +57,35 @@ def optimize_dtypes(df):
     logger.debug("Dtype optimization attempt complete.")
     return df_copy
 
-
-# --- Imputation Functions ---
-
 def smart_impute(df, group_col, target_cols):
     """Imputes missing values using group median first, then global median."""
     logger.info(f"Performing smart imputation for {group_col} missing values...")
     df_copy = df.copy()
     for col in target_cols:
         if col in df_copy.columns and df_copy[col].isnull().any(): # Check col exists
-            logger.info(f"Imputing {df_copy[col].isnull().sum()} NaNs in '{col}' using {group_col}/global median...")
+            nan_count_start = df_copy[col].isnull().sum()
+            logger.info(f"Imputing {nan_count_start} NaNs in '{col}' using {group_col}/global median...")
             # Calculate group median (ensure numeric type for median)
             numeric_groups = df_copy.dropna(subset=[col])
             if pd.api.types.is_numeric_dtype(numeric_groups[col]):
                  # Use apply with lambda to handle potential empty groups gracefully
                  group_median_map = numeric_groups.groupby(group_col)[col].median()
                  df_copy[col] = df_copy[col].fillna(df_copy[group_col].map(group_median_map))
+                 nan_count_after_group = df_copy[col].isnull().sum()
+                 logger.debug(f"   NaNs remaining after group median for '{col}': {nan_count_after_group}")
 
                  # Apply global median for remaining NaNs (groups with all NaNs or new NaNs from mapping)
-                 global_median = df_copy[col].median()
-                 if pd.notna(global_median):
-                      df_copy[col] = df_copy[col].fillna(global_median)
-                 else: # Handle case where global median might also be NaN (all values were NaN)
-                      logger.warning(f"   Global median for '{col}' is NaN. Filling remaining NaNs with 0.")
-                      df_copy[col] = df_copy[col].fillna(0)
+                 if nan_count_after_group > 0:
+                     global_median = df_copy[col].median()
+                     if pd.notna(global_median):
+                          df_copy[col] = df_copy[col].fillna(global_median)
+                          logger.debug(f"   Filled remaining NaNs in '{col}' with global median ({global_median:.3f}).")
+                     else: # Handle case where global median might also be NaN (all values were NaN)
+                          logger.warning(f"   Global median for '{col}' is NaN. Filling remaining NaNs with 0.")
+                          df_copy[col] = df_copy[col].fillna(0)
 
-                 logger.debug(f"   '{col}' imputation complete. Remaining NaNs: {df_copy[col].isnull().sum()}")
+                 final_nan_count = df_copy[col].isnull().sum()
+                 logger.debug(f"   '{col}' imputation complete. Remaining NaNs: {final_nan_count}")
             else:
                  logger.warning(f"   Column '{col}' is not numeric, skipping median imputation.")
         elif col in df_copy.columns:
@@ -127,7 +131,9 @@ def knn_impute_complex_features(df, target_cols, n_neighbors=5):
         # Impute NaNs in predictors first (using median) before KNN
         for p_col in potential_predictors:
              if impute_df_subset[p_col].isnull().any():
-                  impute_df_subset[p_col] = impute_df_subset[p_col].fillna(impute_df_subset[p_col].median())
+                  median_val = impute_df_subset[p_col].median()
+                  fill_val = median_val if pd.notna(median_val) else 0 # Fallback to 0 if median is NaN
+                  impute_df_subset[p_col] = impute_df_subset[p_col].fillna(fill_val)
 
         imputer = KNNImputer(n_neighbors=n_neighbors)
         # Operate on the subset for imputation
@@ -135,7 +141,8 @@ def knn_impute_complex_features(df, target_cols, n_neighbors=5):
         imputed_df = pd.DataFrame(imputed_data, columns=impute_df_subset.columns, index=impute_df_subset.index)
 
         # Update original dataframe copy using the results from the imputed subset
-        df_copy.update(imputed_df[cols_to_impute])
+        for col in cols_to_impute:
+            df_copy[col] = imputed_df[col]
 
         logger.info(f"KNN imputation complete for columns: {cols_to_impute}.")
     except Exception as e:
@@ -143,28 +150,25 @@ def knn_impute_complex_features(df, target_cols, n_neighbors=5):
 
     return df_copy
 
-# --- PITCHER AGGREGATION ---
 
-def aggregate_statcast_pitchers_sql(target_date=None): # Added target_date parameter
+# --- PITCHER AGGREGATION ---
+def aggregate_statcast_pitchers_sql(target_date=None):
     """
-    Aggregates raw Statcast pitcher data to game level using SQL for a SPECIFIC DATE.
-    Filters results based on games present in master_schedule.
-    Performs DELETE-THEN-INSERT into game_level_pitchers table.
+    Aggregates pitcher data, handles DELETE/INSERT manually.
+    Includes platoon splits using the 'stand' column.
     """
-    # Determine mode based on target_date
+    # ... (Mode determination and SQL definition remain the same) ...
     if target_date:
-        logger.info(f"Starting PITCHER Statcast aggregation using SQL for DATE: {target_date}...")
-        date_filter_sql = f"WHERE DATE(s.game_date) = '{target_date}'" # Filter in main CTE
-        where_clause_load = f"WHERE DATE(game_date) = '{target_date}'" # Filter for loading schedule data
+        logger.info(f"Starting PITCHER Statcast aggregation (incl. platoon, manual replace) using SQL for DATE: {target_date}...")
+        date_filter_sql = f"WHERE DATE(s.game_date) = '{target_date}'"
+        where_clause_load = f"WHERE DATE(game_date) = '{target_date}'"
     else:
-        logger.info("Starting PITCHER Statcast aggregation using SQL for ALL DATES...")
-        date_filter_sql = "" # No date filter for full aggregation
-        where_clause_load = "" # Load all schedule data for filtering if doing full run
+        logger.info("Starting PITCHER Statcast aggregation (incl. platoon, manual replace) using SQL for ALL DATES...")
+        date_filter_sql = ""
+        where_clause_load = ""
 
     start_time = time.time()
-
-    # Define the SQL query for aggregation
-    # *** MODIFIED: Added {date_filter_sql} in CTEs ***
+    # SQL Definition using s.stand (keep as before)
     sql = f"""
     WITH GamePitcherStats AS (
         SELECT
@@ -175,311 +179,439 @@ def aggregate_statcast_pitchers_sql(target_date=None): # Added target_date param
             COUNT(DISTINCT s.batter) AS batters_faced, COUNT(*) AS total_pitches,
             SUM(CASE WHEN s.type = 'S' AND s.description IN ('swinging_strike', 'swinging_strike_blocked') THEN 1 ELSE 0 END) AS total_swinging_strikes,
             SUM(CASE WHEN s.type = 'S' AND s.description = 'called_strike' THEN 1 ELSE 0 END) AS total_called_strikes,
+            SUM(CASE WHEN s.stand = 'L' AND s.events IN ('strikeout', 'strikeout_double_play') THEN 1 ELSE 0 END) AS strikeouts_vs_lhb,
+            COUNT(DISTINCT CASE WHEN s.stand = 'L' THEN s.at_bat_number || '_' || s.game_pk ELSE NULL END) AS pa_vs_lhb,
+            SUM(CASE WHEN s.stand = 'L' THEN 1 ELSE 0 END) AS pitches_vs_lhb,
+            SUM(CASE WHEN s.stand = 'L' AND s.type = 'S' AND s.description IN ('swinging_strike', 'swinging_strike_blocked') THEN 1 ELSE 0 END) AS swinging_strikes_vs_lhb,
+            SUM(CASE WHEN s.stand = 'R' AND s.events IN ('strikeout', 'strikeout_double_play') THEN 1 ELSE 0 END) AS strikeouts_vs_rhb,
+            COUNT(DISTINCT CASE WHEN s.stand = 'R' THEN s.at_bat_number || '_' || s.game_pk ELSE NULL END) AS pa_vs_rhb,
+            SUM(CASE WHEN s.stand = 'R' THEN 1 ELSE 0 END) AS pitches_vs_rhb,
+            SUM(CASE WHEN s.stand = 'R' AND s.type = 'S' AND s.description IN ('swinging_strike', 'swinging_strike_blocked') THEN 1 ELSE 0 END) AS swinging_strikes_vs_rhb,
             SUM(CASE WHEN s.pitch_type IN ('FF', 'SI', 'FT', 'FC') THEN 1 ELSE 0 END) AS total_fastballs,
             SUM(CASE WHEN s.pitch_type IN ('SL', 'CU', 'KC', 'CS', 'ST', 'SV') THEN 1 ELSE 0 END) AS total_breaking,
             SUM(CASE WHEN s.pitch_type IN ('CH', 'FS', 'KN', 'EP', 'SC') THEN 1 ELSE 0 END) AS total_offspeed,
             SUM(CASE WHEN s.zone BETWEEN 1 AND 9 THEN 1 ELSE 0 END) AS total_in_zone,
             AVG(s.release_speed) AS avg_velocity, MAX(s.release_speed) AS max_velocity,
             AVG(s.release_spin_rate) AS avg_spin_rate, AVG(s.pfx_x) AS avg_horizontal_break, AVG(s.pfx_z) AS avg_vertical_break
-        FROM statcast_pitchers s
-        {date_filter_sql} -- Apply date filter here
-        GROUP BY s.pitcher, s.game_pk, DATE(s.game_date)
-    ),
-    GameInnings AS (
-        SELECT
-            pitcher AS pitcher_id, game_pk,
-            COUNT(DISTINCT inning) + MAX(CASE WHEN outs_when_up = 1 THEN 0.1 WHEN outs_when_up = 2 THEN 0.2 ELSE 0 END) as innings_pitched_approx
-        FROM statcast_pitchers s -- Apply date filter here too if needed for performance
-        {date_filter_sql}
-        GROUP BY pitcher, game_pk
+        FROM statcast_pitchers s {date_filter_sql} GROUP BY s.pitcher, s.game_pk, DATE(s.game_date)
+    ), GameInnings AS (
+        SELECT pitcher AS pitcher_id, game_pk, COUNT(DISTINCT inning) + MAX(CASE WHEN outs_when_up = 1 THEN 0.1 WHEN outs_when_up = 2 THEN 0.2 ELSE 0 END) as innings_pitched_approx
+        FROM statcast_pitchers s {date_filter_sql} GROUP BY pitcher, game_pk
     )
-    SELECT
-        gps.*, STRFTIME('%Y', gps.game_date) AS season, gi.innings_pitched_approx AS innings_pitched,
-        CAST(gps.strikeouts AS REAL) / NULLIF(gps.batters_faced, 0) AS k_percent,
-        (CAST(gps.strikeouts AS REAL) * 9.0) / NULLIF(gi.innings_pitched_approx, 0) AS k_per_9,
-        CAST(gps.total_swinging_strikes AS REAL) / NULLIF(gps.total_pitches, 0) AS swinging_strike_percent,
-        CAST(gps.total_called_strikes AS REAL) / NULLIF(gps.total_pitches, 0) AS called_strike_percent,
-        CAST(gps.total_fastballs AS REAL) / NULLIF(gps.total_pitches, 0) AS fastball_percent,
-        CAST(gps.total_breaking AS REAL) / NULLIF(gps.total_pitches, 0) AS breaking_percent,
-        CAST(gps.total_offspeed AS REAL) / NULLIF(gps.total_pitches, 0) AS offspeed_percent,
-        CAST(gps.total_in_zone AS REAL) / NULLIF(gps.total_pitches, 0) AS zone_percent,
-        CASE WHEN gps.is_home = 1 THEN gps.away_team ELSE gps.home_team END AS opponent_team
-    FROM GamePitcherStats gps
-    LEFT JOIN GameInnings gi ON gps.pitcher_id = gi.pitcher_id AND gps.game_pk = gi.game_pk
+    SELECT gps.*, STRFTIME('%Y', gps.game_date) AS season, gi.innings_pitched_approx AS innings_pitched, CASE WHEN gps.is_home = 1 THEN gps.away_team ELSE gps.home_team END AS opponent_team,
+           CAST(gps.strikeouts AS REAL) / NULLIF(gps.pa_vs_lhb + gps.pa_vs_rhb, 0) AS k_percent,
+           (CAST(gps.strikeouts AS REAL) * 9.0) / NULLIF(gi.innings_pitched_approx, 0) AS k_per_9,
+           CAST(gps.total_swinging_strikes AS REAL) / NULLIF(gps.total_pitches, 0) AS swinging_strike_percent,
+           CAST(gps.total_called_strikes AS REAL) / NULLIF(gps.total_pitches, 0) AS called_strike_percent,
+           CAST(gps.strikeouts_vs_lhb AS REAL) / NULLIF(gps.pa_vs_lhb, 0) AS k_percent_vs_lhb,
+           CAST(gps.swinging_strikes_vs_lhb AS REAL) / NULLIF(gps.pitches_vs_lhb, 0) AS swinging_strike_percent_vs_lhb,
+           CAST(gps.strikeouts_vs_rhb AS REAL) / NULLIF(gps.pa_vs_rhb, 0) AS k_percent_vs_rhb,
+           CAST(gps.swinging_strikes_vs_rhb AS REAL) / NULLIF(gps.pitches_vs_rhb, 0) AS swinging_strike_percent_vs_rhb,
+           CAST(gps.total_fastballs AS REAL) / NULLIF(gps.total_pitches, 0) AS fastball_percent,
+           CAST(gps.total_breaking AS REAL) / NULLIF(gps.total_pitches, 0) AS breaking_percent,
+           CAST(gps.total_offspeed AS REAL) / NULLIF(gps.total_pitches, 0) AS offspeed_percent,
+           CAST(gps.total_in_zone AS REAL) / NULLIF(gps.total_pitches, 0) AS zone_percent
+    FROM GamePitcherStats gps LEFT JOIN GameInnings gi ON gps.pitcher_id = gi.pitcher_id AND gps.game_pk = gi.game_pk
     ORDER BY gps.game_date, gps.game_pk, gps.pitcher_id
     """
 
     agg_df = pd.DataFrame()
-    conn = None # Initialize connection variable
+    schedule_game_ids = set()
+    output_table_name = 'game_level_pitchers'
 
     try:
-        logger.info("Executing SQL query for PITCHER game-level aggregation...")
-        # Manually manage connection context to ensure commit/close
-        db_conn_context = DBConnection(DB_PATH)
-        conn = db_conn_context.__enter__()
-
-        # Load schedule data (filtered by date if target_date is specified)
-        logger.info("Loading game identifiers from master_schedule...")
-        schedule_query = f"SELECT DISTINCT game_date, home_team, away_team FROM master_schedule {where_clause_load}"
-        schedule_games_df = pd.read_sql_query(schedule_query, conn)
-        # ... (rest of schedule ID creation logic remains the same) ...
-        schedule_game_ids = set()
-        if not schedule_games_df.empty:
-            schedule_games_df['game_date'] = pd.to_datetime(schedule_games_df['game_date']).dt.strftime('%Y-%m-%d')
-            schedule_games_df['home_team'] = schedule_games_df['home_team'].str.strip()
-            schedule_games_df['away_team'] = schedule_games_df['away_team'].str.strip()
-            schedule_game_ids = set(schedule_games_df['game_date'] + '_' + schedule_games_df['away_team'] + '_' + schedule_games_df['home_team'])
-            logger.debug(f"Created {len(schedule_game_ids)} unique game identifiers from master_schedule for filter.")
-        else:
-             logger.warning(f"Master schedule data for filter condition ('{where_clause_load}') is empty or query failed.")
-
-        # Execute main aggregation query
-        agg_df = pd.read_sql_query(sql, conn)
-        logger.info(f"SQL aggregation returned {len(agg_df)} PITCHER game-level records for date '{target_date if target_date else 'ALL'}'")
-
-        # Filter results based on games that have schedule data available
-        if not schedule_game_ids:
-             logger.warning("Skipping filtering based on schedule data (no schedule IDs).")
-        elif not agg_df.empty:
-            # ... (schedule filtering logic remains the same) ...
-            logger.info("Filtering PITCHER results based on available schedule data...")
-            original_count = len(agg_df)
-            try:
-                 agg_df['game_date'] = pd.to_datetime(agg_df['game_date']).dt.strftime('%Y-%m-%d')
-                 agg_df['home_team'] = agg_df['home_team'].astype(str).str.strip()
-                 agg_df['away_team'] = agg_df['away_team'].astype(str).str.strip()
-                 agg_df['composite_game_id'] = agg_df['game_date'] + '_' + agg_df['away_team'] + '_' + agg_df['home_team']
-                 agg_df = agg_df[agg_df['composite_game_id'].isin(schedule_game_ids)].drop(columns=['composite_game_id'])
-                 logger.info(f"Filtered PITCHER records to {len(agg_df)} (from {original_count})")
-            except Exception as fe: logger.error(f"Error during schedule filtering: {fe}.")
-        else:
-             logger.info("Aggregated PITCHER DataFrame is empty, skipping schedule filtering.")
-
-        # Imputation (remains the same)
-        if not agg_df.empty:
-            # ... (imputation logic using smart_impute, knn_impute_complex_features) ...
-            pitcher_impute_cols = ['avg_velocity', 'max_velocity', 'avg_spin_rate', 'avg_horizontal_break', 'avg_vertical_break']
-            agg_df = smart_impute(agg_df, 'pitcher_id', pitcher_impute_cols)
-            knn_target_cols = [col for col in pitcher_impute_cols if col in agg_df.columns and agg_df[col].isnull().any()]
-            if knn_target_cols: agg_df = knn_impute_complex_features(agg_df, knn_target_cols)
-
-        # *** MODIFIED: DELETE-THEN-INSERT Logic ***
-        output_table_name = 'game_level_pitchers'
-        if not agg_df.empty and target_date:
-            # --- DELETE existing rows for the target_date ---
-            logger.info(f"Deleting existing PITCHER records for date {target_date} from '{output_table_name}'...")
-            delete_sql = f"DELETE FROM {output_table_name} WHERE DATE(game_date) = ?"
+        with DBConnection(DB_PATH) as conn:
+            # ... (keep column check, schedule loading, main query execution, filtering as before) ...
+            logger.info("Executing SQL query for PITCHER game-level aggregation (incl. platoon)...")
             cursor = conn.cursor()
-            cursor.execute(delete_sql, (target_date,))
-            deleted_count = cursor.rowcount
-            conn.commit() # Commit the delete
-            logger.info(f"Deleted {deleted_count} existing PITCHER records for {target_date}.")
-            # --- Now APPEND the new data ---
-            logger.info(f"Appending {len(agg_df)} new PITCHER records for {target_date} to '{output_table_name}'...")
-            agg_df.to_sql(output_table_name, conn, if_exists='append', index=False)
-            conn.commit() # Commit the append
-            logger.info(f"Appended {len(agg_df)} records for {target_date}.")
-        elif not agg_df.empty and not target_date: # Full run mode
-             logger.info(f"Replacing existing PITCHER data in '{output_table_name}' with {len(agg_df)} new records...")
-             agg_df.to_sql(output_table_name, conn, if_exists='replace', index=False)
-             conn.commit()
-             logger.info(f"Replaced data in {output_table_name}.")
-        else:
-            logger.info(f"No PITCHER data to save for date '{target_date if target_date else 'ALL'}'.")
+            try:
+                cursor.execute("SELECT stand FROM statcast_pitchers LIMIT 1")
+                logger.info("'stand' column found in statcast_pitchers.")
+            except sqlite3.OperationalError as oe:
+                # ... (handle missing 'stand' column) ...
+                if "no such column: stand" in str(oe).lower():
+                     logger.error("FATAL: Required 'stand' column missing from 'statcast_pitchers' table.")
+                     logger.error("Cannot calculate platoon splits. Please ensure 'stand' is included during data ingestion.")
+                     return None
+                else:
+                     logger.error(f"SQL Operational Error checking for 'stand' column: {oe}")
+                     raise
+            # Load schedule data
+            logger.info("Loading game identifiers from historical_umpire_data...")
+            schedule_query = f"SELECT DISTINCT game_date, home_team, away_team FROM historical_umpire_data {where_clause_load}"
+            try:
+                schedule_games_df = pd.read_sql_query(schedule_query, conn)
+                if not schedule_games_df.empty:
+                    # ... (build schedule_game_ids) ...
+                    schedule_games_df['game_date'] = pd.to_datetime(schedule_games_df['game_date']).dt.strftime('%Y-%m-%d')
+                    schedule_games_df['home_team'] = schedule_games_df['home_team'].str.strip()
+                    schedule_games_df['away_team'] = schedule_games_df['away_team'].str.strip()
+                    schedule_game_ids = set(schedule_games_df['game_date'] + '_' + schedule_games_df['away_team'] + '_' + schedule_games_df['home_team'])
+                    logger.debug(f"Created {len(schedule_game_ids)} unique game identifiers from historical_umpire_data for filter.")
+                else:
+                     logger.warning(f"Master schedule data for filter condition ('{where_clause_load}') is empty or query failed.")
+            except Exception as e_sched:
+                logger.error(f"Error loading schedule data: {e_sched}")
+                logger.warning("Proceeding without schedule filter due to error.")
+                schedule_game_ids = set()
 
-        # Close connection manually
-        db_conn_context.__exit__(None, None, None)
-        conn = None # Indicate connection is closed
+            # Execute main aggregation query
+            try:
+                agg_df = pd.read_sql_query(sql, conn)
+                logger.info(f"SQL aggregation returned {len(agg_df)} PITCHER game-level records for date '{target_date if target_date else 'ALL'}'")
+            except Exception as e_main:
+                 logger.error(f"Error during main PITCHER aggregation: {e_main}")
+                 return None
 
-    except sqlite3.OperationalError as oe:
-        # ... (error handling remains the same) ...
-        if "no such table: master_schedule" in str(oe).lower(): logger.error(f"SQL Error: 'master_schedule' table not found.")
-        elif "no such table: statcast_pitchers" in str(oe).lower(): logger.error(f"SQL Error: 'statcast_pitchers' table not found.")
-        else: logger.error(f"SQL Operational Error during PITCHER aggregation: {oe}.")
-        if conn: db_conn_context.__exit__(type(oe), oe, oe.__traceback__) # Ensure close on error
-        return None # Return None on error
+            # Filter results
+            if not schedule_game_ids:
+                 logger.warning("Skipping filtering based on schedule data.")
+            elif not agg_df.empty:
+                 # ... (filtering logic) ...
+                logger.info("Filtering PITCHER results based on available schedule data...")
+                original_count = len(agg_df)
+                try:
+                     agg_df['game_date'] = pd.to_datetime(agg_df['game_date']).dt.strftime('%Y-%m-%d')
+                     agg_df['home_team'] = agg_df['home_team'].astype(str).str.strip()
+                     agg_df['away_team'] = agg_df['away_team'].astype(str).str.strip()
+                     agg_df['composite_game_id'] = agg_df['game_date'] + '_' + agg_df['away_team'] + '_' + agg_df['home_team']
+                     agg_df = agg_df[agg_df['composite_game_id'].isin(schedule_game_ids)].drop(columns=['composite_game_id'])
+                     logger.info(f"Filtered PITCHER records to {len(agg_df)} (from {original_count})")
+                except Exception as fe:
+                     logger.error(f"Error during schedule filtering: {fe}.")
+                     logger.warning("Proceeding with unfiltered data due to filtering error.")
+            else:
+                 logger.info("Aggregated PITCHER DataFrame is empty, skipping schedule filtering.")
+
+            # Imputation (logic remains the same)
+            if not agg_df.empty:
+                # ... (imputation logic as before) ...
+                pitcher_basic_impute_cols = ['avg_velocity', 'max_velocity', 'avg_spin_rate', 'avg_horizontal_break', 'avg_vertical_break']
+                pitcher_rate_impute_cols = [
+                    'k_percent', 'swinging_strike_percent', 'called_strike_percent',
+                    'k_percent_vs_lhb', 'swinging_strike_percent_vs_lhb',
+                    'k_percent_vs_rhb', 'swinging_strike_percent_vs_rhb',
+                    'fastball_percent', 'breaking_percent', 'offspeed_percent', 'zone_percent'
+                ]
+                logger.info("Imputing basic pitcher physical metrics...")
+                agg_df = smart_impute(agg_df, 'pitcher_id', pitcher_basic_impute_cols)
+                knn_target_cols_basic = [col for col in pitcher_basic_impute_cols if col in agg_df.columns and agg_df[col].isnull().any()]
+                if knn_target_cols_basic:
+                    agg_df = knn_impute_complex_features(agg_df, knn_target_cols_basic)
+                logger.info("Imputing pitcher rate metrics (including platoon)...")
+                for col in pitcher_rate_impute_cols:
+                     if col in agg_df.columns and agg_df[col].isnull().any():
+                        nan_count = agg_df[col].isnull().sum()
+                        logger.debug(f"   Imputing {nan_count} NaNs in '{col}' with 0.0.")
+                        agg_df[col] = agg_df[col].fillna(0.0)
+
+
+            # *** MODIFIED SAVE LOGIC: Manual Drop/Append ***
+            if not agg_df.empty:
+                cursor = conn.cursor() # Get cursor from the connection
+                if target_date: # Incremental update (DELETE specific date, then append)
+                    logger.info(f"Deleting existing PITCHER records for date {target_date} from '{output_table_name}'...")
+                    delete_sql = f"DELETE FROM {output_table_name} WHERE DATE(game_date) = ?"
+                    try:
+                        cursor.execute(delete_sql, (target_date,))
+                        deleted_count = cursor.rowcount
+                        logger.info(f"Deleted {deleted_count} existing PITCHER records for {target_date}.")
+                        # Append new data
+                        logger.info(f"Appending {len(agg_df)} new PITCHER records for {target_date} to '{output_table_name}'...")
+                        agg_df.to_sql(output_table_name, conn, if_exists='append', index=False)
+                        logger.info(f"Appended {len(agg_df)} records for {target_date}.")
+                    except sqlite3.Error as e_del_app:
+                        logger.error(f"Error during DELETE/APPEND for PITCHER {target_date}: {e_del_app}")
+                        # Rollback will happen automatically via context manager's __exit__
+                        raise # Re-raise the error to prevent incorrect success message
+
+                else: # Full run mode (DROP then append)
+                    logger.info(f"Dropping existing PITCHER table '{output_table_name}' (if exists)...")
+                    try:
+                        # Manually drop the table first
+                        cursor.execute(f"DROP TABLE IF EXISTS {output_table_name}")
+                        logger.info(f"Table '{output_table_name}' dropped successfully (or did not exist).")
+                        # Now append data (which creates the table if dropped)
+                        logger.info(f"Writing {len(agg_df)} new PITCHER records to '{output_table_name}'...")
+                        agg_df.to_sql(output_table_name, conn, if_exists='append', index=False)
+                        logger.info(f"Finished writing records to {output_table_name}.")
+                    except sqlite3.Error as e_drop_app:
+                        logger.error(f"Error during DROP/APPEND for PITCHER (full run): {e_drop_app}")
+                        # Rollback will happen automatically via context manager's __exit__
+                        raise # Re-raise the error to prevent incorrect success message
+            else:
+                logger.info(f"No PITCHER data processed to save for date '{target_date if target_date else 'ALL'}'.")
+                # If running for ALL dates and agg_df is empty, should we still drop the table?
+                # Let's add logic to drop even if empty on a full run to ensure schema consistency if needed.
+                if not target_date:
+                    logger.info(f"Dropping existing PITCHER table '{output_table_name}' (if exists) even though no new data was generated...")
+                    try:
+                        cursor = conn.cursor()
+                        cursor.execute(f"DROP TABLE IF EXISTS {output_table_name}")
+                        logger.info(f"Table '{output_table_name}' dropped successfully (or did not exist).")
+                    except sqlite3.Error as e_drop_empty:
+                         logger.error(f"Error during DROP TABLE for PITCHER (empty full run): {e_drop_empty}")
+                         raise
+
+
+        # Context manager handles commit/rollback and close
+
+    except sqlite3.Error as db_e:
+        logger.error(f"Database error during PITCHER aggregation for '{target_date if target_date else 'ALL'}': {db_e}", exc_info=False) # Keep traceback clean
+        return None
     except Exception as e:
-        logger.error(f"Error during PITCHER SQL aggregation: {e}", exc_info=True)
-        if conn: db_conn_context.__exit__(type(e), e, e.__traceback__) # Ensure close on error
-        return None # Return None on error
+        logger.error(f"Unexpected error during PITCHER aggregation for '{target_date if target_date else 'ALL'}': {e}", exc_info=True)
+        return None
 
     elapsed = time.time() - start_time
-    logger.info(f"PITCHER SQL aggregation for '{target_date if target_date else 'ALL'}' completed in {elapsed:.2f}s")
+    logger.info(f"PITCHER SQL aggregation (incl. platoon, manual replace) for '{target_date if target_date else 'ALL'}' completed in {elapsed:.2f}s")
     return agg_df
 
 
-# --- TEAM/BATTER AGGREGATION (MODIFIED) ---
-def aggregate_statcast_batters_sql(target_date=None): # Added target_date parameter
+# --- TEAM/BATTER AGGREGATION (MODIFIED FOR VS PITCHER HAND) ---
+def aggregate_statcast_batters_sql(target_date=None):
     """
-    Aggregates raw Statcast data to team game level using SQL for a SPECIFIC DATE.
-    Filters results based on games present in master_schedule.
-    Performs DELETE-THEN-INSERT into game_level_team_stats table.
+    Aggregates raw Statcast data to team game level using SQL.
+    Includes stats broken down by opposing pitcher hand (LHP/RHP).
+    Uses manual drop/append for saving.
+    **Requires 'p_throws' column in 'statcast_batters'.**
     """
     # Determine mode based on target_date
     if target_date:
-        logger.info(f"Starting TEAM Statcast aggregation using SQL for DATE: {target_date}...")
-        date_filter_sql = f"WHERE DATE(game_date) = '{target_date}'" # Filter in main CTE
-        where_clause_load = f"WHERE DATE(game_date) = '{target_date}'" # Filter for loading schedule data
+        logger.info(f"Starting TEAM Statcast aggregation (vs P-Hand, manual replace) using SQL for DATE: {target_date}...")
+        date_filter_sql = f"WHERE DATE(s.game_date) = '{target_date}'" # Alias as 's'
+        where_clause_load = f"WHERE DATE(game_date) = '{target_date}'"
     else:
-        logger.info("Starting TEAM Statcast aggregation using SQL for ALL DATES...")
-        date_filter_sql = "" # No date filter for full aggregation
-        where_clause_load = "" # Load all schedule data for filtering if doing full run
+        logger.info("Starting TEAM Statcast aggregation (vs P-Hand, manual replace) using SQL for ALL DATES...")
+        date_filter_sql = ""
+        where_clause_load = ""
 
     start_time = time.time()
 
     # Define the SQL query for team game-level aggregation
-    # *** MODIFIED: Added {date_filter_sql} ***
+    # *** MODIFIED: Added aggregations conditional on p_throws ***
+    # *** ASSUMPTION: 'statcast_batters' table MUST have 'p_throws' ('L' or 'R') ***
     sql = f"""
-        WITH TeamGamePitches AS (
-            SELECT
-                game_pk, DATE(game_date) AS game_date,
-                CASE WHEN inning_topbot = 'Top' THEN away_team ELSE home_team END AS team,
-                CASE WHEN inning_topbot = 'Top' THEN home_team ELSE away_team END AS opponent,
-                home_team, away_team, description, type, zone, events, balls, strikes,
-                launch_speed, launch_angle, estimated_woba_using_speedangle AS est_woba,
-                woba_value, woba_denom, babip_value, iso_value, at_bat_number, inning_topbot
-            FROM statcast_batters
-            {date_filter_sql} -- Apply date filter here
-        )
+    WITH TeamGamePitches AS (
         SELECT
-            t.game_pk, t.game_date, t.team, t.opponent, t.home_team, t.away_team,
-            MAX(CASE WHEN t.inning_topbot = 'Bot' THEN 1 ELSE 0 END) AS is_home,
-            COUNT(DISTINCT CASE WHEN t.events IS NOT NULL THEN t.at_bat_number || '_' || t.game_pk ELSE NULL END) AS pa,
-            SUM(CASE WHEN t.events IN ('strikeout', 'strikeout_double_play') THEN 1 ELSE 0 END) AS strikeouts,
-            SUM(CASE WHEN t.events = 'walk' THEN 1 ELSE 0 END) AS walks,
-            SUM(CASE WHEN t.events IN ('single', 'double', 'triple', 'home_run') THEN 1 ELSE 0 END) AS hits,
-            COUNT(*) AS pitches_faced,
-            SUM(CASE WHEN t.description IN ('swinging_strike', 'swinging_strike_blocked', 'foul', 'hit_into_play', 'foul_tip', 'hit_into_play_no_out', 'hit_into_play_score') THEN 1 ELSE 0 END) AS swings,
-            SUM(CASE WHEN t.description IN ('foul', 'hit_into_play', 'foul_tip', 'hit_into_play_no_out', 'hit_into_play_score') THEN 1 ELSE 0 END) AS contact,
-            SUM(CASE WHEN t.type = 'S' AND t.description IN ('swinging_strike', 'swinging_strike_blocked') THEN 1 ELSE 0 END) AS swinging_strikes,
-            SUM(CASE WHEN t.zone BETWEEN 1 AND 9 THEN 1 ELSE 0 END) AS zone_pitches,
-            SUM(CASE WHEN t.zone BETWEEN 11 AND 14 THEN 1 ELSE 0 END) AS chases,
-            SUM(CASE WHEN t.zone BETWEEN 1 AND 9 AND t.description IN ('swinging_strike', 'swinging_strike_blocked', 'foul', 'hit_into_play', 'foul_tip', 'hit_into_play_no_out', 'hit_into_play_score') THEN 1 ELSE 0 END) AS zone_swings,
-            SUM(CASE WHEN t.zone BETWEEN 1 AND 9 AND t.description IN ('foul', 'hit_into_play', 'foul_tip', 'hit_into_play_no_out', 'hit_into_play_score') THEN 1 ELSE 0 END) AS zone_contact,
-            STRFTIME('%Y', t.game_date) AS season,
-            CAST(SUM(CASE WHEN t.events IN ('strikeout', 'strikeout_double_play') THEN 1 ELSE 0 END) AS REAL) / NULLIF(COUNT(DISTINCT CASE WHEN t.events IS NOT NULL THEN t.at_bat_number || '_' || t.game_pk ELSE NULL END), 0) AS k_percent,
-            CAST(SUM(CASE WHEN t.events = 'walk' THEN 1 ELSE 0 END) AS REAL) / NULLIF(COUNT(DISTINCT CASE WHEN t.events IS NOT NULL THEN t.at_bat_number || '_' || t.game_pk ELSE NULL END), 0) AS bb_percent,
-            CAST(SUM(CASE WHEN t.description IN ('swinging_strike', 'swinging_strike_blocked', 'foul', 'hit_into_play', 'foul_tip', 'hit_into_play_no_out', 'hit_into_play_score') THEN 1 ELSE 0 END) AS REAL) / NULLIF(COUNT(*), 0) AS swing_percent,
-            CAST(SUM(CASE WHEN t.description IN ('foul', 'hit_into_play', 'foul_tip', 'hit_into_play_no_out', 'hit_into_play_score') THEN 1 ELSE 0 END) AS REAL) / NULLIF(SUM(CASE WHEN t.description IN ('swinging_strike', 'swinging_strike_blocked', 'foul', 'hit_into_play', 'foul_tip', 'hit_into_play_no_out', 'hit_into_play_score') THEN 1 ELSE 0 END), 0) AS contact_percent,
-            CAST(SUM(CASE WHEN t.type = 'S' AND t.description IN ('swinging_strike', 'swinging_strike_blocked') THEN 1 ELSE 0 END) AS REAL) / NULLIF(COUNT(*), 0) AS swinging_strike_percent,
-            CAST(SUM(CASE WHEN t.zone BETWEEN 11 AND 14 AND t.description IN ('swinging_strike', 'swinging_strike_blocked', 'foul', 'hit_into_play', 'foul_tip', 'hit_into_play_no_out', 'hit_into_play_score') THEN 1 ELSE 0 END) AS REAL)
-                / NULLIF(SUM(CASE WHEN t.zone BETWEEN 11 AND 14 THEN 1 ELSE 0 END), 0) AS chase_percent,
-            CAST(SUM(CASE WHEN t.zone BETWEEN 1 AND 9 AND t.description IN ('foul', 'hit_into_play', 'foul_tip', 'hit_into_play_no_out', 'hit_into_play_score') THEN 1 ELSE 0 END) AS REAL)
-                / NULLIF(SUM(CASE WHEN t.zone BETWEEN 1 AND 9 AND t.description IN ('swinging_strike', 'swinging_strike_blocked', 'foul', 'hit_into_play', 'foul_tip', 'hit_into_play_no_out', 'hit_into_play_score') THEN 1 ELSE 0 END), 0) AS zone_contact_percent
-        FROM TeamGamePitches t
-        GROUP BY t.game_pk, t.game_date, t.team, t.opponent, t.home_team, t.away_team
-        ORDER BY t.game_date, t.game_pk, t.team
+            s.game_pk, DATE(s.game_date) AS game_date,
+            CASE WHEN s.inning_topbot = 'Top' THEN s.away_team ELSE s.home_team END AS team,
+            CASE WHEN s.inning_topbot = 'Top' THEN s.home_team ELSE s.away_team END AS opponent,
+            s.home_team, s.away_team, s.description, s.type, s.zone, s.events, s.balls, s.strikes,
+            s.launch_speed, s.launch_angle, s.estimated_woba_using_speedangle AS est_woba,
+            s.woba_value, s.woba_denom, s.babip_value, s.iso_value, s.at_bat_number, s.inning_topbot,
+            s.p_throws -- Need pitcher hand for conditional aggregation
+        FROM statcast_batters s -- Alias as 's'
+        {date_filter_sql} -- Apply date filter here
+    )
+    SELECT
+        t.game_pk, t.game_date, t.team, t.opponent, t.home_team, t.away_team,
+        MAX(CASE WHEN t.inning_topbot = 'Bot' THEN 1 ELSE 0 END) AS is_home,
+        STRFTIME('%Y', t.game_date) AS season,
+
+        -- Overall Aggregations
+        COUNT(DISTINCT CASE WHEN t.events IS NOT NULL THEN t.at_bat_number || '_' || t.game_pk ELSE NULL END) AS pa,
+        SUM(CASE WHEN t.events IN ('strikeout', 'strikeout_double_play') THEN 1 ELSE 0 END) AS strikeouts,
+        COUNT(*) AS pitches_faced,
+        SUM(CASE WHEN t.type = 'S' AND t.description IN ('swinging_strike', 'swinging_strike_blocked') THEN 1 ELSE 0 END) AS swinging_strikes,
+
+        -- Aggregations vs LHP
+        COUNT(DISTINCT CASE WHEN t.p_throws = 'L' AND t.events IS NOT NULL THEN t.at_bat_number || '_' || t.game_pk ELSE NULL END) AS pa_vs_LHP,
+        SUM(CASE WHEN t.p_throws = 'L' AND t.events IN ('strikeout', 'strikeout_double_play') THEN 1 ELSE 0 END) AS strikeouts_vs_LHP,
+        SUM(CASE WHEN t.p_throws = 'L' THEN 1 ELSE 0 END) AS pitches_faced_vs_LHP,
+        SUM(CASE WHEN t.p_throws = 'L' AND t.type = 'S' AND t.description IN ('swinging_strike', 'swinging_strike_blocked') THEN 1 ELSE 0 END) AS swinging_strikes_vs_LHP,
+
+        -- Aggregations vs RHP
+        COUNT(DISTINCT CASE WHEN t.p_throws = 'R' AND t.events IS NOT NULL THEN t.at_bat_number || '_' || t.game_pk ELSE NULL END) AS pa_vs_RHP,
+        SUM(CASE WHEN t.p_throws = 'R' AND t.events IN ('strikeout', 'strikeout_double_play') THEN 1 ELSE 0 END) AS strikeouts_vs_RHP,
+        SUM(CASE WHEN t.p_throws = 'R' THEN 1 ELSE 0 END) AS pitches_faced_vs_RHP,
+        SUM(CASE WHEN t.p_throws = 'R' AND t.type = 'S' AND t.description IN ('swinging_strike', 'swinging_strike_blocked') THEN 1 ELSE 0 END) AS swinging_strikes_vs_RHP,
+
+        -- Calculate Overall Rates
+        CAST(SUM(CASE WHEN t.events IN ('strikeout', 'strikeout_double_play') THEN 1 ELSE 0 END) AS REAL)
+            / NULLIF(COUNT(DISTINCT CASE WHEN t.events IS NOT NULL THEN t.at_bat_number || '_' || t.game_pk ELSE NULL END), 0) AS k_percent,
+        CAST(SUM(CASE WHEN t.type = 'S' AND t.description IN ('swinging_strike', 'swinging_strike_blocked') THEN 1 ELSE 0 END) AS REAL)
+            / NULLIF(COUNT(*), 0) AS swinging_strike_percent,
+
+        -- Calculate Rates vs LHP
+        CAST(SUM(CASE WHEN t.p_throws = 'L' AND t.events IN ('strikeout', 'strikeout_double_play') THEN 1 ELSE 0 END) AS REAL)
+            / NULLIF(COUNT(DISTINCT CASE WHEN t.p_throws = 'L' AND t.events IS NOT NULL THEN t.at_bat_number || '_' || t.game_pk ELSE NULL END), 0) AS k_percent_vs_LHP,
+        CAST(SUM(CASE WHEN t.p_throws = 'L' AND t.type = 'S' AND t.description IN ('swinging_strike', 'swinging_strike_blocked') THEN 1 ELSE 0 END) AS REAL)
+            / NULLIF(SUM(CASE WHEN t.p_throws = 'L' THEN 1 ELSE 0 END), 0) AS swinging_strike_percent_vs_LHP,
+
+        -- Calculate Rates vs RHP
+        CAST(SUM(CASE WHEN t.p_throws = 'R' AND t.events IN ('strikeout', 'strikeout_double_play') THEN 1 ELSE 0 END) AS REAL)
+            / NULLIF(COUNT(DISTINCT CASE WHEN t.p_throws = 'R' AND t.events IS NOT NULL THEN t.at_bat_number || '_' || t.game_pk ELSE NULL END), 0) AS k_percent_vs_RHP,
+        CAST(SUM(CASE WHEN t.p_throws = 'R' AND t.type = 'S' AND t.description IN ('swinging_strike', 'swinging_strike_blocked') THEN 1 ELSE 0 END) AS REAL)
+            / NULLIF(SUM(CASE WHEN t.p_throws = 'R' THEN 1 ELSE 0 END), 0) AS swinging_strike_percent_vs_RHP
+
+        -- Add other metrics as needed (e.g., walks, contact%, chase%) broken down similarly
+
+    FROM TeamGamePitches t
+    GROUP BY t.game_pk, t.game_date, t.team, t.opponent, t.home_team, t.away_team
+    ORDER BY t.game_date, t.game_pk, t.team
     """
 
     agg_df = pd.DataFrame()
-    conn = None # Initialize connection variable
+    schedule_game_ids = set()
+    output_table_name = 'game_level_team_stats' # Keep same table name
 
     try:
-        logger.info("Executing SQL query for TEAM game-level aggregation...")
-        db_conn_context = DBConnection(DB_PATH)
-        conn = db_conn_context.__enter__()
+        with DBConnection(DB_PATH) as conn:
+            logger.info("Executing SQL query for TEAM game-level aggregation (vs P-Hand)...")
 
-        # Load schedule data (filtered by date if target_date is specified)
-        logger.info("Loading game identifiers from master_schedule...")
-        schedule_query = f"SELECT DISTINCT game_date, home_team, away_team FROM master_schedule {where_clause_load}"
-        schedule_games_df = pd.read_sql_query(schedule_query, conn)
-        # ... (rest of schedule ID creation logic remains the same) ...
-        schedule_game_ids = set()
-        if not schedule_games_df.empty:
-            schedule_games_df['game_date'] = pd.to_datetime(schedule_games_df['game_date']).dt.strftime('%Y-%m-%d')
-            schedule_games_df['home_team'] = schedule_games_df['home_team'].str.strip()
-            schedule_games_df['away_team'] = schedule_games_df['away_team'].str.strip()
-            schedule_game_ids = set(schedule_games_df['game_date'] + '_' + schedule_games_df['away_team'] + '_' + schedule_games_df['home_team'])
-            logger.debug(f"Created {len(schedule_game_ids)} unique game identifiers from master_schedule for filter.")
-        else:
-             logger.warning(f"Master schedule data for filter condition ('{where_clause_load}') is empty or query failed.")
-
-
-        # Execute main aggregation query
-        agg_df = pd.read_sql_query(sql, conn)
-        logger.info(f"SQL aggregation returned {len(agg_df)} TEAM game-level records for date '{target_date if target_date else 'ALL'}'")
-
-        # Filter results based on games that have schedule data available
-        if not schedule_game_ids:
-             logger.warning("Skipping filtering based on schedule data (no schedule IDs).")
-        elif not agg_df.empty:
-             # ... (schedule filtering logic remains the same) ...
-            logger.info("Filtering TEAM results based on available schedule data...")
-            original_count = len(agg_df)
-            try:
-                 agg_df['game_date'] = pd.to_datetime(agg_df['game_date']).dt.strftime('%Y-%m-%d')
-                 agg_df['home_team'] = agg_df['home_team'].astype(str).str.strip()
-                 agg_df['away_team'] = agg_df['away_team'].astype(str).str.strip()
-                 agg_df['composite_game_id'] = agg_df['game_date'] + '_' + agg_df['away_team'] + '_' + agg_df['home_team']
-                 agg_df = agg_df[agg_df['composite_game_id'].isin(schedule_game_ids)].drop(columns=['composite_game_id'])
-                 logger.info(f"Filtered TEAM records to {len(agg_df)} (from {original_count})")
-            except Exception as fe: logger.error(f"Error during schedule filtering: {fe}.")
-        else:
-             logger.info("Aggregated TEAM DataFrame is empty, skipping schedule filtering.")
-
-        # Imputation (remains the same)
-        if not agg_df.empty:
-            # ... (imputation logic using smart_impute) ...
-            team_impute_cols = ['contact_percent', 'chase_percent', 'zone_contact_percent'] # Add others as needed
-            agg_df = smart_impute(agg_df, 'team', team_impute_cols)
-
-
-        # *** MODIFIED: DELETE-THEN-INSERT Logic ***
-        output_table_name = 'game_level_team_stats'
-        if not agg_df.empty and target_date:
-            # --- DELETE existing rows for the target_date ---
-            logger.info(f"Deleting existing TEAM records for date {target_date} from '{output_table_name}'...")
-            delete_sql = f"DELETE FROM {output_table_name} WHERE DATE(game_date) = ?"
+            # Check if 'p_throws' column exists in statcast_batters
             cursor = conn.cursor()
-            cursor.execute(delete_sql, (target_date,))
-            deleted_count = cursor.rowcount
-            conn.commit() # Commit the delete
-            logger.info(f"Deleted {deleted_count} existing TEAM records for {target_date}.")
-            # --- Now APPEND the new data ---
-            logger.info(f"Appending {len(agg_df)} new TEAM records for {target_date} to '{output_table_name}'...")
-            agg_df.to_sql(output_table_name, conn, if_exists='append', index=False)
-            conn.commit() # Commit the append
-            logger.info(f"Appended {len(agg_df)} records for {target_date}.")
-        elif not agg_df.empty and not target_date: # Full run mode
-             logger.info(f"Replacing existing TEAM data in '{output_table_name}' with {len(agg_df)} new records...")
-             agg_df.to_sql(output_table_name, conn, if_exists='replace', index=False)
-             conn.commit()
-             logger.info(f"Replaced data in {output_table_name}.")
-        else:
-            logger.info(f"No TEAM data to save for date '{target_date if target_date else 'ALL'}'.")
+            try:
+                cursor.execute("SELECT p_throws FROM statcast_batters LIMIT 1")
+                logger.info("'p_throws' column found in statcast_batters.")
+            except sqlite3.OperationalError as oe:
+                if "no such column: p_throws" in str(oe).lower():
+                     logger.error("FATAL: Required 'p_throws' column missing from 'statcast_batters' table.")
+                     logger.error("Cannot calculate opponent stats vs pitcher hand. Please ensure 'p_throws' is included during data ingestion.")
+                     return None # Exit function if required column is missing
+                else:
+                     logger.error(f"SQL Operational Error checking for 'p_throws' column: {oe}")
+                     raise # Re-raise other operational errors
 
-        # Close connection manually
-        db_conn_context.__exit__(None, None, None)
-        conn = None # Indicate connection is closed
+            # ... (keep schedule loading, main query execution, filtering as before) ...
+            # Load schedule data
+            logger.info("Loading game identifiers from historical_umpire_data...")
+            schedule_query = f"SELECT DISTINCT game_date, home_team, away_team FROM historical_umpire_data {where_clause_load}"
+            try:
+                schedule_games_df = pd.read_sql_query(schedule_query, conn)
+                if not schedule_games_df.empty:
+                    schedule_games_df['game_date'] = pd.to_datetime(schedule_games_df['game_date']).dt.strftime('%Y-%m-%d')
+                    schedule_games_df['home_team'] = schedule_games_df['home_team'].str.strip()
+                    schedule_games_df['away_team'] = schedule_games_df['away_team'].str.strip()
+                    schedule_game_ids = set(schedule_games_df['game_date'] + '_' + schedule_games_df['away_team'] + '_' + schedule_games_df['home_team'])
+                    logger.debug(f"Created {len(schedule_game_ids)} unique game identifiers from historical_umpire_data for filter.")
+                else:
+                     logger.warning(f"Master schedule data for filter condition ('{where_clause_load}') is empty or query failed.")
+            except Exception as e_sched:
+                logger.error(f"Error loading schedule data: {e_sched}")
+                logger.warning("Proceeding without schedule filter due to error.")
+                schedule_game_ids = set()
 
-    except sqlite3.OperationalError as oe:
-         # ... (error handling remains the same) ...
-        if "no such table: master_schedule" in str(oe).lower(): logger.error(f"SQL Error: 'master_schedule' table not found.")
-        elif "no such table: statcast_batters" in str(oe).lower(): logger.error(f"SQL Error: 'statcast_batters' table not found.")
-        else: logger.error(f"SQL Operational Error during TEAM aggregation: {oe}.")
-        if conn: db_conn_context.__exit__(type(oe), oe, oe.__traceback__) # Ensure close on error
-        return None # Return None on error
+            # Execute main aggregation query
+            try:
+                agg_df = pd.read_sql_query(sql, conn)
+                logger.info(f"SQL aggregation returned {len(agg_df)} TEAM game-level records for date '{target_date if target_date else 'ALL'}'")
+            except Exception as e_main:
+                 logger.error(f"Error during main TEAM aggregation: {e_main}")
+                 return None
+
+             # Filter results
+            if not schedule_game_ids:
+                 logger.warning("Skipping filtering based on schedule data.")
+            elif not agg_df.empty:
+                logger.info("Filtering TEAM results based on available schedule data...")
+                original_count = len(agg_df)
+                try:
+                     agg_df['game_date'] = pd.to_datetime(agg_df['game_date']).dt.strftime('%Y-%m-%d')
+                     agg_df['home_team'] = agg_df['home_team'].astype(str).str.strip()
+                     agg_df['away_team'] = agg_df['away_team'].astype(str).str.strip()
+                     agg_df['composite_game_id'] = agg_df['game_date'] + '_' + agg_df['away_team'] + '_' + agg_df['home_team']
+                     agg_df = agg_df[agg_df['composite_game_id'].isin(schedule_game_ids)].drop(columns=['composite_game_id'])
+                     logger.info(f"Filtered TEAM records to {len(agg_df)} (from {original_count})")
+                except Exception as fe:
+                     logger.error(f"Error during schedule filtering: {fe}.")
+                     logger.warning("Proceeding with unfiltered data due to filtering error.")
+            else:
+                 logger.info("Aggregated TEAM DataFrame is empty, skipping schedule filtering.")
+
+
+            # Imputation (add new columns to imputation list, fill NaNs with 0.0)
+            if not agg_df.empty:
+                team_rate_impute_cols = [
+                    'k_percent', 'swinging_strike_percent',
+                    'k_percent_vs_LHP', 'swinging_strike_percent_vs_LHP',
+                    'k_percent_vs_RHP', 'swinging_strike_percent_vs_RHP',
+                    # Add others like 'bb_percent', 'contact_percent', etc. if calculated
+                ]
+                logger.info("Imputing team rate metrics (including vs P-Hand)...")
+                # Optional: Could try smart_impute first, but 0.0 fill is often safe for rates
+                # agg_df = smart_impute(agg_df, 'team', team_rate_impute_cols)
+                for col in team_rate_impute_cols:
+                     if col in agg_df.columns and agg_df[col].isnull().any():
+                        nan_count = agg_df[col].isnull().sum()
+                        logger.debug(f"   Imputing {nan_count} NaNs in '{col}' with 0.0.")
+                        agg_df[col] = agg_df[col].fillna(0.0)
+
+            # --- Manual Drop/Append Save Logic ---
+            if not agg_df.empty:
+                cursor = conn.cursor()
+                if target_date: # Incremental update
+                    logger.info(f"Deleting existing TEAM records for date {target_date} from '{output_table_name}'...")
+                    delete_sql = f"DELETE FROM {output_table_name} WHERE DATE(game_date) = ?"
+                    try:
+                        cursor.execute(delete_sql, (target_date,))
+                        logger.info(f"Deleted {cursor.rowcount} existing TEAM records for {target_date}.")
+                        logger.info(f"Appending {len(agg_df)} new TEAM records for {target_date} to '{output_table_name}'...")
+                        agg_df.to_sql(output_table_name, conn, if_exists='append', index=False)
+                        logger.info(f"Appended {len(agg_df)} records for {target_date}.")
+                    except sqlite3.Error as e_del_app:
+                        logger.error(f"Error during DELETE/APPEND for TEAM {target_date}: {e_del_app}")
+                        raise
+                else: # Full run mode
+                    logger.info(f"Dropping existing TEAM table '{output_table_name}' (if exists)...")
+                    try:
+                        cursor.execute(f"DROP TABLE IF EXISTS {output_table_name}")
+                        logger.info(f"Table '{output_table_name}' dropped successfully (or did not exist).")
+                        logger.info(f"Writing {len(agg_df)} new TEAM records to '{output_table_name}'...")
+                        agg_df.to_sql(output_table_name, conn, if_exists='append', index=False)
+                        logger.info(f"Finished writing records to {output_table_name}.")
+                    except sqlite3.Error as e_drop_app:
+                        logger.error(f"Error during DROP/APPEND for TEAM (full run): {e_drop_app}")
+                        raise
+            else:
+                logger.info(f"No TEAM data processed to save for date '{target_date if target_date else 'ALL'}'.")
+                if not target_date:
+                     logger.info(f"Dropping existing TEAM table '{output_table_name}' (if exists) even though no new data was generated...")
+                     try:
+                         cursor = conn.cursor()
+                         cursor.execute(f"DROP TABLE IF EXISTS {output_table_name}")
+                         logger.info(f"Table '{output_table_name}' dropped successfully (or did not exist).")
+                     except sqlite3.Error as e_drop_empty:
+                          logger.error(f"Error during DROP TABLE for TEAM (empty full run): {e_drop_empty}")
+                          raise
+
+    except sqlite3.Error as db_e:
+        logger.error(f"Database error during TEAM aggregation for '{target_date if target_date else 'ALL'}': {db_e}", exc_info=False)
+        return None
     except Exception as e:
-        logger.error(f"Error during TEAM SQL aggregation: {e}", exc_info=True)
-        if conn: db_conn_context.__exit__(type(e), e, e.__traceback__) # Ensure close on error
-        return None # Return None on error
+        logger.error(f"Unexpected error during TEAM aggregation for '{target_date if target_date else 'ALL'}': {e}", exc_info=True)
+        return None
 
     elapsed = time.time() - start_time
-    logger.info(f"TEAM SQL aggregation for '{target_date if target_date else 'ALL'}' completed in {elapsed:.2f}s")
+    logger.info(f"TEAM SQL aggregation (vs P-Hand, manual replace) for '{target_date if target_date else 'ALL'}' completed in {elapsed:.2f}s")
     return agg_df
 
 
-# --- Main Execution (Example - now less relevant as pipeline script calls functions) ---
+# --- Main Execution Block (Keep as is for testing) ---
 if __name__ == "__main__":
-    logger.info("Running aggregate_statcast.py directly (for debugging/testing)...")
-    # Example: Run aggregation for a specific date
-    test_date = '2025-04-14' # Example date
-    logger.info(f"Running PITCHER aggregation for {test_date}...")
-    pitcher_agg = aggregate_statcast_pitchers_sql(target_date=test_date)
-    if pitcher_agg is not None: logger.info(f"Pitcher aggregation returned {len(pitcher_agg)} rows.")
+    if not MODULE_IMPORTS_OK:
+        print("ERROR: Failed to import necessary modules.")
+        print("Ensure 'src.config' and 'src.data.utils' are accessible from the script's location.")
+        print("Attempting to proceed with fallback settings...")
+    else:
+        print("Module imports successful.")
 
-    logger.info(f"Running TEAM aggregation for {test_date}...")
-    team_agg = aggregate_statcast_batters_sql(target_date=test_date)
-    if team_agg is not None: logger.info(f"Team aggregation returned {len(team_agg)} rows.")
+    logger.info("Running aggregate_statcast.py directly (for debugging/testing)...")
+    test_date = None # For full run
+
+    logger.info(f"Running PITCHER aggregation (incl. platoon, manual replace) for {test_date if test_date else 'ALL DATES'}...")
+    pitcher_agg_result = aggregate_statcast_pitchers_sql(target_date=test_date)
+    if pitcher_agg_result is not None:
+        logger.info(f"Pitcher aggregation completed successfully. Returned {len(pitcher_agg_result)} rows.")
+    else:
+        logger.error("Pitcher aggregation failed.")
+
+    logger.info(f"Running TEAM aggregation (manual replace) for {test_date if test_date else 'ALL DATES'}...")
+    team_agg_result = aggregate_statcast_batters_sql(target_date=test_date)
+    if team_agg_result is not None:
+        logger.info(f"Team aggregation completed successfully. Returned {len(team_agg_result)} rows.")
+    else:
+        logger.error("Team aggregation failed.")
 
     logger.info("Direct execution finished.")
