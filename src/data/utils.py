@@ -45,7 +45,7 @@ def normalize_name(name):
     
     return name
 
-def setup_logger(name, log_file=None, level=logging.INFO):
+def setup_logger(name, log_file=None, level=logging.DEBUG):
     """Set up a logger with consistent formatting"""
     logger = logging.getLogger(name)
     logger.setLevel(level)

@@ -17,6 +17,7 @@ import httpx # For asynchronous HTTP requests
 import asyncio # For running async tasks
 import nest_asyncio # Handles nested event loops if needed
 import random # Added for retry jitter
+from src.data.utils import DBConnection
 
 nest_asyncio.apply() # Apply necessary patch for asyncio
 
@@ -71,6 +72,7 @@ def generate_dates_resumable(start_date_str, end_date_str, last_processed_date_s
     """
     Generates dates ONLY within the typical MLB season (Mar 25 - Nov 5 approx)
     for each year in the range, respecting the checkpoint.
+    SKIPS the entire year 2020.
     """
     script_start_dt = datetime.strptime(start_date_str, "%Y%m%d")
     script_end_dt = datetime.strptime(end_date_str, "%Y%m%d")
@@ -87,15 +89,20 @@ def generate_dates_resumable(start_date_str, end_date_str, last_processed_date_s
 
     start_dt = resume_from_dt if resume_from_dt and resume_from_dt > script_start_dt else script_start_dt
 
-    logging.info(f"Starting date generation from: {start_dt.strftime('%Y-%m-%d')} within seasonal bounds.")
+    logging.info(f"Starting date generation from: {start_dt.strftime('%Y-%m-%d')} within seasonal bounds (Skipping 2020 entirely).")
 
     for year in range(start_year, end_year + 1):
-        # Define season start/end for THIS year
+        # --- ADDED LINE TO SKIP 2020 ---
+        if year == 2020:
+            logging.info("Skipping year 2020 as requested.")
+            continue # Go to the next year in the loop
+
+        # Use standard season bounds for other years
         try:
             year_season_start = datetime(year, SEASON_START_MONTH_DAY[0], SEASON_START_MONTH_DAY[1])
             year_season_end = datetime(year, SEASON_END_MONTH_DAY[0], SEASON_END_MONTH_DAY[1])
-        except ValueError: # Handle potential date issues
-            logging.warning(f"Could not create season bounds for year {year}, skipping year.")
+        except ValueError:
+            logging.warning(f"Could not create standard season bounds for year {year}, skipping year.")
             continue
 
         # Determine the actual iteration start/end for this year, respecting script bounds and resume point
@@ -119,6 +126,7 @@ def generate_dates_resumable(start_date_str, end_date_str, last_processed_date_s
         while current_date <= current_year_end:
             yield current_date.strftime("%Y%m%d")
             current_date += timedelta(days=1)
+
 
 
 # --- HTML Parsing Functions ---
@@ -188,6 +196,33 @@ def parse_team_info(soup, game_url):
         logging.error(f"Error parsing teams for {game_url}: {e}")
     return home_team, away_team
 
+def parse_game_time(soup, game_url):
+    """Extracts the game start time from the Gamecast page soup."""
+    game_time = None
+    try:
+        # Find the div containing the time and date metadata
+        meta_div = soup.find('div', class_='n8 GameInfo__Meta')
+        if meta_div:
+            span = meta_div.find('span')
+            if span:
+                # Text format is typically "TIME, DATE" like "4:10 PM, April 19, 2016"
+                full_text = span.get_text(strip=True)
+                # Split by comma and take the first part, then strip whitespace
+                time_part = full_text.split(',')[0].strip()
+                # Basic validation (optional but recommended)
+                if re.match(r"\d{1,2}:\d{2}\s*(?:AM|PM)", time_part, re.IGNORECASE):
+                    game_time = time_part
+                else:
+                    logging.warning(f"Could not parse time format from '{full_text}' in {game_url}")
+            else:
+                logging.warning(f"Could not find span within GameInfo__Meta for {game_url}")
+        # else: # Optional: Log if the meta_div itself isn't found
+            # logging.debug(f"Could not find 'div.n8.GameInfo__Meta' for {game_url}")
+
+    except Exception as e:
+        logging.error(f"Error parsing game time for {game_url}: {e}")
+    return game_time
+
 # --- Asynchronous Fetching and Processing ---
 async def fetch_and_parse_gamecast(client, url, semaphore):
     """
@@ -209,33 +244,37 @@ async def fetch_and_parse_gamecast(client, url, semaphore):
                 soup = BeautifulSoup(response.text, 'lxml') # Use lxml parser
                 umpires = parse_umpire_info(soup, url)
                 home_team, away_team = parse_team_info(soup, url)
+                # *** ADD THIS LINE ***
+                game_time = parse_game_time(soup, url) # Call the new function
 
                 if home_team and away_team:
-                    # Return data including the URL for reference if needed
-                    # Add a small sleep *after* successful processing before returning
+                    # Return data including the URL and game_time
                     await asyncio.sleep(0.1) # Small delay even on success
-                    return {'url': url, 'home_team': home_team, 'away_team': away_team, **umpires}
+                    # *** MODIFY THIS DICTIONARY ***
+                    return {
+                        'url': url,
+                        'home_team': home_team,
+                        'away_team': away_team,
+                        'game_time': game_time, # Add the extracted game time
+                        **umpires
+                    }
                 else:
                     logging.warning(f"Could not parse required team names from {url}, skipping result.")
                     return None # Indicate failure to parse essentials
 
-            except (httpx.RequestError, httpx.TimeoutException) as e: # Catch broader request errors including ConnectionTerminated and Timeouts
-                if attempt == max_retries - 1: # Last attempt failed
+            except (httpx.RequestError, httpx.TimeoutException) as e:
+                if attempt == max_retries - 1:
                     logging.error(f"Request error fetching {url} after {max_retries} attempts: {e}")
-                    return None # Failed after retries
+                    return None
                 else:
-                    # Exponential backoff with jitter
                     delay = base_delay * (2 ** attempt) + random.uniform(0, base_delay)
                     logging.warning(f"Request error fetching {url} (Attempt {attempt+1}): {e}. Retrying in {delay:.2f}s...")
-                    await asyncio.sleep(delay) # Wait before retrying
+                    await asyncio.sleep(delay)
 
-            except Exception as e: # Catch other unexpected errors during parsing etc.
+            except Exception as e:
                 logging.error(f"Unexpected error processing gamecast {url}: {e}")
-                # import traceback # Uncomment for detailed traceback
-                # logging.error(traceback.format_exc()) # Uncomment for detailed traceback
-                return None # Non-retryable error for this function
+                return None
 
-        # Should not be reached if loop completes normally, but ensures None return on failure
         return None
 
 
@@ -454,7 +493,7 @@ def scrape_espn_data_optimized(start_date, end_date, webdriver_path=None):
                      continue # Move to the next date
 
                 current_df = pd.DataFrame(all_game_data) # Create DF from potentially updated list
-                cols_order = ['game_date', 'home_team', 'away_team', 'home_plate_umpire', 'first_base_umpire', 'second_base_umpire', 'third_base_umpire', 'url']
+                cols_order = ['game_date', 'game_time', 'home_team', 'away_team', 'home_plate_umpire', 'first_base_umpire', 'second_base_umpire', 'third_base_umpire', 'url']
                 for col in cols_order:
                     if col not in current_df.columns: current_df[col] = None # Add missing columns
 
@@ -502,7 +541,7 @@ def scrape_espn_data_optimized(start_date, end_date, webdriver_path=None):
              final_df = pd.DataFrame(all_game_data)
              if not final_df.empty:
                   # Apply final ordering/deduplication again if using in-memory data
-                  cols_order = ['game_date', 'home_team', 'away_team', 'home_plate_umpire', 'first_base_umpire', 'second_base_umpire', 'third_base_umpire']
+                  cols_order = ['game_date', 'game_time', 'home_team', 'away_team', 'home_plate_umpire', 'first_base_umpire', 'second_base_umpire', 'third_base_umpire']
                   for col in cols_order:
                        if col not in final_df.columns: final_df[col] = None
                   final_df['game_date'] = pd.to_datetime(final_df['game_date']).dt.strftime('%Y-%m-%d')
@@ -524,10 +563,23 @@ if __name__ == "__main__":
     final_data = scrape_espn_data_optimized(START_DATE, END_DATE, WEBDRIVER_PATH)
 
     if final_data is not None and not final_data.empty:
-        logging.info(f"--- Script finished. {len(final_data)} total unique records found in {OUTPUT_CSV}. ---")
+        logging.info(f"--- Script finished. {len(final_data)} total unique records found in {OUTPUT_CSV}. ---") 
         print(f"\nData potentially saved to {OUTPUT_CSV}") # Changed message as final save might differ
         print("\nFinal data sample (tail):")
         print(final_data.tail())
+        try:
+            db_path = DBConfig.PATH # Get DB path from config
+            table_name = 'historical_umpire_data'
+            logging.info(f"Attempting to save data to table '{table_name}' in database '{db_path}'...")
+            with DBConnection() as conn: # Use the DBConnection context manager
+                # Note: Pass 'conn' as the second argument to to_sql
+                final_data.to_sql(table_name, conn, if_exists='replace', index=False)
+            logging.info(f"Successfully saved {len(final_data)} records to table '{table_name}'.")
+            print(f"\nData also saved to database table: '{table_name}' in '{db_path}'")
+
+        except Exception as e:
+            logging.error(f"Failed to save data to database table '{table_name}': {e}")
+            print(f"\nError saving data to database table: '{table_name}'. Check logs.")
     elif final_data is not None and final_data.empty:
          logging.info("--- Script finished. No data collected or loaded (check date range/season bounds/checkpoints). ---")
          print(f"\nNo data collected. Check {OUTPUT_CSV} for any previously saved data.")
