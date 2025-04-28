@@ -379,12 +379,14 @@ def aggregate_batter_data(df):
     return gb_stats
 
 
+# ================================================================
+# == REVISED aggregate_team_data FUNCTION (BULK PROCESSING) ==
+# ================================================================
 def aggregate_team_data(pitcher_game_stats, batter_game_stats):
     """
     Aggregates pitcher and batter stats to the game-team level using bulk operations.
-    Derives pitcher teams from statcast_pitchers and batter teams from statcast_batters.
     """
-    logger.info("Aggregating team-level data (Using separate sources for team assignment)...")
+    logger.info("Aggregating team-level data (Revised Bulk Method)...")
     if pitcher_game_stats.empty and batter_game_stats.empty:
         logger.warning("Both pitcher and batter aggregated stats are empty. Cannot create team stats.")
         return pd.DataFrame()
@@ -392,6 +394,7 @@ def aggregate_team_data(pitcher_game_stats, batter_game_stats):
     # Combine game_pks from both sources safely
     game_pks_pitcher_game = pitcher_game_stats['game_pk'].unique() if not pitcher_game_stats.empty and 'game_pk' in pitcher_game_stats.columns else np.array([])
     game_pks_batter_game = batter_game_stats['game_pk'].unique() if not batter_game_stats.empty and 'game_pk' in batter_game_stats.columns else np.array([])
+
     game_pks = np.union1d(game_pks_pitcher_game, game_pks_batter_game)
 
     if len(game_pks) == 0:
@@ -401,234 +404,192 @@ def aggregate_team_data(pitcher_game_stats, batter_game_stats):
     logger.info(f"Processing {len(game_pks)} unique games for team aggregation.")
 
     all_team_stats = pd.DataFrame()
-    pitcher_team_map = pd.DataFrame()
-    batter_team_map = pd.DataFrame()
-    game_metadata = pd.DataFrame()
 
     try:
+        # *** Corrected: No argument for DBConnection ***
         with DBConnection() as conn:
+            # Fetch minimal pitch-level data ONCE for all relevant games
+            logger.info("Fetching pitch-level data for team assignment...")
             game_pks_str = ','.join(map(str, game_pks))
-            cursor = conn.cursor() # For checking table existence
-
-            # --- Get Pitcher Team Mapping (from statcast_pitchers) ---
-            logger.info("Fetching pitch-level data for PITCHER team assignment...")
+            cols = ["game_pk", "pitcher", "batter", "inning_topbot", "home_team", "away_team", "game_date"] # Added game_date
+            # Check if statcast_pitchers exists
+            cursor = conn.cursor()
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='statcast_pitchers';")
-            if cursor.fetchone():
-                cols_p = ["game_pk", "pitcher", "inning_topbot", "home_team", "away_team", "game_date"]
-                q_pitch_data = f'SELECT {", ".join(cols_p)} FROM statcast_pitchers WHERE game_pk IN ({game_pks_str})'
-                pitcher_mapping_data = pd.read_sql(q_pitch_data, conn)
-                logger.info(f"Fetched {len(pitcher_mapping_data)} rows from statcast_pitchers.")
+            if cursor.fetchone() is None:
+                logger.error("Source table 'statcast_pitchers' not found for team assignment. Aborting team aggregation.")
+                return pd.DataFrame()
 
-                if not pitcher_mapping_data.empty:
-                    pitcher_mapping_data['game_pk'] = pd.to_numeric(pitcher_mapping_data['game_pk'], errors='coerce')
-                    pitcher_mapping_data['pitcher'] = pd.to_numeric(pitcher_mapping_data['pitcher'], errors='coerce')
-                    pitcher_mapping_data = pitcher_mapping_data.dropna(subset=['game_pk', 'pitcher', 'inning_topbot'])
-                    pitcher_mapping_data['pitching_team'] = np.where(
-                        pitcher_mapping_data['inning_topbot'] == 'Top', pitcher_mapping_data['home_team'], pitcher_mapping_data['away_team']
-                    )
-                    pitcher_team_map = pitcher_mapping_data[['game_pk', 'pitcher', 'pitching_team']].drop_duplicates().rename(columns={'pitching_team': 'team'})
-                    # Get game metadata from here as well
-                    game_metadata = pitcher_mapping_data[['game_pk', 'game_date', 'home_team', 'away_team']].drop_duplicates(subset=['game_pk'])
-                else:
-                    logger.warning("No data found in statcast_pitchers for pitcher team assignment.")
+            q_pitch_data = f'SELECT {", ".join(cols)} FROM statcast_pitchers WHERE game_pk IN ({game_pks_str})'
+            pitch_level_data = pd.read_sql(q_pitch_data, conn)
+            logger.info(f"Fetched {len(pitch_level_data)} pitch-level rows for team assignment.")
+
+            if pitch_level_data.empty:
+                 logger.warning("No pitch-level data found for the relevant games. Cannot determine team stats.")
+                 return pd.DataFrame()
+
+            # Ensure types before processing
+            pitch_level_data['game_pk'] = pd.to_numeric(pitch_level_data['game_pk'], errors='coerce')
+            pitch_level_data['pitcher'] = pd.to_numeric(pitch_level_data['pitcher'], errors='coerce')
+            pitch_level_data['batter'] = pd.to_numeric(pitch_level_data['batter'], errors='coerce')
+            pitch_level_data = pitch_level_data.dropna(subset=['game_pk', 'pitcher', 'batter', 'inning_topbot'])
+
+
+            # --- Determine Team Affiliation in Bulk ---
+            pitch_level_data['pitching_team'] = np.where(
+                pitch_level_data['inning_topbot'] == 'Top', pitch_level_data['home_team'], pitch_level_data['away_team']
+            )
+            pitch_level_data['batting_team'] = np.where(
+                pitch_level_data['inning_topbot'] == 'Top', pitch_level_data['away_team'], pitch_level_data['home_team']
+            )
+
+            # Create unique mappings for pitcher/batter to their team *in that game*
+            pitcher_team_map = pitch_level_data[['game_pk', 'pitcher', 'pitching_team']].drop_duplicates().rename(columns={'pitching_team': 'team'})
+            batter_team_map = pitch_level_data[['game_pk', 'batter', 'batting_team']].drop_duplicates().rename(columns={'batting_team': 'team'})
+
+            # Ensure correct dtypes for merging in aggregated dataframes
+            if not pitcher_game_stats.empty:
+                # Use pitcher_id if renamed, otherwise pitcher
+                pitcher_id_col = 'pitcher_id' if 'pitcher_id' in pitcher_game_stats.columns else 'pitcher'
+                pitcher_game_stats[pitcher_id_col] = pd.to_numeric(pitcher_game_stats[pitcher_id_col], errors='coerce')
+                pitcher_game_stats['game_pk'] = pd.to_numeric(pitcher_game_stats['game_pk'], errors='coerce')
+            if not batter_game_stats.empty:
+                batter_game_stats['batter'] = pd.to_numeric(batter_game_stats['batter'], errors='coerce')
+                batter_game_stats['game_pk'] = pd.to_numeric(batter_game_stats['game_pk'], errors='coerce')
+
+            # --- Merge Team Info with Aggregated Stats ---
+            logger.info("Merging team information with aggregated stats...")
+            pgs_merged = pd.DataFrame()
+            if not pitcher_game_stats.empty:
+                 pitcher_id_col = 'pitcher_id' if 'pitcher_id' in pitcher_game_stats.columns else 'pitcher'
+                 # Rename map key to match aggregated table ('pitcher_id' or 'pitcher')
+                 pitcher_team_map_renamed = pitcher_team_map.rename(columns={'pitcher': pitcher_id_col})
+                 pgs_merged = pd.merge(pitcher_game_stats, pitcher_team_map_renamed, on=['game_pk', pitcher_id_col], how='left')
+                 missing_teams_p = pgs_merged['team'].isnull().sum()
+                 if missing_teams_p > 0: logger.warning(f"Could not determine team for {missing_teams_p} pitcher-game entries.")
+
+            bgs_merged = pd.DataFrame()
+            if not batter_game_stats.empty:
+                bgs_merged = pd.merge(batter_game_stats, batter_team_map, on=['game_pk', 'batter'], how='left')
+                missing_teams_b = bgs_merged['team'].isnull().sum()
+                if missing_teams_b > 0: logger.warning(f"Could not determine team for {missing_teams_b} batter-game entries.")
+
+            # --- Aggregate by Game and Team ---
+            logger.info("Aggregating stats by game and team...")
+            team_pitching_agg = pd.DataFrame()
+            if not pgs_merged.empty and 'team' in pgs_merged.columns:
+                 pitch_agg_spec = {
+                     # Use renamed columns from aggregate_pitcher_data output
+                     'strikeouts': ('strikeouts', 'sum'), 'walks': ('walks', 'sum'), 'hits': ('hits', 'sum'), 'home_runs': ('home_runs', 'sum'),
+                     'batters_faced': ('batters_faced', 'sum'), 'outs_recorded': ('outs_recorded', 'sum'), 'total_pitches': ('total_pitches', 'sum'),
+                     'total_swinging_strikes': ('total_swinging_strikes', 'sum'), 'total_called_strikes': ('total_called_strikes', 'sum'),
+                     'total_fastballs': ('total_fastballs', 'sum'), 'total_breaking': ('total_breaking', 'sum'), 'total_offspeed': ('total_offspeed', 'sum'),
+                     'woba_points': ('woba_points', 'sum'), 'woba_denom': ('woba_denom', 'sum'),
+                     'babip_points': ('babip_points', 'sum'), 'iso_points': ('iso_points', 'sum'),
+                     'avg_velocity': ('avg_velocity', 'mean'), 'max_velocity': ('max_velocity', 'max')
+                 }
+                 pitch_agg_spec_filtered = {k: v for k, v in pitch_agg_spec.items() if v[0] in pgs_merged.columns}
+                 logger.debug(f"Pitching team aggregation spec: {pitch_agg_spec_filtered}")
+                 if pitch_agg_spec_filtered:
+                      team_pitching_agg = pgs_merged.groupby(['game_pk', 'team']).agg(**pitch_agg_spec_filtered).reset_index()
+                 else: logger.warning("No valid columns found for pitching team aggregation.")
+
+            team_batting_agg = pd.DataFrame()
+            if not bgs_merged.empty and 'team' in bgs_merged.columns:
+                 bat_agg_spec = {
+                     # Use columns from aggregate_batter_data output
+                     'strikeouts_bat': ('strikeout_bat_sum', 'sum'), 'walks_bat': ('walk_bat_sum', 'sum'),
+                     'hits_bat': ('hit_bat_sum', 'sum'), 'home_runs_bat': ('home_run_bat_sum', 'sum'),
+                     'pa_bat': ('pa', 'sum'), # Use 'pa' as source
+                     'hard_hits_bat': ('is_hard_hit_sum', 'sum'), 'barrels_bat': ('is_barrel_sum', 'sum'),
+                     'woba_points_bat': ('woba_points_bat_sum', 'sum'), 'woba_denom_bat': ('woba_denom_sum', 'sum'),
+                     'babip_points_bat': ('babip_points_bat_sum', 'sum'), 'iso_points_bat': ('iso_points_bat_sum', 'sum'),
+                     'avg_ls_bat': ('avg_launch_speed', 'mean'), 'avg_la_bat': ('avg_launch_angle', 'mean')
+                 }
+                 bat_agg_spec_filtered = {k: v for k, v in bat_agg_spec.items() if v[0] in bgs_merged.columns}
+                 # Ensure 'pa' source column exists before including 'pa_bat' target
+                 if 'pa' not in bgs_merged.columns:
+                     logger.warning("Source column 'pa' not found in batter stats, cannot aggregate 'pa_bat'.")
+                     bat_agg_spec_filtered.pop('pa_bat', None)
+
+                 logger.debug(f"Batting team aggregation spec: {bat_agg_spec_filtered}")
+                 if bat_agg_spec_filtered:
+                     team_batting_agg = bgs_merged.groupby(['game_pk', 'team']).agg(**bat_agg_spec_filtered).reset_index()
+                 else: logger.warning("No valid columns remaining for batting team aggregation.")
+
+
+            # --- Merge Pitching and Batting Aggregates ---
+            logger.info("Merging team pitching and batting aggregates...")
+            if not team_pitching_agg.empty and not team_batting_agg.empty:
+                 all_team_stats = pd.merge(team_pitching_agg, team_batting_agg, on=['game_pk', 'team'], how='outer')
+            elif not team_pitching_agg.empty: all_team_stats = team_pitching_agg
+            elif not team_batting_agg.empty: all_team_stats = team_batting_agg
             else:
-                logger.error("Source table 'statcast_pitchers' not found. Cannot assign pitcher teams.")
+                logger.warning("Both team pitching and batting aggregates are empty. Cannot create final team stats.")
+                return pd.DataFrame()
 
+            # --- Add Game Metadata ---
+            game_metadata = pitch_level_data[['game_pk', 'game_date', 'home_team', 'away_team']].drop_duplicates(subset=['game_pk'])
+            all_team_stats = pd.merge(all_team_stats, game_metadata, on='game_pk', how='left')
+            all_team_stats['is_home_team'] = (all_team_stats['team'] == all_team_stats['home_team']).astype(int)
 
-            # --- Get Batter Team Mapping (from statcast_batters) ---
-            logger.info("Fetching pitch-level data for BATTER team assignment...")
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='statcast_batters';")
-            if cursor.fetchone():
-                cols_b = ["game_pk", "batter", "inning_topbot", "home_team", "away_team"] # Don't need game_date again
-                q_batter_data = f'SELECT {", ".join(cols_b)} FROM statcast_batters WHERE game_pk IN ({game_pks_str})'
-                batter_mapping_data = pd.read_sql(q_batter_data, conn)
-                logger.info(f"Fetched {len(batter_mapping_data)} rows from statcast_batters.")
+            # --- Recalculate Rate Stats at Team Level ---
+            logger.info("Recalculating rate stats at team level...")
+            # Pitching
+            outs_divisor = all_team_stats.get('outs_recorded', 0).replace(0, np.nan)
+            all_team_stats['hr_per_9'] = (all_team_stats.get('home_runs', 0) / outs_divisor * 27).fillna(0)
+            bf_divisor = all_team_stats.get('batters_faced', 0).replace(0, np.nan)
+            all_team_stats['k_percent'] = (all_team_stats.get('strikeouts', 0) / bf_divisor).fillna(0)
+            all_team_stats['bb_percent'] = (all_team_stats.get('walks', 0) / bf_divisor).fillna(0)
+            pitches_divisor = all_team_stats.get('total_pitches', 0).replace(0, np.nan)
+            all_team_stats['swinging_strike_percent'] = (all_team_stats.get('total_swinging_strikes', 0) / pitches_divisor).fillna(0)
+            all_team_stats['called_strike_percent'] = (all_team_stats.get('total_called_strikes', 0) / pitches_divisor).fillna(0)
+            all_team_stats['fastball_percent'] = (all_team_stats.get('total_fastballs', 0) / pitches_divisor).fillna(0)
+            all_team_stats['breaking_percent'] = (all_team_stats.get('total_breaking', 0) / pitches_divisor).fillna(0)
+            all_team_stats['offspeed_percent'] = (all_team_stats.get('total_offspeed', 0) / pitches_divisor).fillna(0)
+            woba_den_divisor = all_team_stats.get('woba_denom', 0).replace(0, np.nan)
+            all_team_stats['woba'] = (all_team_stats.get('woba_points', 0) / woba_den_divisor).fillna(0)
+            all_team_stats['babip'] = (all_team_stats.get('babip_points', 0) / woba_den_divisor).fillna(0)
+            all_team_stats['iso'] = (all_team_stats.get('iso_points', 0) / woba_den_divisor).fillna(0)
 
-                if not batter_mapping_data.empty:
-                    batter_mapping_data['game_pk'] = pd.to_numeric(batter_mapping_data['game_pk'], errors='coerce')
-                    batter_mapping_data['batter'] = pd.to_numeric(batter_mapping_data['batter'], errors='coerce')
-                    batter_mapping_data = batter_mapping_data.dropna(subset=['game_pk', 'batter', 'inning_topbot'])
-                    batter_mapping_data['batting_team'] = np.where(
-                        batter_mapping_data['inning_topbot'] == 'Top', batter_mapping_data['away_team'], batter_mapping_data['home_team']
-                    )
-                    batter_team_map = batter_mapping_data[['game_pk', 'batter', 'batting_team']].drop_duplicates().rename(columns={'batting_team': 'team'})
-                else:
-                    logger.warning("No data found in statcast_batters for batter team assignment.")
-            else:
-                logger.error("Source table 'statcast_batters' not found. Cannot assign batter teams.")
-
-            # If game_metadata still empty (e.g., statcast_pitchers missing), try getting from batters
-            if game_metadata.empty and not batter_mapping_data.empty:
-                 logger.warning("Getting game metadata (date, teams) from statcast_batters as fallback.")
-                 # Need to re-fetch game_date if using batters as primary source
-                 cols_b_meta = ["game_pk", "game_date", "home_team", "away_team"]
-                 q_batter_meta = f'SELECT DISTINCT {", ".join(cols_b_meta)} FROM statcast_batters WHERE game_pk IN ({game_pks_str})'
-                 batter_meta_data = pd.read_sql(q_batter_meta, conn)
-                 game_metadata = batter_meta_data.drop_duplicates(subset=['game_pk'])
-
-
-        # Check if we have necessary maps
-        if pitcher_team_map.empty and batter_team_map.empty:
-             logger.error("Could not create team maps from either source table. Aborting team aggregation.")
-             return pd.DataFrame()
-        if game_metadata.empty:
-             logger.error("Could not retrieve game metadata (date, teams). Aborting team aggregation.")
-             return pd.DataFrame()
-
-        # Ensure correct dtypes for merging in aggregated dataframes
-        if not pitcher_game_stats.empty:
-            pitcher_id_col = 'pitcher_id' if 'pitcher_id' in pitcher_game_stats.columns else 'pitcher'
-            pitcher_game_stats[pitcher_id_col] = pd.to_numeric(pitcher_game_stats[pitcher_id_col], errors='coerce')
-            pitcher_game_stats['game_pk'] = pd.to_numeric(pitcher_game_stats['game_pk'], errors='coerce')
-        if not batter_game_stats.empty:
-            batter_game_stats['batter'] = pd.to_numeric(batter_game_stats['batter'], errors='coerce')
-            batter_game_stats['game_pk'] = pd.to_numeric(batter_game_stats['game_pk'], errors='coerce')
-
-        # Ensure map keys are also correct type
-        if not pitcher_team_map.empty:
-             pitcher_team_map['pitcher'] = pd.to_numeric(pitcher_team_map['pitcher'], errors='coerce')
-             pitcher_team_map['game_pk'] = pd.to_numeric(pitcher_team_map['game_pk'], errors='coerce')
-        if not batter_team_map.empty:
-             batter_team_map['batter'] = pd.to_numeric(batter_team_map['batter'], errors='coerce')
-             batter_team_map['game_pk'] = pd.to_numeric(batter_team_map['game_pk'], errors='coerce')
-
-
-        # --- Merge Team Info with Aggregated Stats ---
-        logger.info("Merging team information with aggregated stats...")
-        pgs_merged = pd.DataFrame()
-        if not pitcher_game_stats.empty and not pitcher_team_map.empty:
-             pitcher_id_col = 'pitcher_id' if 'pitcher_id' in pitcher_game_stats.columns else 'pitcher'
-             pitcher_team_map_renamed = pitcher_team_map.rename(columns={'pitcher': pitcher_id_col})
-             pgs_merged = pd.merge(pitcher_game_stats, pitcher_team_map_renamed, on=['game_pk', pitcher_id_col], how='left')
-             missing_teams_p = pgs_merged['team'].isnull().sum()
-             if missing_teams_p > 0: logger.warning(f"Could not determine team for {missing_teams_p} pitcher-game entries.")
-
-        bgs_merged = pd.DataFrame()
-        if not batter_game_stats.empty and not batter_team_map.empty:
-            bgs_merged = pd.merge(batter_game_stats, batter_team_map, on=['game_pk', 'batter'], how='left')
-            missing_teams_b = bgs_merged['team'].isnull().sum()
-            # Log only if there are missing teams
-            if missing_teams_b > 0:
-                 logger.warning(f"Could not determine team for {missing_teams_b} batter-game entries.")
-            else:
-                 logger.info("Successfully determined team for all batter-game entries.")
-
-
-        # --- Aggregate by Game and Team ---
-        # (Aggregation spec and logic remains the same as previous version)
-        logger.info("Aggregating stats by game and team...")
-        team_pitching_agg = pd.DataFrame()
-        if not pgs_merged.empty and 'team' in pgs_merged.columns:
-             pitch_agg_spec = {
-                 'strikeouts': ('strikeouts', 'sum'), 'walks': ('walks', 'sum'), 'hits': ('hits', 'sum'), 'home_runs': ('home_runs', 'sum'),
-                 'batters_faced': ('batters_faced', 'sum'), 'outs_recorded': ('outs_recorded', 'sum'), 'total_pitches': ('total_pitches', 'sum'),
-                 'total_swinging_strikes': ('total_swinging_strikes', 'sum'), 'total_called_strikes': ('total_called_strikes', 'sum'),
-                 'total_fastballs': ('total_fastballs', 'sum'), 'total_breaking': ('total_breaking', 'sum'), 'total_offspeed': ('total_offspeed', 'sum'),
-                 'woba_points': ('woba_points', 'sum'), 'woba_denom': ('woba_denom', 'sum'),
-                 'babip_points': ('babip_points', 'sum'), 'iso_points': ('iso_points', 'sum'),
-                 'avg_velocity': ('avg_velocity', 'mean'), 'max_velocity': ('max_velocity', 'max')
-             }
-             pitch_agg_spec_filtered = {k: v for k, v in pitch_agg_spec.items() if v[0] in pgs_merged.columns}
-             if pitch_agg_spec_filtered:
-                  team_pitching_agg = pgs_merged.groupby(['game_pk', 'team']).agg(**pitch_agg_spec_filtered).reset_index()
-             else: logger.warning("No valid columns found for pitching team aggregation.")
-
-        team_batting_agg = pd.DataFrame()
-        if not bgs_merged.empty and 'team' in bgs_merged.columns:
-             bat_agg_spec = {
-                 'strikeouts_bat': ('strikeout_bat_sum', 'sum'), 'walks_bat': ('walk_bat_sum', 'sum'),
-                 'hits_bat': ('hit_bat_sum', 'sum'), 'home_runs_bat': ('home_run_bat_sum', 'sum'),
-                 'pa_bat': ('pa', 'sum'),
-                 'hard_hits_bat': ('is_hard_hit_sum', 'sum'), 'barrels_bat': ('is_barrel_sum', 'sum'),
-                 'woba_points_bat': ('woba_points_bat_sum', 'sum'), 'woba_denom_bat': ('woba_denom_sum', 'sum'),
-                 'babip_points_bat': ('babip_points_bat_sum', 'sum'), 'iso_points_bat': ('iso_points_bat_sum', 'sum'),
-                 'avg_ls_bat': ('avg_launch_speed', 'mean'), 'avg_la_bat': ('avg_launch_angle', 'mean')
-             }
-             bat_agg_spec_filtered = {k: v for k, v in bat_agg_spec.items() if v[0] in bgs_merged.columns}
-             if 'pa' not in bgs_merged.columns: bat_agg_spec_filtered.pop('pa_bat', None)
-             if bat_agg_spec_filtered:
-                 team_batting_agg = bgs_merged.groupby(['game_pk', 'team']).agg(**bat_agg_spec_filtered).reset_index()
-             else: logger.warning("No valid columns remaining for batting team aggregation.")
-
-
-        # --- Merge Pitching and Batting Aggregates ---
-        # (Merge logic remains the same)
-        logger.info("Merging team pitching and batting aggregates...")
-        if not team_pitching_agg.empty and not team_batting_agg.empty:
-             all_team_stats = pd.merge(team_pitching_agg, team_batting_agg, on=['game_pk', 'team'], how='outer')
-        elif not team_pitching_agg.empty: all_team_stats = team_pitching_agg
-        elif not team_batting_agg.empty: all_team_stats = team_batting_agg
-        else:
-            logger.warning("Both team pitching and batting aggregates are empty. Cannot create final team stats.")
-            return pd.DataFrame()
-
-        # --- Add Game Metadata ---
-        # (Merge logic remains the same, uses game_metadata fetched earlier)
-        all_team_stats = pd.merge(all_team_stats, game_metadata, on='game_pk', how='left')
-        # Check for missing metadata after merge
-        if all_team_stats['home_team'].isnull().any():
-             logger.warning("Missing home_team/away_team/game_date for some team-game entries after metadata merge.")
-        all_team_stats['is_home_team'] = (all_team_stats['team'] == all_team_stats['home_team']).astype(int)
-
-        # --- Recalculate Rate Stats at Team Level ---
-        # (Rate stat calculation logic remains the same)
-        logger.info("Recalculating rate stats at team level...")
-        # Pitching
-        outs_divisor = all_team_stats.get('outs_recorded', 0).replace(0, np.nan)
-        all_team_stats['hr_per_9'] = (all_team_stats.get('home_runs', 0) / outs_divisor * 27).fillna(0)
-        bf_divisor = all_team_stats.get('batters_faced', 0).replace(0, np.nan)
-        all_team_stats['k_percent'] = (all_team_stats.get('strikeouts', 0) / bf_divisor).fillna(0)
-        all_team_stats['bb_percent'] = (all_team_stats.get('walks', 0) / bf_divisor).fillna(0)
-        pitches_divisor = all_team_stats.get('total_pitches', 0).replace(0, np.nan)
-        all_team_stats['swinging_strike_percent'] = (all_team_stats.get('total_swinging_strikes', 0) / pitches_divisor).fillna(0)
-        all_team_stats['called_strike_percent'] = (all_team_stats.get('total_called_strikes', 0) / pitches_divisor).fillna(0)
-        all_team_stats['fastball_percent'] = (all_team_stats.get('total_fastballs', 0) / pitches_divisor).fillna(0)
-        all_team_stats['breaking_percent'] = (all_team_stats.get('total_breaking', 0) / pitches_divisor).fillna(0)
-        all_team_stats['offspeed_percent'] = (all_team_stats.get('total_offspeed', 0) / pitches_divisor).fillna(0)
-        woba_den_divisor = all_team_stats.get('woba_denom', 0).replace(0, np.nan)
-        all_team_stats['woba'] = (all_team_stats.get('woba_points', 0) / woba_den_divisor).fillna(0)
-        all_team_stats['babip'] = (all_team_stats.get('babip_points', 0) / woba_den_divisor).fillna(0)
-        all_team_stats['iso'] = (all_team_stats.get('iso_points', 0) / woba_den_divisor).fillna(0)
-
-        # Batting
-        pa_divisor = all_team_stats.get('pa_bat', 0).replace(0, np.nan)
-        all_team_stats['k_percent_bat'] = (all_team_stats.get('strikeouts_bat', 0) / pa_divisor).fillna(0)
-        all_team_stats['bb_percent_bat'] = (all_team_stats.get('walks_bat', 0) / pa_divisor).fillna(0)
-        all_team_stats['hr_per_pa'] = (all_team_stats.get('home_runs_bat', 0) / pa_divisor).fillna(0)
-        all_team_stats['hard_hit_percent'] = (all_team_stats.get('hard_hits_bat', 0) / pa_divisor).fillna(0)
-        all_team_stats['barrel_percent'] = (all_team_stats.get('barrels_bat', 0) / pa_divisor).fillna(0)
-        woba_den_bat_divisor = all_team_stats.get('woba_denom_bat', 0).replace(0, np.nan)
-        all_team_stats['woba_bat'] = (all_team_stats.get('woba_points_bat', 0) / woba_den_bat_divisor).fillna(0)
-        all_team_stats['babip_bat'] = (all_team_stats.get('babip_points_bat', 0) / woba_den_bat_divisor).fillna(0)
-        all_team_stats['iso_bat'] = (all_team_stats.get('iso_points_bat', 0) / woba_den_bat_divisor).fillna(0)
-
+            # Batting
+            pa_divisor = all_team_stats.get('pa_bat', 0).replace(0, np.nan)
+            all_team_stats['k_percent_bat'] = (all_team_stats.get('strikeouts_bat', 0) / pa_divisor).fillna(0)
+            all_team_stats['bb_percent_bat'] = (all_team_stats.get('walks_bat', 0) / pa_divisor).fillna(0)
+            all_team_stats['hr_per_pa'] = (all_team_stats.get('home_runs_bat', 0) / pa_divisor).fillna(0)
+            all_team_stats['hard_hit_percent'] = (all_team_stats.get('hard_hits_bat', 0) / pa_divisor).fillna(0)
+            all_team_stats['barrel_percent'] = (all_team_stats.get('barrels_bat', 0) / pa_divisor).fillna(0)
+            woba_den_bat_divisor = all_team_stats.get('woba_denom_bat', 0).replace(0, np.nan)
+            all_team_stats['woba_bat'] = (all_team_stats.get('woba_points_bat', 0) / woba_den_bat_divisor).fillna(0)
+            all_team_stats['babip_bat'] = (all_team_stats.get('babip_points_bat', 0) / woba_den_bat_divisor).fillna(0)
+            all_team_stats['iso_bat'] = (all_team_stats.get('iso_points_bat', 0) / woba_den_bat_divisor).fillna(0)
 
     except sqlite3.Error as e:
-        logger.error(f"SQLite error during revised team aggregation: {e}", exc_info=True)
+        logger.error(f"SQLite error during bulk team aggregation: {e}", exc_info=True)
         return pd.DataFrame()
     except KeyError as e:
-        logger.error(f"KeyError during revised team aggregation: {e}", exc_info=True)
+        logger.error(f"KeyError during bulk team aggregation, likely missing/misnamed column: {e}", exc_info=True)
         return pd.DataFrame()
     except Exception as e:
-        logger.error(f"Unexpected error during revised team aggregation: {e}", exc_info=True)
+        logger.error(f"Unexpected error during bulk team aggregation: {e}", exc_info=True)
         return pd.DataFrame()
 
-    logger.info(f"Finished aggregating team data (Separate Sources). Shape: {all_team_stats.shape}")
+    logger.info(f"Finished aggregating team data (Revised Bulk Method). Shape: {all_team_stats.shape}")
     required_cols = ['game_pk', 'team', 'game_date', 'home_team', 'away_team']
-    missing_req = [c for c in required_cols if c not in all_team_stats.columns or all_team_stats[c].isnull().all()]
+    missing_req = [c for c in required_cols if c not in all_team_stats.columns]
     if missing_req:
-        logger.error(f"Final team stats DF missing/all-null required columns: {missing_req}. Returning empty DF.")
-        # Add debugging for missing metadata source
-        if game_metadata.empty: logger.error("Game metadata was empty.")
-        elif all_team_stats['home_team'].isnull().any(): logger.error("Merge with game metadata resulted in nulls.")
+        logger.error(f"Final team stats DF is missing required columns: {missing_req}. Returning empty DataFrame.")
         return pd.DataFrame()
 
-    # Convert game_date to string 'YYYY-MM-DD' format
+    # Convert game_date to string 'YYYY-MM-DD' format if it's datetime
     if 'game_date' in all_team_stats.columns and pd.api.types.is_datetime64_any_dtype(all_team_stats['game_date']):
         logger.debug("Converting game_date to string format in team stats.")
         all_team_stats['game_date'] = all_team_stats['game_date'].dt.strftime('%Y-%m-%d')
 
+
     return all_team_stats
+# ================================================================
+# == END REVISED aggregate_team_data FUNCTION ==
+# ================================================================
 
 
 # --- Main Aggregation Functions ---
