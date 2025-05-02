@@ -16,3 +16,6 @@ notebooks/
 
 # windsurf rules
 .windsurfrules
+
+# debug html
+debug_html/

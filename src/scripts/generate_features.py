@@ -141,7 +141,6 @@ def calculate_multi_window_rolling(df, group_col, date_col, metrics, windows, mi
                                .mean()
                 )
                 results_dict[roll_col_name] = rolling_result
-                logger.debug(f"Calculated rolling feature: {roll_col_name}")
             except Exception as e:
                  logger.error(f"Error calculating rolling for {metric} window {window}: {e}", exc_info=True)
                  results_dict[roll_col_name] = pd.Series(np.nan, index=df_sorted.index)
