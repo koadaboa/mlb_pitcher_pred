@@ -6,6 +6,17 @@ import logging
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
+# --- Database Schema Constants ---
+# Table Names
+MLB_BOXSCORES_TABLE = 'mlb_boxscores'
+MASTER_SCHEDULE_TABLE = 'master_schedule'
+TEAM_MAPPING_TABLE = 'team_mapping'
+
+
+# Team Mapping Columns 
+TEAM_NAME_MAP_FULL_NAME_COL = 'team_name'
+TEAM_NAME_MAP_ABBR_COL = 'team_abbr'
+
 BALLPARK_COORDS = {
     'Chase Field'                   : (33.4455, -112.0667),
     'Truist Park'                   : (33.8908, -84.4671),
