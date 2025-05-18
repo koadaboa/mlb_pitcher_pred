@@ -2,231 +2,136 @@
 import pandas as pd
 import numpy as np
 import logging
-import sqlite3
-from typing import Callable, List, Dict, Tuple
-from pathlib import Path
-import sys
+from typing import Callable, List, Dict, Tuple # Keep Tuple for return type consistency
 
-# Assuming the calling script (generate_features.py) handles path setup
-# OR the project is installed correctly.
-try:
-    from src.data.utils import DBConnection
-    from src.config import DBConfig
-except ImportError as e:
-    # Log import error here, but don't necessarily stop execution yet.
-    # Functions below will fail if imports didn't work.
-    logging.getLogger(__name__).error(f"Failed to import DBConnection or DBConfig: {e}. Umpire features may fail.")
-    # Set DBConnection/DBConfig to None or placeholders if needed,
-    # though subsequent code will likely raise exceptions.
-    DBConnection = None
-    DBConfig = None
-
+# Path setup is assumed to be handled by the calling script (generate_features.py)
+# or by the project structure if installed.
+# DBConnection and DBConfig imports are removed as load_team_mapping_from_db is removed.
 
 logger = logging.getLogger(__name__)
 
+# The load_team_mapping_from_db function is removed as it's no longer needed.
+# Umpire identification and team context are expected to be in the main_game_df.
 
-def load_team_mapping_from_db() -> pd.DataFrame:
-    """Loads the team mapping from the SQLite 'team_mapping' table."""
-    # Check if imports succeeded
-    if DBConnection is None or DBConfig is None:
-         logger.error("DBConnection or DBConfig not imported. Cannot load team mapping from DB.")
-         return pd.DataFrame()
-
-    # Get DB path directly from config
-    try:
-        db_path = DBConfig.PATH
-        if not db_path or not Path(db_path).exists():
-             logger.error(f"Database path not found or invalid in DBConfig: {db_path}")
-             return pd.DataFrame()
-    except AttributeError:
-         logger.error("DBConfig.DB_FILE not defined.")
-         return pd.DataFrame()
-    except Exception as e:
-         logger.error(f"Error accessing DBConfig.DB_FILE: {e}")
-         return pd.DataFrame()
-
-
-    mapping_table = 'team_mapping'
-    required_cols = ['team_abbr', 'team_name']
-    logger.info(f"Loading team mapping from database table: {mapping_table}")
-
-    try:
-        with DBConnection(db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='{mapping_table}'")
-            if not cursor.fetchone():
-                logger.error(f"Team mapping table '{mapping_table}' not found in the database: {db_path}")
-                return pd.DataFrame()
-
-            cursor.execute(f"PRAGMA table_info({mapping_table})")
-            available_cols = [info[1] for info in cursor.fetchall()]
-            missing_cols = [col for col in required_cols if col not in available_cols]
-            if missing_cols:
-                logger.error(f"Team mapping table '{mapping_table}' is missing required columns: {missing_cols}. Available: {available_cols}")
-                return pd.DataFrame()
-
-            query = f"SELECT {', '.join(required_cols)} FROM {mapping_table}"
-            team_map_df = pd.read_sql_query(query, conn)
-
-        if team_map_df.empty:
-            logger.warning(f"Team mapping table '{mapping_table}' is empty.")
-            return pd.DataFrame()
-
-        team_map_df = team_map_df.drop_duplicates(subset=['team_name'], keep='first')
-        logger.info(f"Loaded {len(team_map_df)} unique team name mappings from DB table '{mapping_table}'.")
-        return team_map_df
-
-    except sqlite3.Error as e:
-        logger.error(f"SQLite error loading team mapping from table '{mapping_table}': {e}", exc_info=True)
-        return pd.DataFrame()
-    except Exception as e:
-        logger.error(f"Unexpected error loading team mapping from DB: {e}", exc_info=True)
-        return pd.DataFrame()
-
-
-# --- Modified function ---
 def calculate_umpire_rolling_features(
-    pitcher_hist_df: pd.DataFrame,
-    umpire_hist_df: pd.DataFrame,
-    group_col: str,
-    date_col: str,
-    metrics: List[str],
+    main_game_df: pd.DataFrame,
+    group_col: str, # This will be 'home_plate_umpire'
+    date_col: str,  # This will be 'game_date'
+    metrics: List[str], # Pitcher metrics to calculate rolling averages for, per umpire
     windows: List[int],
     min_periods: int,
     calculate_multi_window_rolling: Callable
 ) -> Tuple[pd.DataFrame, Dict[str, str]]:
     """
     Calculates rolling features for home plate umpires based on pitcher stats
-    in games they officiated. Includes team name standardization using the
-    'team_mapping' table from the SQLite database. Assumes imports work.
+    in games they officiated. Assumes 'home_plate_umpire' and relevant metrics
+    are present in main_game_df.
+
+    Args:
+        main_game_df: DataFrame containing game-level data, including
+                      the umpire identifier (group_col, e.g., 'home_plate_umpire'),
+                      the date column (date_col, e.g., 'game_date'),
+                      and the pitcher performance metrics to be rolled.
+        group_col: The column name for the umpire identifier.
+        date_col: The column name for the game date.
+        metrics: List of metric column names (pitcher stats) to calculate rolling stats for.
+        windows: List of window sizes for rolling calculations.
+        min_periods: Minimum number of observations in a window to produce a value.
+        calculate_multi_window_rolling: A callable function that performs the
+                                         multi-window rolling calculation.
+                                         Expected signature:
+                                         (df, group_col, date_col, metrics, windows, min_periods)
+
+    Returns:
+        A tuple containing:
+            - DataFrame with umpire rolling features, indexed like the input main_game_df.
+              Columns are renamed with an 'ump_' prefix (e.g., 'ump_roll5g_k_percent').
+            - Dictionary mapping original rolling column names to renamed umpire column names.
+              Returns empty DataFrame and empty dict if input is invalid or processing fails.
     """
-    # Remove the initial check for MODULE_IMPORTS_OK / DB_PATH
-    # Rely on load_team_mapping_from_db to handle DB setup issues
-
-    if pitcher_hist_df is None or pitcher_hist_df.empty or umpire_hist_df is None or umpire_hist_df.empty:
-        logger.warning("Input DataFrames for umpire rolling features are invalid or empty.")
-        return pd.DataFrame(index=pitcher_hist_df.index if pitcher_hist_df is not None else None), {}
-
-    # --- Load Team Mapping from DB ---
-    team_map_df = load_team_mapping_from_db() # Use updated DB loading function
-    if team_map_df.empty:
-        # Error already logged by load_team_mapping_from_db
-        logger.error("Failed to load team mapping from DB. Cannot calculate umpire features.")
-        return pd.DataFrame(index=pitcher_hist_df.index), {}
+    if main_game_df is None or main_game_df.empty:
+        logger.warning("Input DataFrame for umpire rolling features (main_game_df) is invalid or empty.")
+        return pd.DataFrame(index=main_game_df.index if main_game_df is not None else None), {}
 
     # --- Check Required Columns ---
-    required_pitcher_cols = [date_col, 'home_team', 'away_team'] + metrics
-    required_umpire_cols = [date_col, 'home_team', 'away_team', group_col]
-    # ... (rest of the column checks remain the same) ...
-    missing_pitcher_cols = [col for col in required_pitcher_cols if col not in pitcher_hist_df.columns]
-    missing_umpire_cols = [col for col in required_umpire_cols if col not in umpire_hist_df.columns]
-
-    if missing_pitcher_cols:
-        logger.error(f"Missing required columns in pitcher_hist_df for umpire features: {missing_pitcher_cols}")
-        return pd.DataFrame(index=pitcher_hist_df.index), {}
-    if missing_umpire_cols:
-        logger.error(f"Missing required columns in umpire_hist_df for umpire features: {missing_umpire_cols}")
-        return pd.DataFrame(index=pitcher_hist_df.index), {}
+    required_cols = [group_col, date_col] + metrics
+    missing_cols = [col for col in required_cols if col not in main_game_df.columns]
+    if missing_cols:
+        logger.error(f"Missing required columns in main_game_df for umpire features: {missing_cols}. Cannot proceed.")
+        return pd.DataFrame(index=main_game_df.index), {}
+    
+    if main_game_df[group_col].isnull().all():
+        logger.warning(f"The umpire identifier column '{group_col}' contains all NaN values. No umpire features can be calculated.")
+        return pd.DataFrame(index=main_game_df.index), {}
 
 
-    logger.info(f"Calculating umpire rolling features for '{group_col}' (Windows: {windows}). Standardizing teams using DB mapping...")
+    logger.info(f"Calculating umpire rolling features for '{group_col}' (Windows: {windows})...")
 
-    # --- Prepare DataFrames for Merge ---
-    # ... (The standardization and merge logic remains identical to the previous version) ...
-    try:
-        # 1. Prepare Pitcher Data
-        pitcher_hist_df_copy = pitcher_hist_df[required_pitcher_cols].copy()
-        if not pd.api.types.is_datetime64_any_dtype(pitcher_hist_df_copy[date_col]):
-             pitcher_hist_df_copy[date_col] = pd.to_datetime(pitcher_hist_df_copy[date_col], errors='coerce')
-        pitcher_hist_df_copy = pitcher_hist_df_copy.dropna(subset=[date_col])
-        pitcher_hist_df_copy = pitcher_hist_df_copy.rename(columns={'home_team': 'home_team_abbr', 'away_team': 'away_team_abbr'})
+    # Ensure data types are correct for processing, especially date_col
+    df_copy = main_game_df.copy()
+    if not pd.api.types.is_datetime64_any_dtype(df_copy[date_col]):
+        try:
+            df_copy[date_col] = pd.to_datetime(df_copy[date_col], errors='coerce')
+        except Exception as e:
+            logger.error(f"Error converting date column '{date_col}' to datetime: {e}. Cannot proceed.")
+            return pd.DataFrame(index=main_game_df.index), {}
+    
+    # Drop rows where critical columns for grouping/rolling are NaN
+    # group_col (umpire) NaNs will lead to them being excluded from rolling stats for any specific umpire.
+    # date_col NaNs would break time-series rolling.
+    # metric NaNs are handled by the rolling function's min_periods.
+    df_copy = df_copy.dropna(subset=[date_col, group_col])
+    if df_copy.empty:
+        logger.warning(f"DataFrame became empty after dropping NaNs in '{date_col}' or '{group_col}'. No umpire features calculated.")
+        return pd.DataFrame(index=main_game_df.index), {}
 
-        # 2. Prepare Umpire Data
-        umpire_merge_df = umpire_hist_df[required_umpire_cols].drop_duplicates().copy()
-        if not pd.api.types.is_datetime64_any_dtype(umpire_merge_df[date_col]):
-            umpire_merge_df[date_col] = pd.to_datetime(umpire_merge_df[date_col], errors='coerce')
-        umpire_merge_df = umpire_merge_df.dropna(subset=[date_col])
-        umpire_merge_df = umpire_merge_df.rename(columns={'home_team': 'home_team_name', 'away_team': 'away_team_name'})
 
-        # Merge mapping for home team
-        umpire_merge_df = pd.merge( umpire_merge_df, team_map_df[['team_name', 'team_abbr']], left_on='home_team_name', right_on='team_name', how='left')
-        umpire_merge_df = umpire_merge_df.assign(home_team_abbr=umpire_merge_df['team_abbr'])
-        umpire_merge_df = umpire_merge_df.drop(columns=['team_name', 'team_abbr'])
-
-        # Merge mapping for away team
-        umpire_merge_df = pd.merge( umpire_merge_df, team_map_df[['team_name', 'team_abbr']], left_on='away_team_name', right_on='team_name', how='left')
-        umpire_merge_df = umpire_merge_df.assign(away_team_abbr=umpire_merge_df['team_abbr'])
-        umpire_merge_df = umpire_merge_df.drop(columns=['team_name', 'team_abbr'])
-
-        # Check for teams that failed to map
-        missing_home_map = umpire_merge_df['home_team_abbr'].isnull().sum()
-        missing_away_map = umpire_merge_df['away_team_abbr'].isnull().sum()
-        if missing_home_map > 0:
-             unmapped_home = umpire_merge_df.loc[umpire_merge_df['home_team_abbr'].isnull(), 'home_team_name'].unique()
-             logger.warning(f"Could not map {missing_home_map} umpire home teams to standard abbreviations. Unmapped names: {unmapped_home[:10]}...")
-        if missing_away_map > 0:
-             unmapped_away = umpire_merge_df.loc[umpire_merge_df['away_team_abbr'].isnull(), 'away_team_name'].unique()
-             logger.warning(f"Could not map {missing_away_map} umpire away teams to standard abbreviations. Unmapped names: {unmapped_away[:10]}...")
-
-        # Select final columns and drop rows where mapping failed
-        final_umpire_cols = [date_col, 'home_team_abbr', 'away_team_abbr', group_col]
-        umpire_merge_df = umpire_merge_df[final_umpire_cols].dropna(subset=['home_team_abbr', 'away_team_abbr'])
-        umpire_merge_df = umpire_merge_df.drop_duplicates()
-
-        if umpire_merge_df.empty:
-            logger.error("Umpire data is empty after attempting to standardize team names via DB mapping. Cannot merge.")
-            return pd.DataFrame(index=pitcher_hist_df.index), {}
-
-    except Exception as e:
-        logger.error(f"Failed during data preparation or team standardization: {e}", exc_info=True)
-        return pd.DataFrame(index=pitcher_hist_df.index), {}
-
-    # --- Merge umpire name onto pitcher history ---
-    logger.info("Merging pitcher history with standardized umpire data...")
-    merged_df = pd.merge(
-        pitcher_hist_df_copy,
-        umpire_merge_df,
-        on=[date_col, 'home_team_abbr', 'away_team_abbr'],
-        how='left'
-    )
-    merged_df = merged_df.set_index(pitcher_hist_df.index) # Align index
-
-    # --- Check Merge Success & Calculate Rolling Features ---
-    # ... (Rest of the function: checking merge results, calculating rolling features, renaming, reindexing remains the same) ...
-    missing_ump_count = merged_df[group_col].isnull().sum()
-    total_rows = len(merged_df)
-    successful_merge_count = total_rows - missing_ump_count
-    logger.info(f"Merge Result: Found umpires for {successful_merge_count} / {total_rows} pitcher appearances.")
-
-    if successful_merge_count == 0:
-         logger.error(f"Merge failed completely: Could not find home plate umpire for any of the {total_rows} pitcher appearances after standardization. Check DB team mapping and date alignment.")
-         return pd.DataFrame(index=pitcher_hist_df.index), {}
-    elif missing_ump_count > 0:
-        logger.warning(f"Could not find home plate umpire for {missing_ump_count} pitcher appearances after standardization (check dates/teams/mapping).")
-
-    available_metrics = [m for m in metrics if m in merged_df.columns]
+    # Filter out metrics that are not actually in the DataFrame after all checks
+    available_metrics = [m for m in metrics if m in df_copy.columns]
     if not available_metrics:
-        logger.warning("No specified umpire metrics found in the merged DataFrame.")
-        return pd.DataFrame(index=pitcher_hist_df.index), {}
+        logger.warning("No specified umpire metrics available in the DataFrame after pre-processing. No umpire features calculated.")
+        return pd.DataFrame(index=main_game_df.index), {}
 
-    valid_umpire_merged_df = merged_df.dropna(subset=[group_col])
-    if valid_umpire_merged_df.empty:
-        logger.warning(f"No rows with valid umpire names ({group_col}) remained after merge. Cannot calculate umpire features.")
-        return pd.DataFrame(index=pitcher_hist_df.index), {}
+    # --- Calculate Rolling Features ---
+    # The `calculate_multi_window_rolling` function is expected to handle the actual rolling logic.
+    # It will group by `group_col` (home_plate_umpire) and sort by `date_col`.
+    logger.info(f"Calculating rolling features for {len(df_copy[group_col].unique())} unique umpires on {len(df_copy)} rows using metrics: {available_metrics}.")
+    
+    try:
+        umpire_rolling_calc_df = calculate_multi_window_rolling(
+            df=df_copy, # Use the preprocessed df_copy
+            group_col=group_col,
+            date_col=date_col,
+            metrics=available_metrics,
+            windows=windows,
+            min_periods=min_periods
+        )
+    except Exception as e:
+        logger.error(f"Error during 'calculate_multi_window_rolling' for umpire features: {e}", exc_info=True)
+        return pd.DataFrame(index=main_game_df.index), {}
 
-    logger.info(f"Calculating rolling features for {len(valid_umpire_merged_df[group_col].unique())} umpires on {len(valid_umpire_merged_df)} rows.")
-    umpire_rolling_calc = calculate_multi_window_rolling(
-        df=valid_umpire_merged_df,
-        group_col=group_col,
-        date_col=date_col,
-        metrics=available_metrics,
-        windows=windows,
-        min_periods=min_periods
-    )
+    if umpire_rolling_calc_df.empty:
+        logger.warning("Rolling feature calculation returned an empty DataFrame for umpires.")
+        # Return empty DataFrame aligned with the original input
+        return pd.DataFrame(index=main_game_df.index), {}
 
-    rename_map = { f"{m}_roll{w}g": f"ump_roll{w}g_{m}" for w in windows for m in available_metrics if f"{m}_roll{w}g" in umpire_rolling_calc.columns }
-    umpire_rolling_renamed = umpire_rolling_calc.rename(columns=rename_map)
-    umpire_rolling_final = umpire_rolling_renamed.reindex(pitcher_hist_df.index)
+    # Rename columns with 'ump_' prefix
+    rename_map = {
+        f"{m}_roll{w}g": f"ump_roll{w}g_{m}"
+        for w in windows
+        for m in available_metrics
+        if f"{m}_roll{w}g" in umpire_rolling_calc_df.columns # Check if column was actually created
+    }
+    umpire_rolling_renamed_df = umpire_rolling_calc_df.rename(columns=rename_map)
 
-    logger.info(f"Finished calculating umpire rolling features. Found {len(umpire_rolling_final.columns)} features.")
-    return umpire_rolling_final, rename_map
+    # The calculate_multi_window_rolling function should return a DataFrame
+    # that can be directly joined or reindexed to the original main_game_df.
+    # If it preserves the index from df_copy, reindexing to main_game_df.index handles
+    # rows that might have been dropped in df_copy or aligns with the full dataset.
+    umpire_rolling_final_df = umpire_rolling_renamed_df.reindex(main_game_df.index)
+
+    # Log count of features actually created based on rename_map keys present in output
+    created_feature_count = len([col for col in rename_map.values() if col in umpire_rolling_final_df.columns])
+
+    logger.info(f"Finished calculating umpire rolling features. Found {created_feature_count} features.")
+    return umpire_rolling_final_df, rename_map

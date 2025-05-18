@@ -1,30 +1,23 @@
 # src/scripts/generate_features.py
 import pandas as pd
 import numpy as np
-import argparse
 import logging
-from pathlib import Path
-import sys
 from datetime import datetime, timedelta
-import gc
-import warnings
-from itertools import product # For looping through windows/metrics
+import sys
+import os
+from pathlib import Path
+import argparse
 
-# --- Setup Project Root ---
+# --- Project Setup ---
+# Assuming the script is in src/scripts, and project root is two levels up
+project_root = Path(__file__).resolve().parents[2]
+if str(project_root) not in sys.path:
+    sys.path.append(str(project_root))
+
+# --- Imports from project modules ---
 try:
-    project_root = Path(__file__).resolve().parents[2]
-    if str(project_root) not in sys.path:
-        sys.path.append(str(project_root))
-    from src.config import DBConfig, LogConfig, StrikeoutModelConfig # Import config
-    # Ensure correct DBConnection path
-    from src.data.utils import setup_logger, DBConnection
-    # Import the aggregation functions needed for Step 0
-    from src.data.aggregate_statcast import (
-        aggregate_statcast_pitchers_sql,
-        aggregate_statcast_batters_sql,
-        aggregate_game_level_data
-    )
-    # Import feature modules
+    from src import config
+    from src.data.utils import DBConnection, setup_logger, ensure_dir
     from src.features.pitcher_features import calculate_pitcher_rolling_features, calculate_pitcher_rest_days
     from src.features.opponent_features import (
         calculate_opponent_rolling_features,
@@ -36,676 +29,588 @@ try:
         merge_ballpark_features_historical,
         merge_ballpark_features_prediction
     )
-    from src.features.umpire_features import calculate_umpire_rolling_features
-    MODULE_IMPORTS_OK = True
+    from src.features.umpire_features import calculate_umpire_rolling_features # Updated version
+    from src.features.predictive_umpire_assignment import predict_home_plate_umpire
+    # For fetching today's games for prediction (if applicable)
+    from src.data.mlb_api import scrape_probable_pitchers
 except ImportError as e:
-    print(f"ERROR: Failed to import modules: {e}")
-    MODULE_IMPORTS_OK = False
-    # Fallback logger if setup fails
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    logger = logging.getLogger('generate_features_fallback')
-else:
-    LogConfig.LOG_DIR.mkdir(parents=True, exist_ok=True)
-    logger = setup_logger('generate_features', LogConfig.LOG_DIR / 'generate_features.log')
+    print(f"ERROR: Failed to import one or more project modules: {e}")
+    print("Ensure your PYTHONPATH is set correctly or run from the project root.")
+    sys.exit(1)
 
+# --- Logger Setup ---
+log_dir = Path(config.LogConfig.LOG_DIR) if hasattr(config, 'LogConfig') else project_root / "logs"
+ensure_dir(log_dir)
+logger = setup_logger('generate_features', log_file=log_dir / 'generate_features.log')
 
-# --- Configuration ---
+# --- Configuration Constants (examples, adjust from your config.py or define here) ---
+# These would ideally come from config.StrikeoutModelConfig or similar
+WINDOW_SIZES = getattr(config.StrikeoutModelConfig, 'WINDOW_SIZES', [5, 10, 25, 50])
+MIN_PERIODS_DEFAULT = getattr(config.StrikeoutModelConfig, 'MIN_PERIODS_DEFAULT', 3) # Example
+TARGET_VARIABLE = getattr(config.StrikeoutModelConfig, 'TARGET_VARIABLE', 'strikeouts_recorded') # from pitcher_game_stats
+
+# Define metrics for rolling features (examples, customize as needed)
+# These are the raw metrics from game_level_aggregates or game_level_team_stats
 PITCHER_METRICS_FOR_ROLLING = [
-    'k_percent', 'swinging_strike_percent', 'avg_velocity',
-    # 'k_percent_vs_lhb', 'swinging_strike_percent_vs_lhb', # These might not exist in starter stats
-    # 'k_percent_vs_rhb', 'swinging_strike_percent_vs_rhb', # Need to confirm columns in game_level_starter_stats
-    'fastball_percent', 'breaking_percent', 'offspeed_percent',
-    'bb_percent', 'woba', 'iso', 'babip' # Added more potentially available stats
+    'k_percent', 'bb_percent', 'woba_conceded', 'iso_conceded', 'babip_conceded',
+    'avg_release_speed', 'swinging_strike_percent', 'csw_percent', 'fps_percent',
+    'fastball_percent', 'slider_percent', 'curveball_percent', 'changeup_percent' # Add if available
 ]
-OPPONENT_METRICS_FOR_ROLLING = [
-    # These come from game_level_team_stats (batting side)
-    'k_percent_bat', 'swinging_strike_percent', # Assuming SwStr% is opponent pitching stat
-    'woba_bat', 'iso_bat', 'babip_bat', 'hard_hit_percent', 'barrel_percent'
-    # Add _vs_LHP/_vs_RHP if available in game_level_team_stats
+OPPONENT_BATTING_METRICS_FOR_ROLLING = [ # Stats for the opposing team (as batters)
+    'k_percent_bat', 'bb_percent_bat', 'woba_bat', 'iso_bat', 'babip_bat',
+    'swinging_strike_percent_bat', 'csw_percent_bat',
+    # Platoon splits should be pre-calculated in game_level_team_stats if used directly for rolling
+    # e.g., 'k_percent_bat_vs_LHP', 'k_percent_bat_vs_RHP'
 ]
-BALLPARK_METRICS_FOR_ROLLING = ['k_percent'] # Based on pitcher (starter) k_percent
-UMPIRE_METRICS_FOR_ROLLING = ['k_percent'] # Based on pitcher (starter) k_percent
+BALLPARK_METRICS_FOR_ROLLING = [ # Metrics observed in games at a specific ballpark
+    'k_percent', 'woba_conceded', 'iso_conceded', 'runs_scored_per_game' # Example
+]
+UMPIRE_METRICS_FOR_ROLLING = [ # Pitcher metrics observed in games officiated by a specific umpire
+    'k_percent', 'bb_percent', 'called_strike_plus_whiff_rate_ump' # Example
+]
 
-LEAGUE_AVERAGE_METRICS = ['k_percent', 'bb_percent', 'woba'] # Calculate based on starters
+# Output configuration
+FEATURES_OUTPUT_DIR = project_root / "data" / "features"
+ensure_dir(FEATURES_OUTPUT_DIR)
+HISTORICAL_FEATURES_FILE = FEATURES_OUTPUT_DIR / "historical_features.parquet"
+PREDICTION_FEATURES_FILE = FEATURES_OUTPUT_DIR / "prediction_features.parquet"
 
-ROLLING_WINDOWS = StrikeoutModelConfig.WINDOW_SIZES
-MIN_ROLLING_PERIODS = 2
 
-# --- Helper Functions (load_data_from_db, calculate_multi_window_rolling) ---
-# No changes needed in helper functions
-def load_data_from_db(query: str, db_path: Path, optimize: bool = True) -> pd.DataFrame:
-    """Loads data from the database using a given query."""
-    logger.info(f"Executing query: {query[:100]}...")
-    start_time = datetime.now()
-    df = pd.DataFrame() # Initialize empty df
-    try:
-        # Use DBConnection context manager from utils.py
-        # *** Corrected: No argument for DBConnection ***
-        with DBConnection() as conn:
-            df = pd.read_sql_query(query, conn)
-        duration = datetime.now() - start_time
-        logger.info(f"Loaded {len(df)} rows in {duration.total_seconds():.2f}s.")
-        if optimize and not df.empty:
-            # Optimize memory usage - apply carefully
-            for col in df.select_dtypes(include=['int64']).columns: df[col] = pd.to_numeric(df[col], downcast='integer')
-            for col in df.select_dtypes(include=['float64']).columns: df[col] = pd.to_numeric(df[col], downcast='float')
-    except Exception as e:
-        logger.error(f"Failed to load data with query: {query[:100]}... Error: {e}", exc_info=True)
-    return df
-
-def calculate_multi_window_rolling(df, group_col, date_col, metrics, windows, min_periods, shift_periods=1):
+# --- Helper Function: Multi-Window Rolling Calculation ---
+def calculate_multi_window_rolling_expanded(
+    df: pd.DataFrame,
+    group_col: str,
+    date_col: str,
+    metrics: List[str],
+    windows: List[int],
+    min_periods: int = 1,
+    lag: int = 1 # Lag features by 1 to prevent data leakage (use previous games' data)
+) -> pd.DataFrame:
     """
-    Calculates rolling features for multiple windows efficiently.
-    Uses shift() to prevent data leakage. Returns results indexed like input df.
+    Calculates rolling means for multiple metrics over multiple windows,
+    grouped by `group_col` and sorted by `date_col`. Lags results.
+
+    Args:
+        df: Input DataFrame.
+        group_col: Column to group by (e.g., 'pitcher_id', 'team', 'ballpark').
+        date_col: Date column for sorting.
+        metrics: List of metric columns to calculate rolling stats for.
+        windows: List of window sizes (e.g., [5, 10, 25]).
+        min_periods: Minimum number of observations in window required.
+        lag: Number of periods to shift the rolling features. Default is 1.
+
+    Returns:
+        DataFrame with new rolling feature columns. Original index is preserved.
     """
-    if df is None or df.empty or not metrics or not windows:
-        logger.warning(f"Input invalid for multi-window rolling on {group_col}.")
-        return pd.DataFrame(index=df.index if df is not None else None)
+    if df.empty:
+        return pd.DataFrame(index=df.index)
 
-    logger.info(f"Calculating multi-window {windows} rolling for group '{group_col}' on {len(metrics)} metrics...")
-    df_internal = df.copy() # Work on copy
+    df_copy = df.copy()
+    if not pd.api.types.is_datetime64_any_dtype(df_copy[date_col]):
+        df_copy[date_col] = pd.to_datetime(df_copy[date_col])
 
-    # Ensure date_col is datetime
-    if not pd.api.types.is_datetime64_any_dtype(df_internal[date_col]):
-         try: df_internal[date_col] = pd.to_datetime(df_internal[date_col])
-         except Exception as e: logger.error(f"Failed to convert {date_col} to datetime: {e}"); return pd.DataFrame(index=df.index)
+    # Sort by group and date to ensure correct rolling calculation and shift
+    df_copy = df_copy.sort_values(by=[group_col, date_col])
 
-    sort_cols = [group_col, date_col]
-    df_sorted = df_internal.sort_values(by=sort_cols, na_position='first')
-    # Use observed=True for performance with Categorical group_col if applicable
-    grouped = df_sorted.groupby(group_col, observed=True, dropna=False)
-    results_dict = {}
+    all_rolling_features = []
 
     for metric in metrics:
-        if metric not in df_sorted.columns:
-            logger.warning(f"Metric '{metric}' not found in dataframe for rolling calculation. Skipping.")
+        if metric not in df_copy.columns:
+            logger.warning(f"Metric '{metric}' not found in DataFrame for rolling calculation. Skipping.")
             continue
-        # Ensure metric is numeric before rolling
-        metric_series = pd.to_numeric(df_sorted[metric], errors='coerce')
-        if metric_series.isnull().all():
-            logger.warning(f"Metric '{metric}' is entirely non-numeric or NaN after coercion. Skipping rolling.")
-            continue
-        # Assign coerced series back for rolling (important!)
-        df_sorted[metric] = metric_series
-
-
         for window in windows:
             roll_col_name = f"{metric}_roll{window}g"
-            # Ensure min_periods is valid
-            current_min_periods = max(1, min(min_periods, window)) # Allow min_periods=window
             try:
-                # Use transform for alignment, apply rolling within lambda
-                rolling_result = grouped[metric].transform(
-                    lambda x: x.shift(shift_periods)
-                               .rolling(window=window, min_periods=current_min_periods)
-                               .mean()
+                # Calculate rolling mean within each group
+                grouped = df_copy.groupby(group_col, observed=True)[metric]
+                rolling_mean = grouped.transform(
+                    lambda x: x.rolling(window=window, min_periods=min_periods).mean()
                 )
-                results_dict[roll_col_name] = rolling_result
+                # Lag the feature
+                lagged_rolling_mean = rolling_mean.groupby(df_copy[group_col], observed=True).shift(lag)
+                
+                df_copy[roll_col_name] = lagged_rolling_mean
+                all_rolling_features.append(roll_col_name)
             except Exception as e:
-                 logger.error(f"Error calculating rolling for {metric} window {window}: {e}", exc_info=True)
-                 results_dict[roll_col_name] = pd.Series(np.nan, index=df_sorted.index)
-
-    if not results_dict: return pd.DataFrame(index=df.index)
-    results_df = pd.DataFrame(results_dict, index=df_sorted.index)
-    return results_df.reindex(df.index) # Reindex back to original
-
-
-# --- Main Feature Generation Logic ---
-def generate_features(prediction_date_str: str | None,
-                        train_years: list[int] | None = None,
-                        test_years: list[int] | None = None):
-    """
-    Generates features using modular functions for pitcher, opponent, ballpark, and umpire stats.
-    Includes daily league average features.
-    MODIFIED TO USE STARTER STATS AS BASE.
-    """
-    mode = "PREDICTION" if prediction_date_str else "HISTORICAL"
-    logger.info(f"--- Starting Feature Generation [{mode} Mode] (Using Starters) ---")
-    # Use DBConfig.PATH directly from config module
-    db_path = DBConfig.PATH
-    prediction_date = None
-    max_hist_date_str = '9999-12-31' # Default for historical
-    if prediction_date_str:
-        try:
-            prediction_date = datetime.strptime(prediction_date_str, '%Y-%m-%d').date()
-            max_hist_date_str = (prediction_date - timedelta(days=1)).strftime('%Y-%m-%d')
-            logger.info(f"Prediction Date: {prediction_date_str}. Loading history up to {max_hist_date_str}.")
-        except ValueError: logger.error(f"Invalid prediction date format: {prediction_date_str}. Use YYYY-MM-DD."); return
-    else:
-        logger.info("Running for all historical data.")
-
-    # --- STEP 0: Run Aggregations ---
-    # Aggregations must complete successfully before loading data
-    logger.info("STEP 0: Running Statcast Aggregations (Full History)...")
-    try:
-        aggregate_statcast_pitchers_sql(target_date=None)
-        gc.collect()
-        aggregate_statcast_batters_sql(target_date=None)
-        gc.collect()
-        # --- Call the team/starter aggregation ---
-        aggregate_game_level_data()
-        # -----------------------------------------
-        gc.collect()
-        logger.info("Aggregations completed.")
-    except NameError as ne: logger.error(f"Aggregation function not found (check imports?): {ne}", exc_info=True); return
-    except Exception as agg_e: logger.error(f"Error during aggregation: {agg_e}", exc_info=True); return
-    gc.collect()
-
-    # --- STEP 1: Load Data ---
-    logger.info("STEP 1: Loading necessary data (Base: Starters)...")
-    start_load_time = datetime.now()
-    db_connection_successful = False
-    try:
-        with DBConnection() as conn: db_connection_successful = True # Test connection
-    except Exception as db_err: logger.error(f"Failed initial DB connection test: {db_err}"); return
-
-    if not db_connection_successful: return # Stop if initial connection fails
-
-    # Load Team Mapping
-    team_map_query = "SELECT team_abbr, ballpark FROM team_mapping"
-    team_map_df = load_data_from_db(team_map_query, db_path, optimize=False)
-    team_to_ballpark_map = team_map_df.set_index('team_abbr')['ballpark'].to_dict() if not team_map_df.empty else {}
-    if not team_to_ballpark_map: logger.warning("Team mapping empty.")
-
-    # --- Load Pitcher History FROM STARTERS ---
-    pitcher_base_table = 'game_level_starter_stats' # <<< CHANGED TABLE NAME
-    logger.info(f"Loading base pitcher data from: {pitcher_base_table}")
-    try:
-        with DBConnection() as conn: starter_cols_avail = pd.read_sql_query(f"SELECT * FROM {pitcher_base_table} LIMIT 1", conn).columns.tolist()
-    except Exception as e: logger.error(f"Cannot read columns from {pitcher_base_table}: {e}"); return
-
-    # Define columns needed from starter table
-    pitcher_metrics_needed = set(PITCHER_METRICS_FOR_ROLLING) | set(BALLPARK_METRICS_FOR_ROLLING) | set(UMPIRE_METRICS_FOR_ROLLING) | set(LEAGUE_AVERAGE_METRICS)
-    pitcher_base_cols = ['pitcher_id', 'game_date', 'game_pk', 'p_throws', 'team', 'opponent_team', 'home_team', 'away_team']
-    # Add target variables if they exist in starter table
-    target_cols = ['strikeouts', 'batters_faced']
-    pitcher_cols_to_load = list(set(pitcher_base_cols) | pitcher_metrics_needed | set(target_cols))
-    pitcher_cols_to_load_str = ', '.join([f'"{c}"' for c in pitcher_cols_to_load if c in starter_cols_avail])
-    if 'pitcher_id' not in pitcher_cols_to_load_str: logger.error(f"'pitcher_id' missing from available columns in {pitcher_base_table}"); return
-    if not pitcher_cols_to_load_str: logger.error(f"No pitcher columns could be identified for loading from {pitcher_base_table}."); return
-
-    pitcher_hist_query = f"SELECT {pitcher_cols_to_load_str} FROM {pitcher_base_table} WHERE DATE(game_date) <= '{max_hist_date_str}'"
-    pitcher_hist_df = load_data_from_db(pitcher_hist_query, db_path)
-    # <<< END PITCHER HISTORY LOAD (FROM STARTERS) ---
-
-    # --- Load Team History (No Change Here) ---
-    team_stats_table = 'game_level_team_stats'
-    try:
-        with DBConnection() as conn: team_cols_avail = pd.read_sql_query(f"SELECT * FROM {team_stats_table} LIMIT 1", conn).columns.tolist()
-    except Exception as e: logger.warning(f"Cannot read columns from {team_stats_table}: {e}"); team_cols_avail = []
-
-    # Update opponent metrics based on what's likely in game_level_team_stats
-    opponent_metrics_likely = ['k_percent_bat', 'swinging_strike_percent', 'woba_bat', 'iso_bat', 'babip_bat', 'hard_hit_percent', 'barrel_percent', 'bb_percent_bat', 'hr_per_pa']
-    opponent_metrics_to_use = [m for m in opponent_metrics_likely if m in team_cols_avail]
-    if not opponent_metrics_to_use: logger.warning(f"No opponent batting metrics found in {team_stats_table}")
-
-    team_base_cols = ['team', 'game_date', 'game_pk', 'home_team']
-    team_cols_to_load = list(set(team_base_cols) | set(opponent_metrics_to_use))
-    team_cols_to_load_str = ', '.join([f'"{c}"' for c in team_cols_to_load if c in team_cols_avail])
-    team_hist_df = load_data_from_db(f"SELECT {team_cols_to_load_str} FROM {team_stats_table} WHERE DATE(game_date) <= '{max_hist_date_str}'", db_path) if team_cols_to_load_str else pd.DataFrame()
-    # <<< END TEAM HISTORY LOAD ---
-
-    # --- Load Historical Umpire Data (No Change Here) ---
-    umpire_table = 'historical_umpire_data'
-    umpire_cols_to_load = ['game_date', 'home_plate_umpire', 'home_team', 'away_team', 'game_pk']
-    umpire_cols_to_load_str = ', '.join([f'"{c}"' for c in umpire_cols_to_load])
-    umpire_hist_query = f"SELECT {umpire_cols_to_load_str} FROM {umpire_table} WHERE DATE(game_date) <= '{max_hist_date_str}'"
-    umpire_hist_df = load_data_from_db(umpire_hist_query, db_path, optimize=False)
-    if umpire_hist_df.empty: logger.warning(f"Historical umpire data table '{umpire_table}' is empty.")
-    # <<< END UMPIRE HISTORY LOAD ---
-
-    # --- Data Validation and Prep ---
-    if pitcher_hist_df.empty: logger.error(f"Starter pitcher history empty (loaded from {pitcher_base_table}). Cannot proceed."); return
-    if team_hist_df.empty: logger.warning(f"Team history empty (loaded from {team_stats_table}). Opponent features will be limited.")
-
-    # Convert dates AFTER loading all data
-    logger.info("Converting date columns...")
-    pitcher_hist_df['game_date'] = pd.to_datetime(pitcher_hist_df['game_date'])
-    if not team_hist_df.empty: team_hist_df['game_date'] = pd.to_datetime(team_hist_df['game_date'])
-    if not umpire_hist_df.empty: umpire_hist_df['game_date'] = pd.to_datetime(umpire_hist_df['game_date'])
-
-    # Add 'is_home' derived column to pitcher_hist_df (STARTER BASED)
-    if 'team' in pitcher_hist_df.columns and 'home_team' in pitcher_hist_df.columns:
-        pitcher_hist_df['is_home'] = (pitcher_hist_df['team'] == pitcher_hist_df['home_team']).astype(int)
-        logger.info("Derived 'is_home' column for starters.")
-    else:
-        logger.error("'team' or 'home_team' column missing from starter history. Cannot derive 'is_home'.")
-        pitcher_hist_df['is_home'] = np.nan # Add as NaN if columns missing
-
-    # Add 'ballpark' derived column
-    if 'home_team' in pitcher_hist_df.columns:
-        pitcher_hist_df['ballpark'] = pitcher_hist_df['home_team'].map(team_to_ballpark_map).fillna("Unknown Park")
-        logger.info("Derived 'ballpark' column for starters.")
-    else:
-        logger.warning("Missing 'home_team' in starter history, cannot map ballparks accurately.")
-        pitcher_hist_df['ballpark'] = "Unknown Park"
-
-    # Ensure necessary columns for features exist before proceeding
-    required_for_features = ['pitcher_id', 'game_date', 'team', 'opponent_team', 'ballpark', 'home_team', 'away_team']
-    missing_req_cols = [c for c in required_for_features if c not in pitcher_hist_df.columns]
-    if missing_req_cols:
-        logger.error(f"Starter history DF is missing essential columns: {missing_req_cols}. Aborting feature calculation.")
-        return
-
-    # --- Calculate and Merge Daily League Averages (Now based on Starters) ---
-    logger.info("Calculating daily league averages (based on starters)...")
-    league_avg_cols = {}
-    if not pitcher_hist_df.empty and LEAGUE_AVERAGE_METRICS:
-        metrics_for_league_avg = [m for m in LEAGUE_AVERAGE_METRICS if m in pitcher_hist_df.columns]
-        if not metrics_for_league_avg:
-             logger.warning("None of the specified LEAGUE_AVERAGE_METRICS found in starter data.")
-        else:
-             # Ensure metrics are numeric
-             for metric in metrics_for_league_avg:
-                 pitcher_hist_df.loc[:, metric] = pd.to_numeric(pitcher_hist_df[metric], errors='coerce')
-
-             daily_league_stats = pitcher_hist_df.groupby('game_date')[metrics_for_league_avg].agg(['mean', 'std'])
-             daily_league_stats.columns = ['_'.join(col).strip() + '_league_daily' for col in daily_league_stats.columns.values]
-             daily_league_stats = daily_league_stats.reset_index()
-
-             original_index = pitcher_hist_df.index
-             pitcher_hist_df = pd.merge(pitcher_hist_df.reset_index(), daily_league_stats, on='game_date', how='left').set_index('index')
-             pitcher_hist_df.index.name = None
-             league_avg_cols = {col: col for col in daily_league_stats.columns if col != 'game_date'}
-             logger.info(f"Added daily league average columns (starter-based): {list(league_avg_cols.keys())}")
-
-             # Simple imputation
-             for col in league_avg_cols:
-                 if pitcher_hist_df[col].isnull().any():
-                      fill_value = 0.0 if 'std' in col else pitcher_hist_df[col].mean()
-                      logger.warning(f"Imputing {pitcher_hist_df[col].isnull().sum()} NaNs in league avg column '{col}' with {fill_value:.4f}")
-                      pitcher_hist_df.loc[:, col] = pitcher_hist_df[col].fillna(fill_value)
-    else: logger.warning("Starter history empty or no league average metrics defined.")
-    # --- End League Average Calculation ---
-
-    logger.info(f"Data loading & prep finished in {(datetime.now() - start_load_time).total_seconds():.2f}s.")
-    gc.collect()
-
-    # --- STEP 2 & 3: Calculate Historical Rolling Features ---
-    logger.info(f"STEP 2&3: Calculating historical rolling features (Windows: {ROLLING_WINDOWS}) (Base: Starters)...")
-    calc_start_time = datetime.now()
-    all_rolling_features = {}
-    all_rename_maps = {}
-
-    # Pitcher Rolling Features (Now based on Starters only)
-    # Ensure metrics exist in the loaded starter data
-    pitcher_metrics_avail = [m for m in PITCHER_METRICS_FOR_ROLLING if m in pitcher_hist_df.columns]
-    if not pitcher_metrics_avail: logger.warning("No pitcher metrics found in starter data for rolling calculations.")
-    pitcher_rolling_df = calculate_pitcher_rolling_features(
-        df=pitcher_hist_df, group_col='pitcher_id', date_col='game_date',
-        metrics=pitcher_metrics_avail, # Use only available metrics
-        windows=ROLLING_WINDOWS, min_periods=MIN_ROLLING_PERIODS,
-        calculate_multi_window_rolling=calculate_multi_window_rolling
-    )
-    all_rolling_features['pitcher'] = pitcher_rolling_df
-    all_rename_maps['pitcher'] = {col: col for col in pitcher_rolling_df.columns} # Keep original names for now
-
-    # Pitcher Days Rest (Based on Starters only)
-    pitcher_hist_df['p_days_rest'] = calculate_pitcher_rest_days(pitcher_hist_df)
-
-    # Opponent/Team Rolling Features (Still based on game_level_team_stats)
-    if not team_hist_df.empty:
-        opponent_rolling_df, opp_rename_map = calculate_opponent_rolling_features(
-            team_hist_df=team_hist_df, group_col='team', date_col='game_date',
-            metrics=opponent_metrics_to_use, # Use metrics found in team_stats table
-            windows=ROLLING_WINDOWS, min_periods=MIN_ROLLING_PERIODS,
-            calculate_multi_window_rolling=calculate_multi_window_rolling
-        )
-        all_rolling_features['team'] = opponent_rolling_df
-        all_rename_maps['opponent'] = opp_rename_map
-    else: logger.warning("Skipping opponent rolling features calculation as team history is empty.")
-
-
-    # Ballpark Rolling Features (Now based on Starters only)
-    ballpark_metrics_avail = [m for m in BALLPARK_METRICS_FOR_ROLLING if m in pitcher_hist_df.columns]
-    if not ballpark_metrics_avail: logger.warning("No ballpark metrics found in starter data for rolling calculations.")
-    ballpark_rolling_df, bpark_rename_map = calculate_ballpark_rolling_features(
-        pitcher_hist_df=pitcher_hist_df, # Pass starter data
-        group_col='ballpark', date_col='game_date',
-        metrics=ballpark_metrics_avail, # Use available metrics
-        windows=ROLLING_WINDOWS, min_periods=MIN_ROLLING_PERIODS,
-        calculate_multi_window_rolling=calculate_multi_window_rolling
-    )
-    all_rolling_features['ballpark'] = ballpark_rolling_df
-    all_rename_maps['ballpark'] = bpark_rename_map
-
-    # Umpire Rolling Features (Now based on Starters only)
-    umpire_metrics_avail = [m for m in UMPIRE_METRICS_FOR_ROLLING if m in pitcher_hist_df.columns]
-    if not umpire_metrics_avail: logger.warning("No umpire metrics found in starter data for rolling calculations.")
-    umpire_rolling_df, ump_rename_map = calculate_umpire_rolling_features(
-        pitcher_hist_df=pitcher_hist_df, # Pass starter data
-        umpire_hist_df=umpire_hist_df,
-        group_col='home_plate_umpire', date_col='game_date',
-        metrics=umpire_metrics_avail, # Use available metrics
-        windows=ROLLING_WINDOWS, min_periods=MIN_ROLLING_PERIODS,
-        calculate_multi_window_rolling=calculate_multi_window_rolling
-    )
-    all_rolling_features['umpire'] = umpire_rolling_df
-    all_rename_maps['umpire'] = ump_rename_map
-
-
-    logger.info(f"Feature calculation finished in {(datetime.now() - calc_start_time).total_seconds():.2f}s.")
-    gc.collect()
-
-    # --- STEP 4: Prepare Final DataFrame based on Mode ---
-    final_features_df = pd.DataFrame()
-
-    if mode == "HISTORICAL":
-        logger.info("STEP 4 [HISTORICAL]: Merging features (Base: Starters)...")
-        # Base DataFrame: Now comes from starter pitcher history
-        base_cols = ['game_pk', 'game_date', 'pitcher_id', 'team', 'opponent_team',
-                     'is_home', 'ballpark', 'p_throws', 'home_team', 'away_team']
-        if 'p_days_rest' in pitcher_hist_df.columns: base_cols.append('p_days_rest')
-        base_cols.extend(league_avg_cols.keys()) # Add league avg cols
-
-        # Add target vars if they exist
-        if 'strikeouts' in pitcher_hist_df.columns: base_cols.append('strikeouts')
-        if 'batters_faced' in pitcher_hist_df.columns: base_cols.append('batters_faced')
-
-        # Ensure columns exist before selecting
-        present_base_cols = [col for col in base_cols if col in pitcher_hist_df.columns]
-        missing_base_cols = [col for col in base_cols if col not in present_base_cols]
-        if missing_base_cols: logger.warning(f"Missing base columns from pitcher_hist_df: {missing_base_cols}")
-        final_features_df = pitcher_hist_df[present_base_cols].copy()
-
-        # Add home plate umpire name
-        if not umpire_hist_df.empty and 'home_plate_umpire' in umpire_hist_df.columns:
-             umpire_lookup = umpire_hist_df[['game_date', 'home_team', 'away_team', 'home_plate_umpire']].drop_duplicates()
-             if not pd.api.types.is_datetime64_any_dtype(umpire_lookup['game_date']): umpire_lookup['game_date'] = pd.to_datetime(umpire_lookup['game_date'])
-             if not pd.api.types.is_datetime64_any_dtype(final_features_df['game_date']): final_features_df['game_date'] = pd.to_datetime(final_features_df['game_date'])
-
-             # Check for required merge keys before merging
-             merge_keys_ump = ['game_date', 'home_team', 'away_team']
-             if all(key in final_features_df.columns for key in merge_keys_ump):
-                  final_features_df = pd.merge(final_features_df, umpire_lookup, on=merge_keys_ump, how='left')
-                  logger.debug(f"Added home_plate_umpire column. {final_features_df['home_plate_umpire'].isnull().sum()} nulls.")
-             else:
-                 logger.warning(f"Missing keys {merge_keys_ump} for umpire name merge. Skipping.")
-                 final_features_df['home_plate_umpire'] = np.nan
-        else: final_features_df['home_plate_umpire'] = np.nan
-
-        # Merge Pitcher features (index aligned)
-        if 'pitcher' in all_rolling_features and not all_rolling_features['pitcher'].empty:
-            final_features_df = pd.concat([final_features_df, all_rolling_features['pitcher']], axis=1)
-            logger.debug("Merged pitcher rolling features (starter-based).")
-
-        # Merge Opponent features (derived from team_stats)
-        if 'team' in all_rolling_features and 'opponent' in all_rename_maps and not all_rolling_features['team'].empty:
-            final_features_df = merge_opponent_features_historical(
-                final_features_df=final_features_df,
-                opponent_rolling_df=all_rolling_features['team'],
-                opp_rename_map=all_rename_maps['opponent']
-            ) # merge_opponent_features_historical needs 'opponent_team' column in final_features_df
-
-        # Merge Ballpark features (derived from starter pitcher stats)
-        if 'ballpark' in all_rolling_features and 'ballpark' in all_rename_maps and not all_rolling_features['ballpark'].empty:
-             final_features_df = merge_ballpark_features_historical(
-                 final_features_df=final_features_df,
-                 ballpark_rolling_df=all_rolling_features['ballpark'],
-                 bpark_rename_map=all_rename_maps['ballpark']
-             ) # merge_ballpark_features_historical needs 'ballpark' column
-
-        # Merge Umpire features (derived from starter pitcher stats & umpire hist)
-        if 'umpire' in all_rolling_features and not all_rolling_features['umpire'].empty:
-             final_features_df = pd.concat([final_features_df, all_rolling_features['umpire']], axis=1)
-             logger.debug("Merged umpire rolling features (starter-based).")
-        else:
-             logger.warning("No umpire rolling features calculated, skipping historical merge.")
-             if 'umpire' in all_rename_maps:
-                 for col in all_rename_maps['umpire'].values(): final_features_df[col] = np.nan
-
-        # Add season
-        if 'game_date' in final_features_df.columns:
-             final_features_df['season'] = pd.to_datetime(final_features_df['game_date']).dt.year
-
-
-    elif mode == "PREDICTION":
-        logger.info("STEP 4 [PREDICTION]: Merging latest features onto prediction baseline (Base: Starters)...")
-        # Load schedule, build baseline for probable starters
-        schedule_query = f"SELECT * FROM mlb_api WHERE DATE(game_date) = '{prediction_date_str}'"
-        schedule_df = load_data_from_db(schedule_query, db_path, optimize=False)
-        if schedule_df.empty: logger.error("Prediction schedule missing."); return
-        baseline_data = []
-        for _, game in schedule_df.iterrows():
-            game_date_dt = pd.to_datetime(game['game_date'])
-            # Ensure IDs are numeric, handle potential errors
-            home_pid = pd.to_numeric(game.get('home_probable_pitcher_id'), errors='coerce')
-            away_pid = pd.to_numeric(game.get('away_probable_pitcher_id'), errors='coerce')
-            home_team_abbr = game.get('home_team_abbr')
-            away_team_abbr = game.get('away_team_abbr')
-            ballpark = team_to_ballpark_map.get(home_team_abbr, "Unknown Park")
-            game_pk = game.get('game_pk')
-            # Only add if pitcher ID is valid
-            if pd.notna(home_pid): baseline_data.append({'pitcher_id': int(home_pid), 'game_date': game_date_dt, 'game_pk': game_pk, 'opponent_team': away_team_abbr, 'is_home': 1, 'ballpark': ballpark, 'home_team': home_team_abbr, 'away_team': away_team_abbr})
-            if pd.notna(away_pid): baseline_data.append({'pitcher_id': int(away_pid), 'game_date': game_date_dt, 'game_pk': game_pk, 'opponent_team': home_team_abbr, 'is_home': 0, 'ballpark': ballpark, 'home_team': home_team_abbr, 'away_team': away_team_abbr})
-        if not baseline_data: logger.error("No valid probable pitchers found in schedule."); return
-        final_features_df = pd.DataFrame(baseline_data)
-
-        # Extract latest rolling values indices FROM STARTER HISTORY
-        latest_pitcher_indices = pitcher_hist_df.sort_values('game_date').drop_duplicates(subset=['pitcher_id'], keep='last').index
-        # Team history indices remain the same
-        latest_team_indices = team_hist_df.sort_values('game_date').drop_duplicates(subset=['team'], keep='last').index if not team_hist_df.empty else pd.Index([])
-        # Ballpark indices now derived from starter history
-        latest_ballpark_indices = pitcher_hist_df.sort_values('game_date').drop_duplicates(subset=['ballpark'], keep='last').index
-        # Umpire indices now derived from starter history + umpire mapping
-        latest_umpire_indices = pd.Index([])
-        temp_ump_df = pd.DataFrame() # To hold umpire names aligned with pitcher_hist_df index
-        if not umpire_hist_df.empty and 'home_plate_umpire' in umpire_hist_df.columns:
-            temp_ump_lookup = umpire_hist_df[['game_date', 'home_team', 'away_team', 'home_plate_umpire']].drop_duplicates()
-            if not pd.api.types.is_datetime64_any_dtype(temp_ump_lookup['game_date']): temp_ump_lookup['game_date'] = pd.to_datetime(temp_ump_lookup['game_date'])
-
-            # Merge onto starter history index
-            merge_keys_ump_pred = ['game_date', 'home_team', 'away_team']
-            if all(key in pitcher_hist_df.columns for key in merge_keys_ump_pred):
-                  temp_ump_df = pd.merge(pitcher_hist_df[merge_keys_ump_pred].reset_index(), temp_ump_lookup, on=merge_keys_ump_pred, how='left').set_index('index')
-                  temp_ump_df.index.name = None
-            else: logger.warning(f"Missing keys {merge_keys_ump_pred} in starter history for umpire mapping.")
-
-            if 'home_plate_umpire' in temp_ump_df.columns:
-                 temp_ump_df_for_sort = pd.concat([temp_ump_df[['home_plate_umpire']], pitcher_hist_df[['game_date']]], axis=1)
-                 latest_umpire_indices = temp_ump_df_for_sort.dropna(subset=['home_plate_umpire'])\
-                                                             .sort_values('game_date')\
-                                                             .drop_duplicates(subset=['home_plate_umpire'], keep='last').index
-
-
-        # Get latest rolling features DataFrames using indices
-        latest_pitcher_rolling = all_rolling_features.get('pitcher', pd.DataFrame()).loc[latest_pitcher_indices] if 'pitcher' in all_rolling_features else pd.DataFrame()
-        latest_opponent_rolling = all_rolling_features.get('team', pd.DataFrame()).loc[latest_team_indices] if ('team' in all_rolling_features and not latest_team_indices.empty) else pd.DataFrame()
-        latest_ballpark_rolling = all_rolling_features.get('ballpark', pd.DataFrame()).loc[latest_ballpark_indices] if 'ballpark' in all_rolling_features else pd.DataFrame()
-        latest_umpire_rolling = all_rolling_features.get('umpire', pd.DataFrame()).loc[latest_umpire_indices] if ('umpire' in all_rolling_features and not latest_umpire_indices.empty) else pd.DataFrame()
-
-
-        # Add keys back for merging
-        if not latest_pitcher_rolling.empty: latest_pitcher_rolling['pitcher_id'] = pitcher_hist_df.loc[latest_pitcher_rolling.index, 'pitcher_id']
-        if not latest_opponent_rolling.empty: latest_opponent_rolling['team'] = team_hist_df.loc[latest_opponent_rolling.index, 'team']
-        if not latest_ballpark_rolling.empty: latest_ballpark_rolling['ballpark'] = pitcher_hist_df.loc[latest_ballpark_rolling.index, 'ballpark']
-        if not latest_umpire_rolling.empty and not temp_ump_df.empty and 'home_plate_umpire' in temp_ump_df.columns:
-             latest_umpire_rolling['home_plate_umpire'] = temp_ump_df.loc[latest_umpire_rolling.index, 'home_plate_umpire']
-
-
-        # --- Merge league averages for prediction date (based on starters) ---
-        if league_avg_cols and not daily_league_stats.empty:
-             latest_league_avg_date = daily_league_stats['game_date'].max()
-             logger.info(f"Using latest available daily league averages (starter-based) from: {latest_league_avg_date.strftime('%Y-%m-%d')}")
-             latest_league_avgs = daily_league_stats[daily_league_stats['game_date'] == latest_league_avg_date]
-             if not latest_league_avgs.empty:
-                 latest_league_avg_dict = latest_league_avgs.iloc[0].to_dict()
-                 latest_league_avg_dict.pop('game_date', None)
-                 for col_name, value in latest_league_avg_dict.items():
-                     final_features_df[col_name] = value
-                     logger.debug(f"Added prediction league avg column '{col_name}' with value {value}")
-             else: logger.warning(f"No league average data found for date {latest_league_avg_date}.")
-        else: logger.warning("No league average data available to merge for prediction.")
-
-
-        # Calculate Days Rest (based on starter history)
-        last_game_dates = pitcher_hist_df.sort_values('game_date').drop_duplicates(subset=['pitcher_id'], keep='last')[['pitcher_id', 'game_date']]
-        final_features_df = pd.merge(final_features_df, last_game_dates.rename(columns={'game_date':'last_game_date'}), on='pitcher_id', how='left')
-        final_features_df['last_game_date'] = pd.to_datetime(final_features_df['last_game_date'])
-        if not pd.api.types.is_datetime64_any_dtype(final_features_df['game_date']): final_features_df['game_date'] = pd.to_datetime(final_features_df['game_date'])
-        final_features_df['p_days_rest'] = (final_features_df['game_date'] - final_features_df['last_game_date']).dt.days
-        final_features_df = final_features_df.drop(columns=['last_game_date'])
-
-        # Get Pitcher Handedness (based on starter history)
-        pitcher_throws = pitcher_hist_df.dropna(subset=['p_throws']).drop_duplicates(subset=['pitcher_id'], keep='last')[['pitcher_id', 'p_throws']]
-        final_features_df = pd.merge(final_features_df, pitcher_throws, on='pitcher_id', how='left')
-        final_features_df['p_throws'] = final_features_df['p_throws'].fillna('R') # Assume R if unknown
-
-        # Get Umpire for Prediction Date Games
-        umpire_pred_lookup = load_data_from_db(
-            f"SELECT game_pk, home_plate_umpire FROM {umpire_table} WHERE DATE(game_date) = '{prediction_date_str}'",
-            db_path, optimize=False
-        )
-        if not umpire_pred_lookup.empty:
-            final_features_df = pd.merge(final_features_df, umpire_pred_lookup, on='game_pk', how='left')
-            logger.info(f"Looked up umpires for prediction date. Found assignments for {len(final_features_df) - final_features_df['home_plate_umpire'].isnull().sum()} games.")
-        else:
-            logger.warning(f"No umpire data found in {umpire_table} for prediction date {prediction_date_str}.")
-            final_features_df['home_plate_umpire'] = np.nan
-
-
-        # --- Merge Latest Features ---
-        # Pitcher Features (from starter history)
-        if 'pitcher' in all_rename_maps and not latest_pitcher_rolling.empty:
-            p_rename_map = all_rename_maps['pitcher']
-            p_cols_to_merge = ['pitcher_id'] + list(p_rename_map.keys())
-            p_cols_to_merge = [col for col in p_cols_to_merge if col in latest_pitcher_rolling.columns]
-            if len(p_cols_to_merge) > 1: final_features_df = pd.merge(final_features_df, latest_pitcher_rolling[p_cols_to_merge], on='pitcher_id', how='left')
-
-        # Opponent Features (from team history)
-        if 'opponent' in all_rename_maps and not latest_opponent_rolling.empty:
-            final_features_df = merge_opponent_features_prediction(
-                final_features_df=final_features_df, latest_opponent_rolling=latest_opponent_rolling,
-                opp_rename_map=all_rename_maps['opponent'], rolling_windows=ROLLING_WINDOWS
-            )
-
-        # Ballpark Features (from starter history)
-        if 'ballpark' in all_rename_maps and not latest_ballpark_rolling.empty:
-            final_features_df = merge_ballpark_features_prediction(
-                final_features_df=final_features_df, latest_ballpark_rolling=latest_ballpark_rolling,
-                bpark_rename_map=all_rename_maps['ballpark']
-            )
-
-        # Umpire Features (from starter history)
-        if 'umpire' in all_rename_maps and not latest_umpire_rolling.empty:
-             ump_rename_map = all_rename_maps['umpire']
-             ump_cols_to_merge = ['home_plate_umpire'] + list(ump_rename_map.values())
-             ump_cols_to_merge = [col for col in ump_cols_to_merge if col in latest_umpire_rolling.columns]
-             if len(ump_cols_to_merge) > 1 and 'home_plate_umpire' in final_features_df.columns:
-                  final_features_df = pd.merge(final_features_df, latest_umpire_rolling[ump_cols_to_merge], on='home_plate_umpire', how='left')
-                  logger.debug("Merged latest umpire features (starter-based).")
-             else: logger.warning("Could not merge latest umpire features (missing key or data).")
-        else: logger.warning("Umpire rename map or latest umpire rolling data missing.")
-
-
-        # Format date back to string for saving
-        final_features_df['game_date'] = final_features_df['game_date'].dt.strftime('%Y-%m-%d')
-
-
-    # --- STEP 5: Final Cleanup & Define Expected Columns ---
-    logger.info("STEP 5: Defining expected columns and cleaning up (Base: Starters)...")
-    if final_features_df.empty: logger.error("Features empty before final cleanup."); return
-
-    # Define expected column groups (based on starter context)
-    expected_base_cols = ['game_pk', 'game_date', 'pitcher_id', 'team', 'opponent_team', 'is_home', 'ballpark', 'p_throws', 'p_days_rest', 'home_plate_umpire']
-    expected_league_avg_cols = list(league_avg_cols.keys())
-    expected_target_cols = ['strikeouts', 'batters_faced', 'season'] if mode == "HISTORICAL" else []
-
-    # Get expected rolling columns from rename maps
-    expected_p_roll_cols = list(all_rename_maps.get('pitcher', {}).keys()) # Use keys if no rename map
-    expected_opp_roll_cols_base = list(all_rename_maps.get('opponent', {}).values())
-    expected_bp_roll_cols = list(all_rename_maps.get('ballpark', {}).values())
-    expected_ump_roll_cols = list(all_rename_maps.get('umpire', {}).values())
-
-    # Adjust opponent cols based on prediction mode logic (no change needed here)
-    if mode == 'PREDICTION':
-         base_opp_metrics = [m for m in opponent_metrics_likely if '_vs_' not in m] # Use base metrics
-         expected_opp_roll_cols = [col for col in expected_opp_roll_cols_base if '_vs_' not in col] # Base rolling
-         # Add vs_pitcher cols if they were created by merge_opponent_features_prediction
-         expected_opp_roll_cols += [f'opp_roll{w}g_{m}_vs_pitcher' for w in ROLLING_WINDOWS for m in base_opp_metrics]
-         # Remove duplicates just in case
-         expected_opp_roll_cols = sorted(list(set(expected_opp_roll_cols)))
-    else: expected_opp_roll_cols = expected_opp_roll_cols_base
-
-    # Combine all expected columns
-    expected_cols = list(set(
-        expected_base_cols + expected_league_avg_cols + expected_target_cols +
-        expected_p_roll_cols + expected_opp_roll_cols + expected_bp_roll_cols + expected_ump_roll_cols
-    ))
-
-    # Add missing columns as NaN and select/reorder
-    present_cols = final_features_df.columns.tolist()
-    final_cols_ordered = []
-    # Prioritize base/target/league avg
-    priority_cols = expected_base_cols + expected_league_avg_cols + expected_target_cols
-    for col in priority_cols:
-         if col in present_cols: final_cols_ordered.append(col)
-         elif col in expected_cols:
-              logger.warning(f"Adding missing expected base/target/league column '{col}' as NaN.")
-              final_features_df[col] = np.nan; final_cols_ordered.append(col)
-    # Add rolling
-    for col_list in [expected_p_roll_cols, expected_opp_roll_cols, expected_bp_roll_cols, expected_ump_roll_cols]:
-         for col in col_list:
-              if col in expected_cols:
-                   if col not in present_cols:
-                        logger.warning(f"Adding missing expected rolling column '{col}' as NaN.")
-                        final_features_df[col] = np.nan
-                   if col not in final_cols_ordered: final_cols_ordered.append(col)
-
-    final_cols_ordered = [col for col in final_cols_ordered if col in final_features_df.columns]
-    final_features_df = final_features_df[final_cols_ordered]
-
-    logger.info(f"Final DataFrame shape after cleanup: {final_features_df.shape}")
-
-
-    # --- STEP 6: Save Results ---
-    output_table_train = "train_features"
-    output_table_test = "test_features"
-    output_table_pred = "prediction_features" # Use consistent name
-
-    logger.info(f"STEP 6: Saving final features (Base: Starters)...")
+                logger.error(f"Error calculating rolling feature for {metric} with window {window}: {e}", exc_info=True)
+                df_copy[roll_col_name] = np.nan # Add NaN column on error
+
+    # Return only the newly created rolling columns, aligned with the original DataFrame's index
+    if not all_rolling_features: # No features created
+        return pd.DataFrame(index=df.index)
+        
+    return df_copy[all_rolling_features].reindex(df.index)
+
+
+# --- Data Loading Functions ---
+def load_game_level_aggregates() -> pd.DataFrame:
+    """Loads the main enriched game-level data."""
+    table_name = config.PITCHER_GAME_STATS_TABLE # This table now contains enriched game data
+    logger.info(f"Loading game-level aggregates from '{table_name}'...")
     try:
         with DBConnection() as conn:
-            if mode == "HISTORICAL":
-                logger.info(f"Splitting historical data into train ({train_years}) and test ({test_years})...")
-                if 'season' not in final_features_df.columns: logger.error("'season' column missing, cannot split by year.")
-                else:
-                    train_df = final_features_df[final_features_df['season'].isin(train_years)].copy()
-                    test_df = final_features_df[final_features_df['season'].isin(test_years)].copy()
-                    logger.info(f"Saving {len(train_df)} training rows to '{output_table_train}'...")
-                    conn.execute(f"DROP TABLE IF EXISTS {output_table_train}")
-                    train_df.to_sql(output_table_train, conn, if_exists='replace', index=False)
-                    conn.commit()
-                    logger.info(f"Saving {len(test_df)} test rows to '{output_table_test}'...")
-                    conn.execute(f"DROP TABLE IF EXISTS {output_table_test}")
-                    test_df.to_sql(output_table_test, conn, if_exists='replace', index=False)
-                    conn.commit()
-            elif mode == "PREDICTION":
-                logger.info(f"Saving {len(final_features_df)} prediction rows with {len(final_features_df.columns)} columns to '{output_table_pred}'...")
-                conn.execute(f"DROP TABLE IF EXISTS {output_table_pred}")
-                final_features_df.to_sql(output_table_pred, conn, if_exists='replace', index=False)
-                conn.commit()
-                logger.debug(f"Final prediction columns: {final_features_df.columns.tolist()}")
-    except Exception as e: logger.error(f"Failed to save features to database: {e}", exc_info=True)
+            # Check if table exists
+            query_exists = f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table_name}';"
+            if pd.read_sql_query(query_exists, conn).empty:
+                logger.error(f"Table '{table_name}' does not exist in the database.")
+                return pd.DataFrame()
+            df = pd.read_sql_query(f"SELECT * FROM {table_name}", conn)
+        logger.info(f"Loaded {len(df)} rows from '{table_name}'.")
+        if 'game_date' in df.columns:
+            df['game_date'] = pd.to_datetime(df['game_date'])
+        return df
+    except Exception as e:
+        logger.error(f"Error loading data from '{table_name}': {e}", exc_info=True)
+        return pd.DataFrame()
 
-    gc.collect()
-    logger.info(f"--- Feature Generation [{mode} Mode] (Base: Starters) Completed ---")
+def load_team_game_stats() -> pd.DataFrame:
+    """Loads game-level team stats (primarily for opponent features)."""
+    # Assuming a table like 'game_level_team_stats' exists or will be created.
+    # This table should contain team batting performance per game.
+    table_name = getattr(config, 'TEAM_GAME_STATS_TABLE', 'game_level_team_stats') # Example name
+    logger.info(f"Loading team game stats from '{table_name}'...")
+    try:
+        with DBConnection() as conn:
+            query_exists = f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table_name}';"
+            if pd.read_sql_query(query_exists, conn).empty:
+                logger.warning(f"Team game stats table '{table_name}' does not exist or is empty. Opponent features might be limited.")
+                return pd.DataFrame()
+            df = pd.read_sql_query(f"SELECT * FROM {table_name}", conn)
+        logger.info(f"Loaded {len(df)} rows from '{table_name}'.")
+        if 'game_date' in df.columns:
+            df['game_date'] = pd.to_datetime(df['game_date'])
+        # Ensure a 'team' column exists for grouping (e.g., team abbreviation)
+        if 'team' not in df.columns and 'team_abbr' in df.columns: # Common case
+            df = df.rename(columns={'team_abbr': 'team'})
+        elif 'team' not in df.columns:
+            logger.error(f"Missing 'team' or 'team_abbr' column in '{table_name}' for opponent features.")
+            return pd.DataFrame()
+        return df
+    except Exception as e:
+        logger.error(f"Error loading data from '{table_name}': {e}", exc_info=True)
+        return pd.DataFrame()
+
+def load_historical_umpire_assignments() -> pd.DataFrame:
+    """Loads historical full umpire crew assignments from mlb_boxscores."""
+    table_name = config.MLB_BOXSCORES_TABLE
+    logger.info(f"Loading historical umpire assignments from '{table_name}' for prediction...")
+    cols_needed = ['game_pk', 'game_date', 'home_team', 'away_team',
+                   'hp_umpire', '1b_umpire', '2b_umpire', '3b_umpire']
+    try:
+        with DBConnection() as conn:
+            query_exists = f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table_name}';"
+            if pd.read_sql_query(query_exists, conn).empty:
+                logger.error(f"Table '{table_name}' does not exist. Cannot load umpire assignments.")
+                return pd.DataFrame()
+            # Check for required columns
+            cursor = conn.cursor()
+            cursor.execute(f"PRAGMA table_info({table_name});")
+            available_cols = [info[1] for info in cursor.fetchall()]
+            if not all(col in available_cols for col in cols_needed):
+                logger.error(f"Table '{table_name}' is missing some required umpire columns. Needed: {cols_needed}, Available: {available_cols}")
+                return pd.DataFrame()
+
+            df = pd.read_sql_query(f"SELECT {', '.join(cols_needed)} FROM {table_name}", conn)
+        logger.info(f"Loaded {len(df)} rows from '{table_name}' for umpire assignments.")
+        if 'game_date' in df.columns:
+            df['game_date'] = pd.to_datetime(df['game_date'])
+        return df
+    except Exception as e:
+        logger.error(f"Error loading data from '{table_name}': {e}", exc_info=True)
+        return pd.DataFrame()
+
+# --- Main Historical Feature Generation Function ---
+def generate_historical_features(start_date_str: Optional[str] = None, end_date_str: Optional[str] = None) -> pd.DataFrame:
+    """
+    Generates historical features for model training.
+    """
+    logger.info("Starting generation of historical features...")
+
+    game_data_df = load_game_level_aggregates()
+    if game_data_df.empty:
+        logger.error("Game level aggregates data is empty. Cannot generate historical features.")
+        return pd.DataFrame()
+
+    team_game_stats_df = load_team_game_stats()
+    # Opponent features can still be generated if team_game_stats_df is empty, they just won't merge.
+
+    # Filter by date range if provided
+    if start_date_str:
+        game_data_df = game_data_df[game_data_df['game_date'] >= pd.to_datetime(start_date_str)]
+    if end_date_str:
+        game_data_df = game_data_df[game_data_df['game_date'] <= pd.to_datetime(end_date_str)]
+
+    if game_data_df.empty:
+        logger.error("Game level aggregates data is empty after date filtering.")
+        return pd.DataFrame()
+
+    # Ensure essential columns are present
+    # 'pitcher' (ID), 'game_date', 'ballpark', 'home_plate_umpire', 'opponent_team', 'p_throws'
+    # The target variable also needs to be present, e.g., 'strikeouts_recorded'
+    required_base_cols = ['game_pk', 'pitcher', 'game_date', 'ballpark', 'home_plate_umpire', 
+                            'opponent_team', 'p_throws', TARGET_VARIABLE]
+    missing_base_cols = [col for col in required_base_cols if col not in game_data_df.columns]
+    if missing_base_cols:
+        logger.error(f"Missing essential base columns in game_data_df: {missing_base_cols}. Cannot proceed.")
+        return pd.DataFrame()
+
+    # Sort data for rolling calculations and consistent merging
+    game_data_df = game_data_df.sort_values(by=['pitcher', 'game_date']).reset_index(drop=True)
+    
+    # Initialize final features DataFrame with essential ID and date columns + target
+    # Also include all raw boxscore features that are already in game_data_df
+    # Identify boxscore feature columns (this is an example list, adjust based on boxscore_features.py output)
+    boxscore_feature_cols = [
+        'temperature', 'is_night_game', 'park_elevation', 'weather_condition_simplified',
+        'is_precipitation', 'is_dome_weather', 'wind_speed_mph', 'wind_speed_category',
+        'is_dome_wind', 'wind_blowing_out', 'wind_blowing_in',
+        'wind_blowing_across_L_to_R', 'wind_blowing_across_R_to_L',
+        'wind_direction_varies_or_unknown'
+    ]
+    # Select only existing boxscore columns and ensure no duplicates with required_base_cols
+    actual_boxscore_cols = [col for col in boxscore_feature_cols if col in game_data_df.columns]
+    initial_cols_to_keep = list(set(required_base_cols + actual_boxscore_cols))
+    final_features_df = game_data_df[initial_cols_to_keep].copy()
+
+
+    # 1. Pitcher Features
+    logger.info("Calculating pitcher features...")
+    # Filter PITCHER_METRICS_FOR_ROLLING to those present in game_data_df
+    valid_pitcher_metrics = [m for m in PITCHER_METRICS_FOR_ROLLING if m in game_data_df.columns]
+    if valid_pitcher_metrics:
+        pitcher_roll_df = calculate_pitcher_rolling_features(
+            df=game_data_df, # game_data_df contains pitcher stats per game
+            group_col='pitcher',
+            date_col='game_date',
+            metrics=valid_pitcher_metrics,
+            windows=WINDOW_SIZES,
+            min_periods=MIN_PERIODS_DEFAULT,
+            calculate_multi_window_rolling=calculate_multi_window_rolling_expanded
+        )
+        if not pitcher_roll_df.empty:
+            final_features_df = pd.concat([final_features_df, pitcher_roll_df], axis=1)
+
+    pitcher_rest_s = calculate_pitcher_rest_days(game_data_df) # Uses 'pitcher', 'game_date'
+    if not pitcher_rest_s.empty:
+        final_features_df['days_rest'] = pitcher_rest_s
+    
+    # 2. Opponent Features
+    logger.info("Calculating opponent features...")
+    if not team_game_stats_df.empty:
+        valid_opponent_metrics = [m for m in OPPONENT_BATTING_METRICS_FOR_ROLLING if m in team_game_stats_df.columns]
+        if 'team' not in team_game_stats_df.columns:
+             logger.warning("Skipping opponent features: 'team' column missing in team_game_stats_df.")
+        elif valid_opponent_metrics:
+            opponent_rolling_df, opp_rename_map = calculate_opponent_rolling_features(
+                team_hist_df=team_game_stats_df, # This df has team batting stats
+                group_col='team', # Group by team
+                date_col='game_date',
+                metrics=valid_opponent_metrics,
+                windows=WINDOW_SIZES,
+                min_periods=MIN_PERIODS_DEFAULT,
+                calculate_multi_window_rolling=calculate_multi_window_rolling_expanded
+            )
+            # Merge opponent features using historical merge (merge_asof)
+            # This requires 'opponent_team' in final_features_df and 'team', 'game_date' in opponent_rolling_df
+            if not opponent_rolling_df.empty:
+                final_features_df = merge_opponent_features_historical(
+                    final_features_df, opponent_rolling_df, opp_rename_map
+                )
+        else:
+            logger.warning("No valid opponent metrics found in team_game_stats_df.")
+    else:
+        logger.warning("Team game stats DataFrame is empty. Skipping opponent features.")
+
+    # 3. Ballpark Features
+    logger.info("Calculating ballpark features...")
+    # Ballpark features are rolled based on metrics observed in that park from game_data_df
+    valid_ballpark_metrics = [m for m in BALLPARK_METRICS_FOR_ROLLING if m in game_data_df.columns]
+    if 'ballpark' not in game_data_df.columns:
+        logger.warning("Skipping ballpark features: 'ballpark' column missing in game_data_df.")
+    elif valid_ballpark_metrics:
+        ballpark_rolling_df, bpark_rename_map = calculate_ballpark_rolling_features(
+            pitcher_hist_df=game_data_df, # Use main game data
+            group_col='ballpark',
+            date_col='game_date',
+            metrics=valid_ballpark_metrics,
+            windows=WINDOW_SIZES,
+            min_periods=MIN_PERIODS_DEFAULT,
+            calculate_multi_window_rolling=calculate_multi_window_rolling_expanded
+        )
+        if not ballpark_rolling_df.empty:
+            final_features_df = merge_ballpark_features_historical(
+                final_features_df, ballpark_rolling_df, bpark_rename_map
+            )
+    else:
+        logger.warning("No valid ballpark metrics found in game_data_df.")
+
+    # 4. Umpire Features
+    logger.info("Calculating umpire features...")
+    # Umpire features are rolled based on metrics observed with that umpire from game_data_df
+    valid_umpire_metrics = [m for m in UMPIRE_METRICS_FOR_ROLLING if m in game_data_df.columns]
+    if 'home_plate_umpire' not in game_data_df.columns:
+        logger.warning("Skipping umpire features: 'home_plate_umpire' column missing in game_data_df.")
+    elif valid_umpire_metrics:
+        umpire_rolling_df, ump_rename_map = calculate_umpire_rolling_features(
+            main_game_df=game_data_df, # Use main game data
+            group_col='home_plate_umpire',
+            date_col='game_date',
+            metrics=valid_umpire_metrics,
+            windows=WINDOW_SIZES,
+            min_periods=MIN_PERIODS_DEFAULT,
+            calculate_multi_window_rolling=calculate_multi_window_rolling_expanded
+        )
+        if not umpire_rolling_df.empty:
+            # Umpire features are calculated per game, so a direct concat/merge on index should work
+            # if calculate_umpire_rolling_features returns index-aligned features
+            final_features_df = pd.concat([final_features_df, umpire_rolling_df], axis=1)
+    else:
+        logger.warning("No valid umpire metrics found in game_data_df.")
+
+    # Final processing
+    # Drop rows where target is NaN (cannot be used for training)
+    final_features_df = final_features_df.dropna(subset=[TARGET_VARIABLE])
+    # Drop rows with too many NaNs in features (optional, based on strategy)
+    # Example: final_features_df = final_features_df.dropna(thresh=len(final_features_df.columns) - 10) 
+
+    logger.info(f"Finished generating historical features. Shape: {final_features_df.shape}")
+    
+    # Save features
+    try:
+        final_features_df.to_parquet(HISTORICAL_FEATURES_FILE, index=False)
+        logger.info(f"Historical features saved to {HISTORICAL_FEATURES_FILE}")
+    except Exception as e:
+        logger.error(f"Error saving historical features to {HISTORICAL_FEATURES_FILE}: {e}", exc_info=True)
+        
+    return final_features_df
+
+
+# --- Prediction Feature Generation Function ---
+def generate_prediction_baseline_features(prediction_date_str: str) -> pd.DataFrame:
+    """
+    Generates features for making predictions on a specific date.
+    """
+    logger.info(f"Starting generation of features for prediction date: {prediction_date_str}")
+    prediction_date = pd.to_datetime(prediction_date_str)
+
+    # 1. Load all historical engineered features (or derive latest stats differently)
+    # For simplicity, we load the full historical set and will get latest values from it.
+    # Alternatively, save latest rolling stats per entity during historical generation.
+    if not HISTORICAL_FEATURES_FILE.exists():
+        logger.error(f"Historical features file not found: {HISTORICAL_FEATURES_FILE}. Run historical generation first.")
+        return pd.DataFrame()
+    all_historical_features_df = pd.read_parquet(HISTORICAL_FEATURES_FILE)
+    all_historical_features_df['game_date'] = pd.to_datetime(all_historical_features_df['game_date'])
+
+    # 2. Fetch today's games and probable starters
+    # This uses scrape_probable_pitchers from mlb_api.py
+    # It returns: game_date, game_pk, home_team_abbr, away_team_abbr,
+    #            home_probable_pitcher_name, home_probable_pitcher_id,
+    #            away_probable_pitcher_name, away_probable_pitcher_id
+    logger.info(f"Fetching probable pitchers for prediction date: {prediction_date_str} using mlb_api...")
+    todays_games_raw = scrape_probable_pitchers(prediction_date_str) # From mlb_api.py
+    if not todays_games_raw:
+        logger.warning(f"No games with probable pitchers found for {prediction_date_str}.")
+        return pd.DataFrame()
+    
+    todays_games_df = pd.DataFrame(todays_games_raw)
+    # We need to create one row per *starting pitcher* we are predicting for
+    home_starters = todays_games_df[['game_pk', 'game_date', 'home_team_abbr', 'away_team_abbr', 'home_probable_pitcher_id', 'home_probable_pitcher_name']].copy()
+    home_starters = home_starters.rename(columns={
+        'home_team_abbr': 'team', 'away_team_abbr': 'opponent_team',
+        'home_probable_pitcher_id': 'pitcher', 'home_probable_pitcher_name': 'pitcher_name'
+    })
+    home_starters['is_home_pitcher'] = 1
+
+    away_starters = todays_games_df[['game_pk', 'game_date', 'away_team_abbr', 'home_team_abbr', 'away_probable_pitcher_id', 'away_probable_pitcher_name']].copy()
+    away_starters = away_starters.rename(columns={
+        'away_team_abbr': 'team', 'home_team_abbr': 'opponent_team',
+        'away_probable_pitcher_id': 'pitcher', 'away_probable_pitcher_name': 'pitcher_name'
+    })
+    away_starters['is_home_pitcher'] = 0
+    
+    prediction_baseline_df = pd.concat([home_starters, away_starters], ignore_index=True)
+    prediction_baseline_df['game_date'] = pd.to_datetime(prediction_baseline_df['game_date'])
+    prediction_baseline_df = prediction_baseline_df.dropna(subset=['pitcher']) # Ensure pitcher ID is present
+    prediction_baseline_df['pitcher'] = prediction_baseline_df['pitcher'].astype(int)
+
+
+    # 3. Fetch today's game conditions (weather, wind, temp, ballpark, **umpire**)
+    # This is the challenging part for live data.
+    # For now, we'll assume these need to be fetched/predicted and added.
+    # We'll load the full mlb_boxscores to get historical umpire assignments for prediction.
+    historical_umpire_assignments_df = load_historical_umpire_assignments()
+
+    # For each game in prediction_baseline_df, try to get/predict umpire and other conditions
+    # This part would involve calling a weather API, and our new umpire predictor.
+    # For simplicity in this example, we'll add placeholder columns.
+    # In a real scenario, you'd populate these from live sources or predictions.
+    
+    temp_boxscore_features_for_today = []
+    for idx, row in prediction_baseline_df.iterrows():
+        game_info_for_ump_pred = {
+            'game_pk': row['game_pk'],
+            'game_date': row['game_date'], # pd.Timestamp
+            'home_team': row['team'] if row['is_home_pitcher'] else row['opponent_team'],
+            'away_team': row['opponent_team'] if row['is_home_pitcher'] else row['team']
+        }
+        
+        # Predict HP Umpire
+        predicted_hp_ump = None
+        if not historical_umpire_assignments_df.empty:
+            predicted_hp_ump = predict_home_plate_umpire(game_info_for_ump_pred, historical_umpire_assignments_df)
+        
+        # Fetch other boxscore info (e.g., from a pre-populated daily file or API)
+        # This is a placeholder for actual data fetching for today's conditions
+        # For now, we'll use some defaults or NaNs.
+        # In a real pipeline, you'd query your `mlb_boxscores` table for today's game_pk
+        # if it gets updated pre-game, or use another source.
+        # Let's assume `fetch_live_boxscore_info(game_pk)` exists.
+        # live_conditions = fetch_live_boxscore_info(row['game_pk']) # Hypothetical
+        
+        temp_data = {
+            'game_pk': row['game_pk'],
+            'home_plate_umpire': predicted_hp_ump, # From our predictor
+            'ballpark': config.TEAM_BALLPARK_MAP.get(game_info_for_ump_pred['home_team'], "Unknown Park"), # Needs TEAM_BALLPARK_MAP in config
+            'p_throws': config.PITCHER_HAND_MAP.get(row['pitcher'], "R"), # Needs PITCHER_HAND_MAP or fetch live
+            # Add other boxscore features - these would ideally come from a live source for today
+            'temperature': 70, 'is_night_game': 1, 'park_elevation': 500,
+            'weather_condition_simplified': "Clear", 'is_precipitation': 0, 'is_dome_weather': 0,
+            'wind_speed_mph': 5, 'wind_speed_category': "Light Breeze", 'is_dome_wind': 0,
+            'wind_blowing_out': 0, 'wind_blowing_in': 0, 'wind_blowing_across_L_to_R': 0,
+            'wind_blowing_across_R_to_L': 0, 'wind_direction_varies_or_unknown': 1
+        }
+        temp_boxscore_features_for_today.append(temp_data)
+
+    if not temp_boxscore_features_for_today:
+        logger.warning("Could not generate any boxscore context for today's games.")
+        return pd.DataFrame()
+        
+    today_boxscore_context_df = pd.DataFrame(temp_boxscore_features_for_today)
+    prediction_baseline_df = pd.merge(prediction_baseline_df, today_boxscore_context_df, on='game_pk', how='left')
+
+    # 4. Get Latest Rolling Stats for each entity
+    # Pitcher stats
+    latest_pitcher_stats = all_historical_features_df[
+        all_historical_features_df['game_date'] < prediction_date
+    ].sort_values('game_date').groupby('pitcher', observed=True).last()
+    # Select only pitcher rolling cols (prefixed with p_) and days_rest
+    pitcher_cols_to_merge = ['days_rest'] + [col for col in latest_pitcher_stats.columns if col.startswith('p_roll')]
+    prediction_baseline_df = pd.merge(
+        prediction_baseline_df,
+        latest_pitcher_stats[pitcher_cols_to_merge].reset_index(), # Reset index to merge on 'pitcher'
+        on='pitcher',
+        how='left'
+    )
+    # For days_rest, it's for the pitcher's last game. For today, it's game_date - last_game_date.
+    # This requires pitcher's last game_date.
+    # Simpler: if 'days_rest' is NaN after merge, it means new pitcher or no recent games.
+    # A more accurate 'days_rest' for today would be calculated based on their last start from historical_df.
+    # For now, the merged one is "rest before their last historical game". This needs refinement for prediction.
+    # Let's calculate rest for today:
+    last_pitch_date_map = all_historical_features_df[all_historical_features_df['game_date'] < prediction_date].groupby('pitcher')['game_date'].max()
+    prediction_baseline_df = prediction_baseline_df.merge(last_pitch_date_map.rename('last_game_date_pitcher'), on='pitcher', how='left')
+    prediction_baseline_df['days_rest'] = (prediction_baseline_df['game_date'] - prediction_baseline_df['last_game_date_pitcher']).dt.days
+    prediction_baseline_df = prediction_baseline_df.drop(columns=['last_game_date_pitcher'], errors='ignore')
+
+
+    # Opponent Stats
+    if 'opponent_team' in prediction_baseline_df.columns:
+        latest_opponent_stats_source = all_historical_features_df[
+            all_historical_features_df['game_date'] < prediction_date
+        ].sort_values('game_date').groupby('team_for_opp_stats', observed=True).last() # Assuming 'team_for_opp_stats' column exists from historical build
+        # This needs careful handling of opponent team ID.
+        # For now, let's assume `merge_opponent_features_prediction` handles fetching latest.
+        # We need the `game_level_team_stats` for this.
+        team_game_stats_df = load_team_game_stats()
+        if not team_game_stats_df.empty:
+            # Calculate latest opponent rolling from their historical stats
+            valid_opponent_metrics = [m for m in OPPONENT_BATTING_METRICS_FOR_ROLLING if m in team_game_stats_df.columns]
+            if 'team' in team_game_stats_df.columns and valid_opponent_metrics:
+                latest_opp_rolling_df, opp_rename_map = calculate_opponent_rolling_features(
+                    team_hist_df=team_game_stats_df[team_game_stats_df['game_date'] < prediction_date],
+                    group_col='team', date_col='game_date', metrics=valid_opponent_metrics,
+                    windows=WINDOW_SIZES, min_periods=MIN_PERIODS_DEFAULT,
+                    calculate_multi_window_rolling=calculate_multi_window_rolling_expanded
+                )
+                # Get the very last row for each team to represent "latest"
+                latest_opp_rolling_df = latest_opp_rolling_df.sort_values('game_date').groupby('team', observed=True).last().reset_index()
+
+                prediction_baseline_df = merge_opponent_features_prediction(
+                     prediction_baseline_df, latest_opp_rolling_df, opp_rename_map, WINDOW_SIZES
+                ) # Requires 'p_throws' in prediction_baseline_df
+
+    # Ballpark Stats
+    if 'ballpark' in prediction_baseline_df.columns:
+        latest_ballpark_stats_source = all_historical_features_df[
+            all_historical_features_df['game_date'] < prediction_date
+        ].sort_values('game_date').groupby('ballpark', observed=True).last()
+        bpark_cols_to_merge = [col for col in latest_ballpark_stats_source.columns if col.startswith('bp_roll')]
+        # The merge_ballpark_features_prediction needs a map, let's create a dummy one if not available
+        # Or, ensure calculate_ballpark_rolling_features is called to get the map.
+        # For simplicity, assume the columns are already correctly named in latest_ballpark_stats_source
+        dummy_bpark_rename_map = {col: col for col in bpark_cols_to_merge} # This is not ideal
+        prediction_baseline_df = merge_ballpark_features_prediction(
+            prediction_baseline_df, latest_ballpark_stats_source[bpark_cols_to_merge].reset_index(), dummy_bpark_rename_map
+        )
+
+
+    # Umpire Stats
+    if 'home_plate_umpire' in prediction_baseline_df.columns:
+        latest_umpire_stats_source = all_historical_features_df[
+            all_historical_features_df['game_date'] < prediction_date
+        ].sort_values('game_date').groupby('home_plate_umpire', observed=True).last()
+        ump_cols_to_merge = [col for col in latest_umpire_stats_source.columns if col.startswith('ump_roll')]
+        prediction_baseline_df = pd.merge(
+            prediction_baseline_df,
+            latest_umpire_stats_source[ump_cols_to_merge].reset_index(),
+            on='home_plate_umpire',
+            how='left'
+        )
+        
+    logger.info(f"Finished generating prediction features. Shape: {prediction_baseline_df.shape}")
+    
+    # Save features
+    try:
+        prediction_baseline_df.to_parquet(PREDICTION_FEATURES_FILE, index=False)
+        logger.info(f"Prediction features saved to {PREDICTION_FEATURES_FILE}")
+    except Exception as e:
+        logger.error(f"Error saving prediction features to {PREDICTION_FEATURES_FILE}: {e}", exc_info=True)
+
+    return prediction_baseline_df
 
 
 # --- Main Execution Block ---
 if __name__ == "__main__":
-    if not MODULE_IMPORTS_OK: sys.exit("Exiting: Failed module imports.")
-    parser = argparse.ArgumentParser(description="Generate MLB Features (Base: Starters) for Training/Prediction.")
-    parser.add_argument("--prediction-date", type=str, default=None, help="Generate features for specific date (YYYY-MM-DD). Default: full historical.")
-    parser.add_argument("--train-years", type=int, nargs='+', default=None, help="Years for training set. Overrides config.")
-    parser.add_argument("--test-years", type=int, nargs='+', default=None, help="Years for test set. Overrides config.")
+    parser = argparse.ArgumentParser(description="Generate features for MLB pitcher strikeout prediction.")
+    parser.add_argument(
+        "--mode",
+        choices=['historical', 'prediction'],
+        required=True,
+        help="Mode of operation: 'historical' to generate features for past data, 'prediction' for a specific future date."
+    )
+    parser.add_argument(
+        "--start-date",
+        help="Start date (YYYY-MM-DD) for historical mode."
+    )
+    parser.add_argument(
+        "--end-date",
+        help="End date (YYYY-MM-DD) for historical mode."
+    )
+    parser.add_argument(
+        "--prediction-date",
+        help="Date (YYYY-MM-DD) for prediction mode. Defaults to today if not provided."
+    )
+
     args = parser.parse_args()
 
-    train_years_to_use = args.train_years if args.train_years else StrikeoutModelConfig.DEFAULT_TRAIN_YEARS
-    test_years_to_use = args.test_years if args.test_years else StrikeoutModelConfig.DEFAULT_TEST_YEARS
+    if args.mode == 'historical':
+        if not args.start_date or not args.end_date:
+            logger.warning("For historical mode, --start-date and --end-date are recommended. Running for all available data.")
+        generate_historical_features(args.start_date, args.end_date)
+    elif args.mode == 'prediction':
+        pred_date = args.prediction_date if args.prediction_date else datetime.now().strftime("%Y-%m-%d")
+        generate_prediction_baseline_features(pred_date)
 
-    generate_features(
-        prediction_date_str=args.prediction_date,
-        train_years=train_years_to_use if not args.prediction_date else None,
-        test_years=test_years_to_use if not args.prediction_date else None
-    )
+    logger.info("Feature generation process finished.")
+

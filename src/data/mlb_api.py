@@ -1,7 +1,6 @@
-# src/data/mlb_api.py (Updated for dynamic date URL)
+# src/data/mlb_api.py (Updated for MLB Stats API)
 
-import requests
-from bs4 import BeautifulSoup
+import httpx # Use httpx for consistency with scrape_mlb_boxscores.py
 import pandas as pd
 import json
 import logging
@@ -10,6 +9,8 @@ from pathlib import Path
 import sys
 import time
 import re
+# Add tenacity for retry logic consistency
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 # Ensure src directory is in the path if running script directly
 project_root = Path(__file__).resolve().parents[2]
@@ -18,56 +19,129 @@ if str(project_root) not in sys.path:
 
 # Attempt to import utils and config
 try:
-    from src.config import DBConfig, DataConfig
-    from src.data.utils import setup_logger, ensure_dir, normalize_name, DBConnection
+    # DBConfig might not be strictly needed anymore if team_mapping isn't loaded
+    from src.config import DBConfig, DataConfig, LogConfig # Added LogConfig
+    from src.data.utils import setup_logger, ensure_dir, DBConnection # Removed normalize_name as it wasn't used
     MODULE_IMPORTS_OK = True
+    # Define DB_PATH from config if available, needed for fallback DBConnection path
+    try: DB_PATH = DBConfig.PATH
+    except (ImportError, AttributeError): DB_PATH = str(project_root / 'data' / 'pitcher_stats.db') # Fallback
 except ImportError as e:
     print(f"ERROR: Failed to import required modules: {e}")
     MODULE_IMPORTS_OK = False
-    def setup_logger(name, level=logging.INFO, log_file=None): logging.basicConfig(level=level); return logging.getLogger(name)
+    # Fallback definitions
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+    logger = logging.getLogger('mlb_api_fallback')
+    class DataConfig: RATE_LIMIT_PAUSE = 1; REQUEST_TIMEOUT = 20; MAX_RETRIES = 3; INITIAL_RETRY_DELAY = 1; MAX_RETRY_DELAY = 10 # Added retry/timeout defaults
+    class LogConfig: LOG_DIR = project_root / 'logs'
+    DB_PATH = str(project_root / 'data' / 'pitcher_stats.db')
+    def setup_logger(name, level=logging.INFO, log_file=None): return logger
     def ensure_dir(path): Path(path).mkdir(parents=True, exist_ok=True)
-    def normalize_name(name): return name.lower().strip() if isinstance(name, str) else ""
-    class DBConnection:
+    class DBConnection: # Basic fallback
         def __init__(self, db_path): self.db_path = db_path
         def __enter__(self): import sqlite3; self.conn = sqlite3.connect(self.db_path); return self.conn
         def __exit__(self,et,ev,tb): self.conn.close()
-    class DBConfig: PATH = "data/pitcher_stats.db"
-    class DataConfig: RATE_LIMIT_PAUSE = 1
+
 
 # Setup logger
-log_dir = project_root / 'logs'
+log_dir = LogConfig.LOG_DIR if MODULE_IMPORTS_OK else project_root / 'logs'
 ensure_dir(log_dir)
-logger = setup_logger('mlb_scraper_module', log_file= log_dir / 'mlb_scraper_module.log', level=logging.INFO) if MODULE_IMPORTS_OK else logging.getLogger('mlb_scraper_fallback')
+logger = setup_logger('mlb_api_module', log_file= log_dir / 'mlb_api.log', level=logging.INFO) if MODULE_IMPORTS_OK else logging.getLogger('mlb_api_fallback')
 
-# Base URL part
-BASE_URL_PROBABLE = "https://www.mlb.com/probable-pitchers/" # Add trailing slash
+# --- Constants ---
+MLB_STATS_API_BASE = "https://statsapi.mlb.com/api/v1"
+MLB_SCHEDULE_ENDPOINT = MLB_STATS_API_BASE + "/schedule"
+# Define fields for the schedule endpoint to get necessary info
+# Includes gamePk, status, teams(abbr, name, id, league), probablePitcher(id, fullName)
+SCHEDULE_API_FIELDS = "dates,date,games,gamePk,status,abstractGameState,teams,team,id,name,abbreviation,league,probablePitcher,id,fullName"
 
-HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.93 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
-    'Accept-Language': 'en-US,en;q=0.9', 'Referer': 'https://www.google.com/',
+# Use headers similar to scrape_mlb_boxscores
+API_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/98.0.4758.102 Safari/537.36',
+    'Accept': 'application/json',
 }
 
-# --- Function to Load Team Mapping (Identical to previous version) ---
-def load_team_mapping(db_path):
+# Define retry parameters using DataConfig if available
+MAX_RETRIES = DataConfig.MAX_RETRIES if hasattr(DataConfig, 'MAX_RETRIES') else 3
+INITIAL_RETRY_DELAY = DataConfig.INITIAL_RETRY_DELAY if hasattr(DataConfig, 'INITIAL_RETRY_DELAY') else 1
+MAX_RETRY_DELAY = DataConfig.MAX_RETRY_DELAY if hasattr(DataConfig, 'MAX_RETRY_DELAY') else 10
+REQUEST_TIMEOUT = DataConfig.REQUEST_TIMEOUT if hasattr(DataConfig, 'REQUEST_TIMEOUT') else 20
+
+# --- Retry Logic (adapted from scrape_mlb_boxscores.py) ---
+RETRY_EXCEPTIONS = (httpx.RequestError, httpx.TimeoutException, httpx.HTTPStatusError)
+def is_retryable_exception(exception):
+    """Determine if an exception is retryable."""
+    if isinstance(exception, httpx.HTTPStatusError):
+        # Retry on server errors (5xx)
+        return 500 <= exception.response.status_code < 600
+    # Do not retry on 404 Not Found specifically
+    if isinstance(exception, httpx.RequestError) and hasattr(exception, 'response') and exception.response and exception.response.status_code == 404:
+        return False
+    # Retry on other request errors or timeouts
+    return isinstance(exception, (httpx.TimeoutException, httpx.RequestError))
+
+retry_decorator = retry(
+    stop=stop_after_attempt(MAX_RETRIES),
+    wait=wait_exponential(multiplier=INITIAL_RETRY_DELAY, max=MAX_RETRY_DELAY),
+    retry=retry_if_exception_type(RETRY_EXCEPTIONS), # Use specific exception types
+    before_sleep=lambda rs: logger.warning(f"Retrying schedule API call ({rs.attempt_number}/{MAX_RETRIES}): {rs.outcome.exception()}. Waiting {rs.next_action.sleep:.2f}s...")
+)
+
+@retry_decorator
+def fetch_schedule_api(target_date_str):
+    """Fetches schedule data from MLB Stats API for a specific date with retries."""
+    params = {
+        "sportId": 1, # MLB
+        "startDate": target_date_str,
+        "endDate": target_date_str,
+        "fields": SCHEDULE_API_FIELDS # Use the defined fields string
+    }
+    logger.debug(f"Fetching API URL: {MLB_SCHEDULE_ENDPOINT} with params: {params}")
+    # Use synchronous httpx client for this non-async script part
+    with httpx.Client(headers=API_HEADERS, timeout=REQUEST_TIMEOUT) as client:
+        response = client.get(MLB_SCHEDULE_ENDPOINT, params=params)
+
+    if response.status_code == 404:
+        logger.warning(f"API 404 Not Found for schedule on {target_date_str}. Likely no games.")
+        return None # Treat 404 as no data, not an error to retry indefinitely
+    elif response.status_code >= 400:
+        logger.error(f"API error {response.status_code} fetching schedule for {target_date_str}")
+        response.raise_for_status() # Raise HTTPStatusError for tenacity to catch if retryable
+
+    logger.debug(f"Successfully fetched schedule API for {target_date_str}")
+    return response.json()
+
+# --- Function to Load Team Mapping (Kept for potential future use, but not needed by scrape_probable_pitchers anymore) ---
+def load_team_mapping(db_path=DB_PATH):
     """Loads the team name/ID/abbreviation mapping from the database."""
-    if not MODULE_IMPORTS_OK: logger.error("Cannot load team mapping: missing DBConnection/config."); return None
-    logger.info("Loading team mapping from database...")
+    if not MODULE_IMPORTS_OK:
+        logger.error("Cannot load team mapping: missing DBConnection/config.")
+        return None
+    logger.info("Loading team mapping from database (though not currently used by API scraper)...")
     try:
         with DBConnection(db_path) as conn:
             if conn is None: raise ConnectionError("DB connection failed.")
-            cursor = conn.cursor(); cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='team_mapping'")
-            if not cursor.fetchone(): logger.error("'team_mapping' table not found."); return None
+            cursor = conn.cursor()
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='team_mapping'")
+            if not cursor.fetchone():
+                logger.error("'team_mapping' table not found.")
+                return None
             query = "SELECT team_id, team_name, team_abbr FROM team_mapping"
             mapping_df = pd.read_sql_query(query, conn)
+            # Use nullable integer type Int64
             mapping_df['team_id'] = pd.to_numeric(mapping_df['team_id'], errors='coerce').astype('Int64')
-            mapping_df.dropna(subset=['team_id'], inplace=True)
+            # Use dropna without inplace=True
+            mapping_df = mapping_df.dropna(subset=['team_id'])
             logger.info(f"Loaded {len(mapping_df)} teams into mapping.")
             return mapping_df
-    except Exception as e: logger.error(f"Failed to load team mapping from database: {e}"); return None
+    except Exception as e:
+        logger.error(f"Failed to load team mapping from database: {e}")
+        return None
 
-# --- Player ID Extraction (Identical) ---
+# --- Player ID Extraction (No changes needed) ---
 def extract_player_id_from_link(link_href):
+    # This function might become obsolete if IDs are always extracted directly from API,
+    # but keep it for now in case of fallback or other uses.
     if not link_href or not isinstance(link_href, str): return None
     match = re.search(r'/player/[^/]+-(\d+)', link_href)
     if match:
@@ -75,147 +149,135 @@ def extract_player_id_from_link(link_href):
         except ValueError: return None
     return None
 
-# --- Main Scraping Function (MODIFIED to accept date and build URL) ---
-def scrape_probable_pitchers(target_date_str, team_mapping_df):
+# --- Main Scraping Function (MODIFIED to use MLB Stats API) ---
+def scrape_probable_pitchers(target_date_str):
     """
-    Scrape MLB.com for probable pitchers on a specific date.
-    Returns a list of dicts, each with exactly:
-      game_date,
-      game_pk,
-      home_team (3‑letter abbr),
-      away_team (3‑letter abbr),
-      home_pitcher_name,
-      home_pitcher_id,
-      away_pitcher_name,
-      away_pitcher_id
+    Scrapes MLB Stats API for probable pitchers on a specific date.
+    Args:
+        target_date_str (str): The date in 'YYYY-MM-DD' format.
+    Returns:
+        list: A list of dictionaries, each containing game and probable pitcher info.
+              Keys per dict: game_date, game_pk, home_team_abbr, away_team_abbr,
+                             home_probable_pitcher_name, home_probable_pitcher_id,
+                             away_probable_pitcher_name, away_probable_pitcher_id
+              Returns empty list if no games or error occurs.
     """
-    # fallback empty mapping
-    if team_mapping_df is None or team_mapping_df.empty:
-        team_mapping_df = pd.DataFrame(columns=['team_id','team_name','team_abbr'])
+    logger.info(f"Attempting to fetch probable pitchers via MLB Stats API for: {target_date_str}")
 
-    # build a quick lookup for team_id → abbr
-    id_to_abbr = dict(zip(
-        team_mapping_df['team_id'], 
-        team_mapping_df['team_abbr']
-    ))
-
-    # construct URL
-    url = f"{BASE_URL_PROBABLE}{target_date_str}"
-    time.sleep(DataConfig.RATE_LIMIT_PAUSE)
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=20)
-        if resp.status_code == 404:
-            return []  # no games that day
-        resp.raise_for_status()
-    except Exception as e:
-        logger.error(f"HTTP error for {url}: {e}")
-        return []
+        # Add a small delay consistent with DataConfig if defined
+        if hasattr(DataConfig, 'RATE_LIMIT_PAUSE'):
+            time.sleep(DataConfig.RATE_LIMIT_PAUSE / 2) # Shorter delay before API call
 
-    soup = BeautifulSoup(resp.content, 'html.parser')
-    containers = soup.find_all(
-        'div',
-        class_=lambda c: c and 'probable-pitchers__matchup' in c.split()
-    )
-    if not containers:
-        logger.warning(f"No matchups found on {url}.")
+        response_data = fetch_schedule_api(target_date_str)
+
+        # Handle case where API call definitively failed or returned no data (e.g., 404)
+        if response_data is None:
+            logger.info(f"No schedule data returned from API for {target_date_str}.")
+            return []
+
+    except Exception as e:
+        # Log error if retry decorator fails definitively
+        logger.error(f"API call failed definitively for schedule on {target_date_str} after retries: {e}")
         return []
 
     results = []
-    for mc in containers:
-        # --- team IDs & abbrs ---
-        game_div = mc.find(
-            'div',
-            class_=lambda c: c and 'probable-pitchers__game' in c.split()
-        )
-        if not game_div:
-            continue
+    if response_data and 'dates' in response_data and response_data['dates']:
+        # Typically schedule for one date is requested, so dates[0]
+        date_info = response_data['dates'][0]
+        games = date_info.get('games', [])
 
-        try:
-            away_tid = int(game_div['data-team-id-away'])
-            home_tid = int(game_div['data-team-id-home'])
-        except Exception:
-            continue
+        if not games:
+            logger.info(f"No games found in API response for {target_date_str}.")
+            return []
 
-        away_abbr = id_to_abbr.get(away_tid)
-        home_abbr = id_to_abbr.get(home_tid)
+        for game in games:
+            try:
+                game_pk = game.get('gamePk')
+                status = game.get('status', {}).get('abstractGameState')
+                teams_data = game.get('teams', {})
+                away_team_info = teams_data.get('away', {}).get('team', {})
+                home_team_info = teams_data.get('home', {}).get('team', {})
+                away_probable = teams_data.get('away', {}).get('probablePitcher', {})
+                home_probable = teams_data.get('home', {}).get('probablePitcher', {})
 
-        # --- game PK ---
-        game_pk_str = mc.get('data-gamepk') or mc.get('data-game-pk') or mc.get('data-game_pk')
-        game_pk = int(game_pk_str) if game_pk_str and game_pk_str.isdigit() else None
-        if not game_pk:
-            logger.warning("No game_pk found. Skipping container.")
-            continue
+                # Basic checks
+                if not game_pk or not away_team_info.get('id') or not home_team_info.get('id'):
+                    logger.warning(f"Skipping game due to missing gamePk or team IDs in API response: {game.get('gamePk', 'N/A')}")
+                    continue
 
-        # --- pitcher blocks ---
-        blocks = mc.find_all('div', class_='probable-pitchers__pitcher-summary')
-        if len(blocks) < 2:
-            continue
+                # Get abbreviations directly from API
+                away_abbr = away_team_info.get('abbreviation')
+                home_abbr = home_team_info.get('abbreviation')
 
-        def parse_pitcher(block):
-            name_div = block.find('div', class_='probable-pitchers__pitcher-name')
-            link = name_div.find('a', href=True) if name_div else None
-            if link:
-                nm = link.get_text(strip=True)
-                pid = extract_player_id_from_link(link['href'])
-            else:
-                nm = name_div.get_text(strip=True) if name_div else None
-                pid = None
-            return nm, pid
+                # Get probable pitcher info - check if the dictionary has content
+                away_pid = away_probable.get('id')
+                away_name = away_probable.get('fullName')
+                home_pid = home_probable.get('id')
+                home_name = home_probable.get('fullName')
 
-        away_name, away_pid = parse_pitcher(blocks[0])
-        home_name, home_pid = parse_pitcher(blocks[1])
+                # Skip if either probable pitcher is missing (equivalent to TBD)
+                if not away_pid or not away_name or not home_pid or not home_name:
+                    logger.debug(f"Skipping game {game_pk} ({away_abbr} @ {home_abbr}) due to missing probable pitcher info.")
+                    continue
 
-        # skip if TBD or missing
-        if not away_name or 'tbd' in away_name.lower() or not home_name or 'tbd' in home_name.lower():
-            continue
+                # Construct the result dictionary matching expected output format
+                results.append({
+                    "game_date": target_date_str, # Use the requested date
+                    "game_pk": game_pk,
+                    "home_team_abbr": home_abbr,
+                    "away_team_abbr": away_abbr,
+                    "home_probable_pitcher_name": home_name,
+                    "home_probable_pitcher_id": home_pid,
+                    "away_probable_pitcher_name": away_name,
+                    "away_probable_pitcher_id": away_pid,
+                })
 
-        results.append({
-            "game_date":          target_date_str,
-            "game_pk":            game_pk,
-            "home_team":          home_abbr,
-            "away_team":          away_abbr,
-            "home_pitcher_name":  home_name,
-            "home_pitcher_id":    home_pid,
-            "away_pitcher_name":  away_name,
-            "away_pitcher_id":    away_pid,
-        })
+            except Exception as e:
+                logger.error(f"Error processing game {game.get('gamePk', 'N/A')} from API response: {e}", exc_info=True)
+                continue # Skip this game, proceed to the next
 
-    logger.info(f"Scraped {len(results)} matchups for {target_date_str}")
+    logger.info(f"Processed {len(results)} games with probable pitchers from API for {target_date_str}")
     return results
 
 # --- Example Usage Block Modified ---
 if __name__ == "__main__":
-    if not MODULE_IMPORTS_OK: sys.exit("Exiting: Failed module imports.")
+    if not MODULE_IMPORTS_OK:
+        sys.exit("Exiting: Failed module imports.")
 
     # Get date from command line argument for testing
     test_date_str = datetime.now().strftime("%Y-%m-%d") # Default to today
     if len(sys.argv) > 1:
         try:
+            # Validate input date format
             datetime.strptime(sys.argv[1], "%Y-%m-%d")
             test_date_str = sys.argv[1]
         except ValueError:
             print(f"Invalid date format: {sys.argv[1]}. Using today: {test_date_str}")
 
-    print(f"--- Testing MLB Scraper for Date: {test_date_str} ---")
-    db_path = project_root / DBConfig.PATH
-    team_map_df = load_team_mapping(db_path)
+    print(f"--- Testing MLB API Fetcher for Date: {test_date_str} ---")
 
-    if team_map_df is not None:
-        # Pass the target date to the scraper
-        daily_data = scrape_probable_pitchers(test_date_str, team_map_df)
+    # Team mapping is no longer needed for the API call
+    # team_map_df = load_team_mapping() # No longer needed here
 
-        if daily_data:
-            print(f"\n--- Sample Scraped Data ({test_date_str}) ---")
-            print(json.dumps(daily_data[:3], indent=2))
-            print(f"\nTotal games scraped (with pitchers): {len(daily_data)}")
-            # Save test output
-            test_output_dir = project_root / 'data' / 'test_scraper_output'
-            ensure_dir(test_output_dir); test_filename = test_output_dir / f"test_scraped_mapped_pitchers_{test_date_str}.json"
-            try:
-                with open(test_filename, 'w') as f: json.dump(daily_data, f, indent=2)
-                print(f"\nTest data saved to: {test_filename}")
-            except Exception as e: print(f"\nError saving test data: {e}")
-        else:
-            print(f"\nNo probable pitcher data successfully scraped for {test_date_str}.")
+    # Pass only the target date to the scraper function
+    daily_data = scrape_probable_pitchers(test_date_str)
+
+    if daily_data:
+        print(f"\n--- Sample Scraped Data ({test_date_str}) ---")
+        # Print first 3 entries for preview
+        print(json.dumps(daily_data[:3], indent=2))
+        print(f"\nTotal games scraped (with pitchers): {len(daily_data)}")
+
+        # Save test output (optional)
+        test_output_dir = project_root / 'data' / 'test_api_output' # Changed folder name
+        ensure_dir(test_output_dir)
+        test_filename = test_output_dir / f"test_api_probable_pitchers_{test_date_str}.json"
+        try:
+            with open(test_filename, 'w') as f:
+                json.dump(daily_data, f, indent=2)
+            print(f"\nTest data saved to: {test_filename}")
+        except Exception as e:
+            print(f"\nError saving test data: {e}")
     else:
-        print(f"\nCould not load team mapping. Scraper test aborted.")
+        print(f"\nNo probable pitcher data successfully fetched via API for {test_date_str}.")

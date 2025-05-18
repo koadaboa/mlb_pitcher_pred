@@ -11,6 +11,10 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 MLB_BOXSCORES_TABLE = 'mlb_boxscores'
 MASTER_SCHEDULE_TABLE = 'master_schedule'
 TEAM_MAPPING_TABLE = 'team_mapping'
+STATCAST_STARTING_PITCHERS_TABLE = 'statcast_starting_pitchers'
+STATCAST_PITCHERS_TABLE = 'statcast_pitchers'
+STATCAST_BATTERS_TABLE = 'statcast_batters'
+PITCHER_GAME_STATS_TABLE = 'game_level_pitchers'
 
 
 # Team Mapping Columns 
