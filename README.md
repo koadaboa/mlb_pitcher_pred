@@ -37,6 +37,14 @@ Includes metadata for each game such as:
 ['game_pk', 'game_date', 'away_team', 'home_team', 'game_number', 'double_header', 'away_pitcher_ids', 'home_pitcher_ids', 'hp_umpire', '1b_umpire', '2b_umpire', '3b_umpire', 'weather', 'temp', 'wind', 'elevation', 'dayNight', 'first_pitch', 'scraped_timestamp']
 ```
 
+### `game_level_starting_pitchers`
+
+Aggregated per-game stats for starting pitchers only. Rows are filtered from `statcast_pitchers` using the first pitch of each team in a game and requiring at least 3 innings pitched or 50 total pitches.
+
+```text
+['game_pk', 'pitcher_id', 'pitching_team', 'innings_pitched', 'pitches', 'strikeouts', 'swinging_strike_rate', 'first_pitch_strike_rate', 'fastball_pct', 'fastball_then_breaking_rate']
+```
+
 ## Pipeline Structure
 
 1. **Data Fetching**
