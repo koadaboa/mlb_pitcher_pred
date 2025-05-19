@@ -1,7 +1,6 @@
 import pandas as pd
 import numpy as np
 from pathlib import Path
-
 from src.utils import DBConnection
 
 try:
@@ -103,4 +102,3 @@ def main(db_path: Path = DBConfig.PATH) -> None:
 
 if __name__ == "__main__":
     main()
-
