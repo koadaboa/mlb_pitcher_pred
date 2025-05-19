@@ -20,8 +20,8 @@ if str(project_root) not in sys.path:
 # Attempt to import utils and config
 try:
     # DBConfig might not be strictly needed anymore if team_mapping isn't loaded
-    from src.config import DBConfig, DataConfig, LogConfig # Added LogConfig
-    from src.data.utils import setup_logger, ensure_dir, DBConnection # Removed normalize_name as it wasn't used
+    from src.config import DBConfig, DataConfig, LogConfig  # Added LogConfig
+    from src.utils import setup_logger, ensure_dir, DBConnection
     MODULE_IMPORTS_OK = True
     # Define DB_PATH from config if available, needed for fallback DBConnection path
     try: DB_PATH = DBConfig.PATH

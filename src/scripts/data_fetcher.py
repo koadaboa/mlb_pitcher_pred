@@ -28,8 +28,8 @@ project_root = Path(__file__).resolve().parents[2]
 if str(project_root) not in sys.path: sys.path.append(str(project_root))
 
 try:
-    from src.config import DBConfig, DataConfig, LogConfig # Added LogConfig
-    from src.data.utils import setup_logger, ensure_dir, DBConnection
+    from src.config import DBConfig, DataConfig, LogConfig  # Added LogConfig
+    from src.utils import setup_logger, ensure_dir, DBConnection
     # Updated import: scrape_probable_pitchers no longer needs team_mapping_df
     from src.data.mlb_api import scrape_probable_pitchers # Removed load_team_mapping import here
     MODULE_IMPORTS_OK = True
@@ -256,7 +256,7 @@ class DataFetcher:
     def __init__(self, args):
         if not MODULE_IMPORTS_OK: raise ImportError("Core module imports failed. Cannot initialize DataFetcher.")
         self.args = args
-        self.db_path = project_root / DBConfig.PATH
+        self.db_path = Path(DBConfig.PATH)
 
         # --- Mode Determination (Unchanged) ---
         self.single_date_historical_mode = (not args.mlb_api and args.date is not None)

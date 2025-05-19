@@ -24,7 +24,7 @@ if str(project_root) not in sys.path:
 
 try:
     from src.config import LogConfig, FileConfig
-    from src.data.utils import setup_logger, ensure_dir
+    from src.utils import setup_logger, ensure_dir
     MODULE_IMPORTS_OK = True
     # Define DB_PATH from config if available, needed for fallback DBConnection path
     try: from src.config import DBConfig; DB_PATH = DBConfig.PATH
