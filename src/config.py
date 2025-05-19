@@ -51,7 +51,8 @@ BALLPARK_COORDS = {
 }
 
 class DBConfig:
-    PATH = "data/pitcher_stats.db"
+    # Use an absolute path so scripts work from any CWD
+    PATH = PROJECT_ROOT / "data" / "pitcher_stats.db"
     BATCH_SIZE = 5000
 
 class DataConfig:

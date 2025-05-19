@@ -24,7 +24,7 @@ import gc
 # --- Imports and Setup ---
 try:
     from src.config import DBConfig, StrikeoutModelConfig, LogConfig, FileConfig
-    from src.data.utils import setup_logger, DBConnection, find_latest_file
+    from src.utils import setup_logger, DBConnection, find_latest_file
     # Import selection function AND BASE_EXCLUDE_COLS
     from src.features.selection import select_features, BASE_EXCLUDE_COLS
     MODULE_IMPORTS_OK = True

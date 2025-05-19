@@ -1,7 +1,7 @@
-import sqlite3
 import pandas as pd
 import numpy as np
 from pathlib import Path
+from src.utils import DBConnection
 
 try:
     from src.config import DBConfig
@@ -74,27 +74,31 @@ def compute_features(df: pd.DataFrame) -> dict:
         "fastball_then_breaking_rate": seq_rate,
     }
 
-def main(db_path: str = DBConfig.PATH):
-    conn = sqlite3.connect(db_path)
-    starters = get_starting_pitchers(conn)
-    rows = []
-    for _, s in starters.iterrows():
-        df = pd.read_sql_query(
-            f"SELECT pitch_type, at_bat_number, pitch_number, events, description, inning, inning_topbot, outs_when_up FROM {PITCHERS_TABLE} WHERE game_pk=? AND pitcher_id=?",
-            conn,
-            params=(s.game_pk, s.pitcher_id),
-        )
-        feats = compute_features(df)
-        if not feats:
-            continue
-        if feats["innings_pitched"] < 3 and feats["pitches"] < 50:
-            continue
-        feats.update({"game_pk": s.game_pk, "pitcher_id": s.pitcher_id, "pitching_team": s.pitching_team})
-        rows.append(feats)
-    if rows:
-        out_df = pd.DataFrame(rows)
-        out_df.to_sql(STARTERS_TABLE, conn, if_exists="replace", index=False)
-    conn.close()
+def main(db_path: Path = DBConfig.PATH) -> None:
+    """Build or replace the aggregated starting pitcher table."""
+    with DBConnection(db_path) as conn:
+        starters = get_starting_pitchers(conn)
+        rows = []
+        for _, s in starters.iterrows():
+            df = pd.read_sql_query(
+                f"SELECT pitch_type, at_bat_number, pitch_number, events, description, inning, inning_topbot, outs_when_up FROM {PITCHERS_TABLE} WHERE game_pk=? AND pitcher_id=?",
+                conn,
+                params=(s.game_pk, s.pitcher_id),
+            )
+            feats = compute_features(df)
+            if not feats:
+                continue
+            if feats["innings_pitched"] < 3 and feats["pitches"] < 50:
+                continue
+            feats.update({
+                "game_pk": s.game_pk,
+                "pitcher_id": s.pitcher_id,
+                "pitching_team": s.pitching_team,
+            })
+            rows.append(feats)
+        if rows:
+            out_df = pd.DataFrame(rows)
+            out_df.to_sql(STARTERS_TABLE, conn, if_exists="replace", index=False)
 
 if __name__ == "__main__":
     main()
