@@ -26,18 +26,20 @@ def get_starting_pitchers(conn: sqlite3.Connection) -> pd.DataFrame:
         SELECT ROWID AS rid,
                game_pk,
                CASE WHEN inning_topbot = 'Top' THEN home_team ELSE away_team END AS pitching_team,
+               CASE WHEN inning_topbot = 'Top' THEN away_team ELSE home_team END AS opponent_team,
                pitcher_id
         FROM {PITCHERS_TABLE}
     ), first_pitch AS (
-        SELECT game_pk, pitching_team, MIN(rid) AS min_rid
+        SELECT game_pk, pitching_team, opponent_team, MIN(rid) AS min_rid
         FROM pitch_team
-        GROUP BY game_pk, pitching_team
+        GROUP BY game_pk, pitching_team, opponent_team
     )
-    SELECT pt.game_pk, pt.pitching_team, pt.pitcher_id
+    SELECT pt.game_pk, pt.pitching_team, pt.opponent_team, pt.pitcher_id
     FROM pitch_team pt
     JOIN first_pitch fp
       ON pt.game_pk = fp.game_pk
      AND pt.pitching_team = fp.pitching_team
+     AND pt.opponent_team = fp.opponent_team
      AND pt.rid = fp.min_rid
     """
     return pd.read_sql_query(query, conn)
@@ -94,6 +96,7 @@ def main(db_path: Path = DBConfig.PATH) -> None:
                 "game_pk": s.game_pk,
                 "pitcher_id": s.pitcher_id,
                 "pitching_team": s.pitching_team,
+                "opponent_team": s.opponent_team,
             })
             rows.append(feats)
         if rows:

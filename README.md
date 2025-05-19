@@ -42,7 +42,7 @@ Includes metadata for each game such as:
 Aggregated per-game stats for starting pitchers only. Rows are filtered from `statcast_pitchers` using the first pitch of each team in a game and requiring at least 3 innings pitched or 50 total pitches.
 
 ```text
-['game_pk', 'pitcher_id', 'pitching_team', 'innings_pitched', 'pitches', 'strikeouts', 'swinging_strike_rate', 'first_pitch_strike_rate', 'fastball_pct', 'fastball_then_breaking_rate']
+['game_pk', 'pitcher_id', 'pitching_team', 'opponent_team', 'innings_pitched', 'pitches', 'strikeouts', 'swinging_strike_rate', 'first_pitch_strike_rate', 'fastball_pct', 'fastball_then_breaking_rate']
 ```
 
 ## Pipeline Structure
