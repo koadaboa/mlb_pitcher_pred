@@ -9,12 +9,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # --- Database Schema Constants ---
 # Table Names
 MLB_BOXSCORES_TABLE = 'mlb_boxscores'
-MASTER_SCHEDULE_TABLE = 'master_schedule'
-TEAM_MAPPING_TABLE = 'team_mapping'
-STATCAST_STARTING_PITCHERS_TABLE = 'statcast_starting_pitchers'
 STATCAST_PITCHERS_TABLE = 'statcast_pitchers'
 STATCAST_BATTERS_TABLE = 'statcast_batters'
-PITCHER_GAME_STATS_TABLE = 'game_level_pitchers'
 
 
 # Team Mapping Columns 
@@ -68,64 +64,6 @@ class StrikeoutModelConfig:
     WINDOW_SIZES = [3, 5, 10, 25]
     DEFAULT_TRAIN_YEARS = (2016, 2017, 2018, 2019, 2021, 2022, 2023)
     DEFAULT_TEST_YEARS = (2024, 2025)
-    # Number of CV splits for Optuna objective
-    OPTUNA_CV_SPLITS = 4
-    OPTIMIZATION_METRICS = ["within_1_strikeout", "within_2_strikeouts", "over_under_accuracy"]
-    TARGET_VARIABLE = 'strikeouts'
-    TARGET_VARIABLE_GLOBAL_MEAN = 4.5 # Example: Add this if needed for prediction encoding fillna
-    OPTUNA_TRIALS = 100
-    OPTUNA_TIMEOUT = 3600
-    FINAL_ESTIMATORS = 100
-    EARLY_STOPPING_ROUNDS = 10
-    VERBOSE_FIT = True
-    TARGET_ENCODING_COLS = [
-        'p_throws',         # Pitcher throwing hand (L/R)
-        'opponent_team',    # Opponent team abbreviation/ID
-        'home_team',        # Home team abbreviation/ID (if needed separately)
-        'home_plate_umpire',           # Umpire name (if created and merged)
-        'ballpark'          # Ballpark name (if created and merged)
-        # Add any other categorical columns you intend to encode
-    ]
-
-    # --- Optuna / Hyperparameter Tuning Settings ---
-    OPTUNA_CV_SPLITS = 4 # TimeSeriesSplit folds
-    OPTUNA_TRIALS = 50 # Default number of trials (can be overridden)
-    OPTUNA_TIMEOUT = 1800 # Default timeout in seconds (30 mins)
-    OPTUNA_OBJECTIVE_METRIC = 'poisson' # Metric to minimize in Optuna objective
-
-    # --- Feature Selection Settings ---
-    VIF_THRESHOLD = 10.0
-    SHAP_THRESHOLD = 0.001 # Example threshold for mean abs SHAP value
-    SHAP_SAMPLE_FRAC = 0.1 # Fraction of data for SHAP calculation
-
-    # --- Final Model Training Settings ---
-    FINAL_ESTIMATORS = 2000 # Max estimators for final model
-    EARLY_STOPPING_ROUNDS = 50 # Early stopping rounds for final model
-    VERBOSE_FIT_FREQUENCY = 100 # How often to log during verbose fit
-
-    # --- Base LightGBM Parameters (Fixed for Poisson Regression) ---
-    LGBM_BASE_PARAMS = {
-        'objective': 'poisson',
-        'metric': 'poisson', # Use poisson deviance for evaluation
-        'boosting_type': 'gbdt',
-        'n_jobs': -1,       # Use all available cores
-        'verbose': -1,      # Suppress verbose LightGBM logging by default
-        'seed': RANDOM_STATE
-        # Add other fixed params like 'device': 'gpu' if applicable
-    }
-
-    # --- LightGBM Hyperparameter Search Space (for Optuna) ---
-    LGBM_PARAM_GRID = {
-        'learning_rate': (0.005, 0.1),  # Log scale search
-        'num_leaves': (20, 100),
-        'max_depth': (3, 12),
-        'min_child_samples': (5, 50),
-        'feature_fraction': (0.5, 1.0), # Alias: colsample_bytree
-        'bagging_fraction': (0.5, 1.0), # Alias: subsample
-        'bagging_freq': (1, 7),
-        'reg_alpha': (1e-8, 10.0),      # L1, Log scale search
-        'reg_lambda': (1e-8, 10.0)      # L2, Log scale search
-    }
 
 class LogConfig:
     # Define Log directory relative to project root
