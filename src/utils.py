@@ -7,7 +7,7 @@ import logging
 import re
 from datetime import datetime
 
-from .config import DBConfig
+from src.config import DBConfig
 
 class DBConnection:
     """Simple context manager for SQLite connections."""

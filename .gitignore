@@ -13,6 +13,7 @@ logs/
 plots/
 notebooks/
 *.csv
+*.ipynb
 
 # windsurf rules
 .windsurfrules
