@@ -53,6 +53,18 @@ Aggregated per-game stats for each batter against their opponent's starting pitc
 ['game_pk', 'batter_id', 'pitcher_id', 'pitching_team', 'opponent_team', 'plate_appearances', 'at_bats', 'pitches', 'swings', 'whiffs', 'whiff_rate', 'called_strike_rate', 'strikeouts', 'strikeout_rate', 'strikeout_rate_behind', 'strikeout_rate_ahead', 'hits', 'singles', 'doubles', 'triples', 'home_runs', 'walks', 'hbp', 'avg', 'obp', 'slugging', 'ops', 'woba']
 ```
 
+### `game_level_team_batting`
+
+Aggregated per-game batting stats for each team facing the opponent's starting pitcher. Built from `game_level_batters_vs_starters` by summing the rows for all hitters on the same team.
+
+```text
+['game_pk', 'pitching_team', 'opponent_team', 'bat_plate_appearances', 'bat_at_bats', 'bat_pitches', 'bat_swings', 'bat_whiffs', 'bat_whiff_rate', 'bat_called_strike_rate', 'bat_strikeouts', 'bat_strikeout_rate', 'bat_strikeout_rate_behind', 'bat_strikeout_rate_ahead', 'bat_hits', 'bat_singles', 'bat_doubles', 'bat_triples', 'bat_home_runs', 'bat_walks', 'bat_hbp', 'bat_avg', 'bat_obp', 'bat_slugging', 'bat_ops', 'bat_woba']
+```
+
+### `game_level_matchup_stats`
+
+Joins `game_level_starting_pitchers` with `game_level_team_batting` so each row represents one pitcher/team matchup for a game. Contains all pitcher metrics along with the aggregated opponent batting features.
+
 
 ## Pipeline Structure
 
