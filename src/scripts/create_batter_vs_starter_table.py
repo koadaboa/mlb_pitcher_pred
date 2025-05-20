@@ -3,10 +3,23 @@ import numpy as np
 import sqlite3
 from pathlib import Path
 
-from src.utils import DBConnection
-from src.config import DBConfig, STATCAST_BATTERS_TABLE, STATCAST_PITCHERS_TABLE
+import logging
+
+from src.utils import DBConnection, setup_logger
+from src.config import (
+    DBConfig,
+    LogConfig,
+    STATCAST_BATTERS_TABLE,
+    STATCAST_PITCHERS_TABLE,
+)
 
 BATTERS_VS_STARTERS_TABLE = "game_level_batters_vs_starters"
+
+logger = setup_logger(
+    "create_batter_vs_starter_table",
+    LogConfig.LOG_DIR / "create_batter_vs_starter_table.log",
+)
+
 
 HIT_EVENTS = {"single", "double", "triple", "home_run"}
 NON_AB_EVENTS = {"walk", "hit_by_pitch", "sac_fly", "sac_bunt", "catcher_interference", "intent_walk"}
@@ -30,6 +43,7 @@ def get_starting_pitchers(conn: sqlite3.Connection) -> pd.DataFrame:
         SELECT game_pk, pitcher_id, COUNT(*) AS pitch_count
         FROM {STATCAST_PITCHERS_TABLE}
         GROUP BY game_pk, pitcher_id
+
     )
     SELECT pt.game_pk, pt.pitching_team, pt.opponent_team, pt.pitcher_id
     FROM pitch_team pt
@@ -38,10 +52,6 @@ def get_starting_pitchers(conn: sqlite3.Connection) -> pd.DataFrame:
      AND pt.pitching_team = fp.pitching_team
      AND pt.opponent_team = fp.opponent_team
      AND pt.rid = fp.min_rid
-    JOIN pitch_counts pc
-      ON pt.game_pk = pc.game_pk
-     AND pt.pitcher_id = pc.pitcher_id
-    WHERE pc.pitch_count >= 50
     """
     return pd.read_sql_query(query, conn)
 
@@ -123,30 +133,57 @@ def compute_batter_features(df: pd.DataFrame) -> dict:
 
 
 def main(db_path: Path = DBConfig.PATH) -> None:
+    """Build or replace the batter vs starter aggregation table."""
+    logger.info("Starting batter vs starter aggregation")
     with DBConnection(db_path) as conn:
         starters = get_starting_pitchers(conn)
+        logger.info("Found %d starting pitchers", len(starters))
         rows = []
         for _, s in starters.iterrows():
+            logger.info(
+                "Processing game %s pitcher %s for team %s",
+                s.game_pk,
+                s.pitcher_id,
+                s.pitching_team,
+            )
+
             df = pd.read_sql_query(
                 f"SELECT batter, at_bat_number, pitch_number, events, description, balls, strikes, woba_value, woba_denom FROM {STATCAST_BATTERS_TABLE} WHERE game_pk=? AND pitcher=?",
                 conn,
                 params=(s.game_pk, s.pitcher_id),
             )
             if df.empty:
+
+                logger.debug(
+                    "No pitch data for game %s pitcher %s", s.game_pk, s.pitcher_id
+                )
                 continue
             for batter_id, bdf in df.groupby("batter"):
                 feats = compute_batter_features(bdf)
-                feats.update({
-                    "game_pk": s.game_pk,
-                    "batter_id": batter_id,
-                    "pitcher_id": s.pitcher_id,
-                    "pitching_team": s.pitching_team,
-                    "opponent_team": s.opponent_team,
-                })
+                feats.update(
+                    {
+                        "game_pk": s.game_pk,
+                        "batter_id": batter_id,
+                        "pitcher_id": s.pitcher_id,
+                        "pitching_team": s.pitching_team,
+                        "opponent_team": s.opponent_team,
+                    }
+                )
                 rows.append(feats)
         if rows:
             out_df = pd.DataFrame(rows)
-            out_df.to_sql(BATTERS_VS_STARTERS_TABLE, conn, if_exists="replace", index=False)
+            out_df.to_sql(
+                BATTERS_VS_STARTERS_TABLE, conn, if_exists="replace", index=False
+            )
+            logger.info(
+                "Wrote %d rows to table %s",
+                len(out_df),
+                BATTERS_VS_STARTERS_TABLE,
+            )
+        else:
+            logger.warning("No rows generated for %s", BATTERS_VS_STARTERS_TABLE)
+f.to_sql(BATTERS_VS_STARTERS_TABLE, conn, if_exists="replace", index=False)
+
 
 
 if __name__ == "__main__":
