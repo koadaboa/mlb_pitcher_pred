@@ -44,6 +44,14 @@ Aggregated per-game stats for starting pitchers only. Rows are filtered from `st
 ```text
 ['game_pk', 'pitcher_id', 'pitching_team', 'opponent_team', 'innings_pitched', 'pitches', 'strikeouts', 'swinging_strike_rate', 'first_pitch_strike_rate', 'fastball_pct', 'fastball_then_breaking_rate']
 ```
+### `game_level_batters_vs_starters`
+
+Aggregated per-game stats for each batter against their opponent's starting pitcher. Data is filtered from `statcast_batters` using pitches thrown only by the starting pitcher determined from `statcast_pitchers`.
+
+```text
+['game_pk', 'batter_id', 'pitcher_id', 'pitching_team', 'opponent_team', 'plate_appearances', 'at_bats', 'pitches', 'swings', 'whiffs', 'whiff_rate', 'called_strike_rate', 'strikeouts', 'strikeout_rate', 'strikeout_rate_behind', 'strikeout_rate_ahead', 'hits', 'singles', 'doubles', 'triples', 'home_runs', 'walks', 'hbp', 'avg', 'obp', 'slugging', 'ops', 'woba']
+```
+
 
 ## Pipeline Structure
 
