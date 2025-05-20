@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import sqlite3
 from pathlib import Path
+
 import logging
 
 from src.utils import DBConnection, setup_logger
@@ -18,6 +19,7 @@ logger = setup_logger(
     "create_batter_vs_starter_table",
     LogConfig.LOG_DIR / "create_batter_vs_starter_table.log",
 )
+
 
 HIT_EVENTS = {"single", "double", "triple", "home_run"}
 NON_AB_EVENTS = {"walk", "hit_by_pitch", "sac_fly", "sac_bunt", "catcher_interference", "intent_walk"}
@@ -37,6 +39,11 @@ def get_starting_pitchers(conn: sqlite3.Connection) -> pd.DataFrame:
         SELECT game_pk, pitching_team, opponent_team, MIN(rid) AS min_rid
         FROM pitch_team
         GROUP BY game_pk, pitching_team, opponent_team
+    ), pitch_counts AS (
+        SELECT game_pk, pitcher_id, COUNT(*) AS pitch_count
+        FROM {STATCAST_PITCHERS_TABLE}
+        GROUP BY game_pk, pitcher_id
+
     )
     SELECT pt.game_pk, pt.pitching_team, pt.opponent_team, pt.pitcher_id
     FROM pitch_team pt
@@ -139,12 +146,14 @@ def main(db_path: Path = DBConfig.PATH) -> None:
                 s.pitcher_id,
                 s.pitching_team,
             )
+
             df = pd.read_sql_query(
                 f"SELECT batter, at_bat_number, pitch_number, events, description, balls, strikes, woba_value, woba_denom FROM {STATCAST_BATTERS_TABLE} WHERE game_pk=? AND pitcher=?",
                 conn,
                 params=(s.game_pk, s.pitcher_id),
             )
             if df.empty:
+
                 logger.debug(
                     "No pitch data for game %s pitcher %s", s.game_pk, s.pitcher_id
                 )
@@ -173,6 +182,8 @@ def main(db_path: Path = DBConfig.PATH) -> None:
             )
         else:
             logger.warning("No rows generated for %s", BATTERS_VS_STARTERS_TABLE)
+f.to_sql(BATTERS_VS_STARTERS_TABLE, conn, if_exists="replace", index=False)
+
 
 
 if __name__ == "__main__":
