@@ -18,6 +18,7 @@ BREAKING_BALLS = {
 
 STARTERS_TABLE = "game_level_starting_pitchers"
 PITCHERS_TABLE = "statcast_pitchers"
+MIN_PITCH_COUNT = 30
 
 def get_starting_pitchers(conn: sqlite3.Connection) -> pd.DataFrame:
     """Return DataFrame of starting pitcher IDs per game and team."""
@@ -45,6 +46,9 @@ def get_starting_pitchers(conn: sqlite3.Connection) -> pd.DataFrame:
     return pd.read_sql_query(query, conn)
 
 def compute_features(df: pd.DataFrame) -> dict:
+    # Remove exact duplicate pitch rows which can occur if data is fetched
+    # multiple times without deduplication.
+    df = df.drop_duplicates()
     df = df.sort_values(["at_bat_number", "pitch_number"]).reset_index(drop=True)
     num_pitches = len(df)
     if num_pitches == 0:
@@ -89,6 +93,9 @@ def main(db_path: Path = DBConfig.PATH) -> None:
             )
             feats = compute_features(df)
             if not feats:
+                continue
+            # Filter out incomplete data with unrealistically low pitch counts
+            if feats["pitches"] < MIN_PITCH_COUNT:
                 continue
             if feats["innings_pitched"] < 3 and feats["pitches"] < 50:
                 continue
