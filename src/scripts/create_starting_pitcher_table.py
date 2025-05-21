@@ -24,24 +24,30 @@ def get_starting_pitchers(conn: sqlite3.Connection) -> pd.DataFrame:
     """Return DataFrame of starting pitcher IDs per game and team."""
     query = f"""
     WITH pitch_team AS (
-        SELECT ROWID AS rid,
-               game_pk,
-               CASE WHEN inning_topbot = 'Top' THEN home_team ELSE away_team END AS pitching_team,
-               CASE WHEN inning_topbot = 'Top' THEN away_team ELSE home_team END AS opponent_team,
-               pitcher_id
+        SELECT
+            game_pk,
+            CASE WHEN inning_topbot = 'Top' THEN home_team ELSE away_team END AS pitching_team,
+            CASE WHEN inning_topbot = 'Top' THEN away_team ELSE home_team END AS opponent_team,
+            pitcher_id,
+            inning,
+            at_bat_number,
+            pitch_number
         FROM {PITCHERS_TABLE}
-    ), first_pitch AS (
-        SELECT game_pk, pitching_team, opponent_team, MIN(rid) AS min_rid
+    ), ranked AS (
+        SELECT
+            game_pk,
+            pitching_team,
+            opponent_team,
+            pitcher_id,
+            ROW_NUMBER() OVER (
+                PARTITION BY game_pk, pitching_team, opponent_team
+                ORDER BY inning, at_bat_number, pitch_number
+            ) AS rn
         FROM pitch_team
-        GROUP BY game_pk, pitching_team, opponent_team
     )
-    SELECT pt.game_pk, pt.pitching_team, pt.opponent_team, pt.pitcher_id
-    FROM pitch_team pt
-    JOIN first_pitch fp
-      ON pt.game_pk = fp.game_pk
-     AND pt.pitching_team = fp.pitching_team
-     AND pt.opponent_team = fp.opponent_team
-     AND pt.rid = fp.min_rid
+    SELECT game_pk, pitching_team, opponent_team, pitcher_id
+    FROM ranked
+    WHERE rn = 1
     """
     return pd.read_sql_query(query, conn)
 
