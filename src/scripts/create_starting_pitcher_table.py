@@ -192,10 +192,13 @@ def handle_missing_values(df: pd.DataFrame) -> pd.DataFrame:
     )
     log_df.to_csv("nan_log_starting_pitchers.csv", index=False)
 
+
+
     drop_cols = nan_pct[nan_pct > 0.25].index.tolist()
     if drop_cols:
         logger.info("Dropping columns due to missingness: %s", drop_cols)
         df = df.drop(columns=drop_cols)
+
 
     # Impute remaining values
     count_like = [
