@@ -174,25 +174,33 @@ def handle_missing_values(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
 
+    # Percentage and count of NaNs by column
     nan_pct = df.isna().mean()
+    nan_count = df.isna().sum()
+
     try:
         nan_pct.to_csv("nan_percentages.csv")
     except Exception as exc:  # pragma: no cover - logging only
         logger.warning("Could not write nan_percentages.csv: %s", exc)
 
-    nan_counts = df.isna().sum()
-    nan_df = (
-        pd.DataFrame({"column": nan_counts.index, "na_count": nan_counts.values})
+    log_mask = (nan_pct >= 0.15) & (nan_pct <= 0.5)
+    log_df = (
+        nan_count[log_mask]
+        .rename("nan_count")
+        .reset_index()
+        .rename(columns={"index": "column"})
     )
-    mask = (nan_pct >= 0.15) & (nan_pct <= 0.5)
-    nan_df.loc[mask].to_csv("nan_log_starting_pitchers.csv", index=False)
+    log_df.to_csv("nan_log_starting_pitchers.csv", index=False)
+
+
 
     drop_cols = nan_pct[nan_pct > 0.25].index.tolist()
     if drop_cols:
         logger.info("Dropping columns due to missingness: %s", drop_cols)
         df = df.drop(columns=drop_cols)
 
-    # Impute remaining
+
+    # Impute remaining values
     count_like = [
         c
         for c in df.columns
@@ -210,9 +218,13 @@ def handle_missing_values(df: pd.DataFrame) -> pd.DataFrame:
     for col in df.columns:
         if col in count_like:
             df[col] = df[col].fillna(0)
+        elif pd.api.types.is_numeric_dtype(df[col]):
+            df[col] = df[col].fillna(df[col].mean())
         else:
-            mean_val = df[col].mean()
-            df[col] = df[col].fillna(mean_val)
+            if df[col].isna().any():
+                mode_val = df[col].mode(dropna=True)
+                fill_val = mode_val.iloc[0] if not mode_val.empty else ""
+                df[col] = df[col].fillna(fill_val)
     return df
 
 
