@@ -180,9 +180,12 @@ def handle_missing_values(df: pd.DataFrame) -> pd.DataFrame:
     except Exception as exc:  # pragma: no cover - logging only
         logger.warning("Could not write nan_percentages.csv: %s", exc)
 
-    nan_pct[(nan_pct >= 0.15) & (nan_pct <= 0.5)].to_csv(
-        "nan_log_starting_pitchers.csv"
+    nan_counts = df.isna().sum()
+    nan_df = (
+        pd.DataFrame({"column": nan_counts.index, "na_count": nan_counts.values})
     )
+    mask = (nan_pct >= 0.15) & (nan_pct <= 0.5)
+    nan_df.loc[mask].to_csv("nan_log_starting_pitchers.csv", index=False)
 
     drop_cols = nan_pct[nan_pct > 0.25].index.tolist()
     if drop_cols:
