@@ -182,7 +182,6 @@ def main(db_path: Path = DBConfig.PATH) -> None:
             )
         else:
             logger.warning("No rows generated for %s", BATTERS_VS_STARTERS_TABLE)
-f.to_sql(BATTERS_VS_STARTERS_TABLE, conn, if_exists="replace", index=False)
 
 
 
