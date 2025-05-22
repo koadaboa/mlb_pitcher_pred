@@ -25,6 +25,7 @@ logger = setup_logger(
     LogConfig.LOG_DIR / "create_starting_pitcher_table.log",
 )
 
+
 def get_candidate_starters(conn: sqlite3.Connection) -> pd.DataFrame:
     """Return DataFrame of first pitchers appearing for each team in inning 1."""
     query = f"""
@@ -108,9 +109,8 @@ def aggregate_starting_pitchers(df: pd.DataFrame) -> pd.DataFrame:
     df["handedness_matchup"] = (
         df["p_throws"].str.upper().str[0] + "_vs_" + df["stand"].str.upper().str[0]
     )
-    
-    group_cols = ["game_pk", "game_date", "pitcher"]
 
+    group_cols = ["game_date", "pitcher"]
 
     agg_map = {
         "release_speed": ["mean", "std", "min", "max"],
@@ -176,21 +176,16 @@ def handle_missing_values(df: pd.DataFrame) -> pd.DataFrame:
         return df
 
     nan_pct = df.isna().mean()
-    nan_cnt = df.isna().sum()
 
     try:
         nan_pct.to_csv("nan_percentages.csv")
     except Exception as exc:  # pragma: no cover - logging only
         logger.warning("Could not write nan_percentages.csv: %s", exc)
 
-    mid_nan_cols = nan_pct[(nan_pct >= 0.15) & (nan_pct <= 0.5)].index
-    if len(mid_nan_cols) > 0:
-        pd.DataFrame(
-            {
-                "column": mid_nan_cols,
-                "n_missing": nan_cnt[mid_nan_cols].values,
-            }
-        ).to_csv("nan_log_starting_pitchers.csv", index=False)
+    nan_pct[(nan_pct >= 0.15) & (nan_pct <= 0.5)].to_csv(
+        "nan_log_starting_pitchers.csv"
+    )
+
 
     drop_cols = nan_pct[nan_pct > 0.25].index.tolist()
     if drop_cols:
@@ -198,7 +193,6 @@ def handle_missing_values(df: pd.DataFrame) -> pd.DataFrame:
         df = df.drop(columns=drop_cols)
 
     # Impute remaining
-    
     count_like = [
         c
         for c in df.columns
@@ -244,9 +238,9 @@ def main(db_path: Path = DBConfig.PATH) -> None:
 
         agg_df = agg_df.merge(
             starters,
-            left_on=["game_pk", "pitcher"],
-            right_on=["game_pk", "pitcher_id"],
 
+            left_on=["game_date", "pitcher"],
+            right_on=["game_date", "pitcher_id"],
             how="left",
         ).drop(columns=["pitcher_id"])
 
