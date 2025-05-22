@@ -8,16 +8,25 @@ import pandas as pd
 
 from src.utils import DBConnection, setup_logger
 try:
-    from src.config import DBConfig, LogConfig
+    from src.config import (
+        DBConfig,
+        LogConfig,
+        STATCAST_PITCHERS_TABLE,
+        STATCAST_STARTING_PITCHERS_TABLE,
+    )
 except Exception:  # pragma: no cover - fallback for standalone execution
     class DBConfig:
         PATH = Path("data/pitcher_stats.db")
+
     class LogConfig:
         LOG_DIR = Path("logs")
         LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-STARTERS_TABLE = "game_level_starting_pitchers"
-PITCHERS_TABLE = "statcast_pitchers"
+    STATCAST_PITCHERS_TABLE = "statcast_pitchers"
+    STATCAST_STARTING_PITCHERS_TABLE = "statcast_starting_pitchers"
+
+STARTERS_TABLE = STATCAST_STARTING_PITCHERS_TABLE
+PITCHERS_TABLE = STATCAST_PITCHERS_TABLE
 CHUNK_SIZE = 500_000
 
 logger = setup_logger(
@@ -62,6 +71,13 @@ def load_pitch_data(conn: sqlite3.Connection, starters: pd.DataFrame) -> pd.Data
         "game_pk",
         "game_date",
         "pitcher",
+        "at_bat_number",
+        "pitch_number",
+        "pitch_type",
+        "pitch_name",
+        "description",
+        "events",
+        "zone",
         "release_speed",
         "pfx_x",
         "pfx_z",
@@ -82,8 +98,6 @@ def load_pitch_data(conn: sqlite3.Connection, starters: pd.DataFrame) -> pd.Data
         "strikes",
         "outs_when_up",
         "inning",
-        "pitch_type",
-        "description",
         "p_throws",
         "stand",
     ]
@@ -110,7 +124,7 @@ def aggregate_starting_pitchers(df: pd.DataFrame) -> pd.DataFrame:
         df["p_throws"].str.upper().str[0] + "_vs_" + df["stand"].str.upper().str[0]
     )
 
-    group_cols = ["game_date", "pitcher"]
+    group_cols = ["game_pk", "pitcher"]
 
     agg_map = {
         "release_speed": ["mean", "std", "min", "max"],
@@ -149,13 +163,47 @@ def aggregate_starting_pitchers(df: pd.DataFrame) -> pd.DataFrame:
     pitch_dist.columns = [f"pitch_type_{c}" for c in pitch_dist.columns]
     agg_df = agg_df.join(pitch_dist, how="left")
 
-    # whiff rate
-    whiff_rate = (
-        df.groupby(group_cols)["description"]
-        .apply(lambda x: (x == "swinging_strike").mean())
-        .rename("whiff_rate")
+    # whiff rate and called strike rate
+    desc_grp = df.groupby(group_cols)["description"]
+    whiff_rate = desc_grp.apply(lambda x: (x == "swinging_strike").mean())
+    called_rate = desc_grp.apply(lambda x: (x == "called_strike").mean())
+    csw_rate = desc_grp.apply(
+        lambda x: x.isin(["called_strike", "swinging_strike"]).mean()
     )
-    agg_df = agg_df.join(whiff_rate, how="left")
+    agg_df = agg_df.join(
+        whiff_rate.rename("whiff_rate"),
+        how="left",
+    ).join(
+        called_rate.rename("called_strike_rate"),
+        how="left",
+    ).join(
+        csw_rate.rename("csw_rate"),
+        how="left",
+    )
+
+    # first pitch strike rate
+    fps = df[df["pitch_number"] == 1]
+    fps_rate = fps.groupby(group_cols)["description"].apply(
+        lambda x: x.isin(["called_strike", "swinging_strike"]).mean()
+    )
+    agg_df = agg_df.join(fps_rate.rename("first_pitch_strike_rate"), how="left")
+
+    # strikeout count
+    if "events" in df.columns:
+        strikeouts = (
+            df.groupby(group_cols)["events"]
+            .apply(lambda x: x.str.contains("strikeout", case=False, na=False).sum())
+            .rename("strikeouts")
+        )
+        agg_df = agg_df.join(strikeouts, how="left")
+
+    # zone distribution if available
+    if "zone" in df.columns:
+        zone_dist = (
+            df.groupby(group_cols)["zone"].value_counts(normalize=True).unstack(fill_value=0)
+        )
+        zone_dist.columns = [f"zone_{c}" for c in zone_dist.columns]
+        agg_df = agg_df.join(zone_dist, how="left")
 
     # handedness matchup distribution
     hm_dist = (
@@ -238,9 +286,8 @@ def main(db_path: Path = DBConfig.PATH) -> None:
 
         agg_df = agg_df.merge(
             starters,
-
-            left_on=["game_date", "pitcher"],
-            right_on=["game_date", "pitcher_id"],
+            left_on=["game_pk", "pitcher"],
+            right_on=["game_pk", "pitcher_id"],
             how="left",
         ).drop(columns=["pitcher_id"])
 
