@@ -109,6 +109,7 @@ def aggregate_starting_pitchers(df: pd.DataFrame) -> pd.DataFrame:
     df["handedness_matchup"] = (
         df["p_throws"].str.upper().str[0] + "_vs_" + df["stand"].str.upper().str[0]
     )
+
     group_cols = ["game_date", "pitcher"]
 
     agg_map = {
@@ -175,6 +176,7 @@ def handle_missing_values(df: pd.DataFrame) -> pd.DataFrame:
         return df
 
     nan_pct = df.isna().mean()
+
     try:
         nan_pct.to_csv("nan_percentages.csv")
     except Exception as exc:  # pragma: no cover - logging only
@@ -183,6 +185,7 @@ def handle_missing_values(df: pd.DataFrame) -> pd.DataFrame:
     nan_pct[(nan_pct >= 0.15) & (nan_pct <= 0.5)].to_csv(
         "nan_log_starting_pitchers.csv"
     )
+
 
     drop_cols = nan_pct[nan_pct > 0.25].index.tolist()
     if drop_cols:
@@ -235,6 +238,7 @@ def main(db_path: Path = DBConfig.PATH) -> None:
 
         agg_df = agg_df.merge(
             starters,
+
             left_on=["game_date", "pitcher"],
             right_on=["game_date", "pitcher_id"],
             how="left",
