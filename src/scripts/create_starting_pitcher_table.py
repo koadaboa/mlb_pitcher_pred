@@ -25,7 +25,6 @@ logger = setup_logger(
     LogConfig.LOG_DIR / "create_starting_pitcher_table.log",
 )
 
-
 def get_candidate_starters(conn: sqlite3.Connection) -> pd.DataFrame:
     """Return DataFrame of first pitchers appearing for each team in inning 1."""
     query = f"""
@@ -109,7 +108,9 @@ def aggregate_starting_pitchers(df: pd.DataFrame) -> pd.DataFrame:
     df["handedness_matchup"] = (
         df["p_throws"].str.upper().str[0] + "_vs_" + df["stand"].str.upper().str[0]
     )
-    group_cols = ["game_date", "pitcher"]
+    
+    group_cols = ["game_pk", "game_date", "pitcher"]
+
 
     agg_map = {
         "release_speed": ["mean", "std", "min", "max"],
@@ -174,33 +175,30 @@ def handle_missing_values(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
 
-    # Percentage and count of NaNs by column
     nan_pct = df.isna().mean()
-    nan_count = df.isna().sum()
+    nan_cnt = df.isna().sum()
 
     try:
         nan_pct.to_csv("nan_percentages.csv")
     except Exception as exc:  # pragma: no cover - logging only
         logger.warning("Could not write nan_percentages.csv: %s", exc)
 
-    log_mask = (nan_pct >= 0.15) & (nan_pct <= 0.5)
-    log_df = (
-        nan_count[log_mask]
-        .rename("nan_count")
-        .reset_index()
-        .rename(columns={"index": "column"})
-    )
-    log_df.to_csv("nan_log_starting_pitchers.csv", index=False)
-
-
+    mid_nan_cols = nan_pct[(nan_pct >= 0.15) & (nan_pct <= 0.5)].index
+    if len(mid_nan_cols) > 0:
+        pd.DataFrame(
+            {
+                "column": mid_nan_cols,
+                "n_missing": nan_cnt[mid_nan_cols].values,
+            }
+        ).to_csv("nan_log_starting_pitchers.csv", index=False)
 
     drop_cols = nan_pct[nan_pct > 0.25].index.tolist()
     if drop_cols:
         logger.info("Dropping columns due to missingness: %s", drop_cols)
         df = df.drop(columns=drop_cols)
 
-
-    # Impute remaining values
+    # Impute remaining
+    
     count_like = [
         c
         for c in df.columns
@@ -218,13 +216,9 @@ def handle_missing_values(df: pd.DataFrame) -> pd.DataFrame:
     for col in df.columns:
         if col in count_like:
             df[col] = df[col].fillna(0)
-        elif pd.api.types.is_numeric_dtype(df[col]):
-            df[col] = df[col].fillna(df[col].mean())
         else:
-            if df[col].isna().any():
-                mode_val = df[col].mode(dropna=True)
-                fill_val = mode_val.iloc[0] if not mode_val.empty else ""
-                df[col] = df[col].fillna(fill_val)
+            mean_val = df[col].mean()
+            df[col] = df[col].fillna(mean_val)
     return df
 
 
@@ -250,8 +244,9 @@ def main(db_path: Path = DBConfig.PATH) -> None:
 
         agg_df = agg_df.merge(
             starters,
-            left_on=["game_date", "pitcher"],
-            right_on=["game_date", "pitcher_id"],
+            left_on=["game_pk", "pitcher"],
+            right_on=["game_pk", "pitcher_id"],
+
             how="left",
         ).drop(columns=["pitcher_id"])
 
