@@ -34,7 +34,6 @@ logger = setup_logger(
     LogConfig.LOG_DIR / "create_starting_pitcher_table.log",
 )
 
-
 def get_candidate_starters(conn: sqlite3.Connection) -> pd.DataFrame:
     """Return DataFrame of first pitchers appearing for each team in inning 1."""
     query = f"""
