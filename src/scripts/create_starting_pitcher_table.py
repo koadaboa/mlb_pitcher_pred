@@ -25,7 +25,6 @@ logger = setup_logger(
     LogConfig.LOG_DIR / "create_starting_pitcher_table.log",
 )
 
-
 def get_candidate_starters(conn: sqlite3.Connection) -> pd.DataFrame:
     """Return DataFrame of first pitchers appearing for each team in inning 1."""
     query = f"""
@@ -109,6 +108,7 @@ def aggregate_starting_pitchers(df: pd.DataFrame) -> pd.DataFrame:
     df["handedness_matchup"] = (
         df["p_throws"].str.upper().str[0] + "_vs_" + df["stand"].str.upper().str[0]
     )
+
     group_cols = ["game_date", "pitcher"]
 
     agg_map = {
@@ -175,6 +175,7 @@ def handle_missing_values(df: pd.DataFrame) -> pd.DataFrame:
         return df
 
     nan_pct = df.isna().mean()
+
     try:
         nan_pct.to_csv("nan_percentages.csv")
     except Exception as exc:  # pragma: no cover - logging only
@@ -183,6 +184,7 @@ def handle_missing_values(df: pd.DataFrame) -> pd.DataFrame:
     nan_pct[(nan_pct >= 0.15) & (nan_pct <= 0.5)].to_csv(
         "nan_log_starting_pitchers.csv"
     )
+
 
     drop_cols = nan_pct[nan_pct > 0.25].index.tolist()
     if drop_cols:
