@@ -65,8 +65,12 @@ Aggregated per-game batting stats for each team facing the opponent's starting p
 
 Joins `game_level_starting_pitchers` with `game_level_team_batting` so each row represents one pitcher/team matchup for a game. Contains all pitcher metrics along with the aggregated opponent batting features.
 
+### `game_level_matchup_details`
+
+Combines starting pitcher metrics, aggregated opponent batting, and MLB boxscore metadata. Built by joining `game_level_starting_pitchers`, `game_level_team_batting`, and `mlb_boxscores` on `game_pk`, `pitcher_id`, and `opponent_team`.
 
 ## Pipeline Structure
+
 
 1. **Data Fetching**
 
