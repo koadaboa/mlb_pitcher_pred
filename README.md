@@ -65,6 +65,16 @@ Aggregated per-game batting stats for each team facing the opponent's starting p
 
 Joins `game_level_starting_pitchers` with `game_level_team_batting` so each row represents one pitcher/team matchup for a game. Contains all pitcher metrics along with the aggregated opponent batting features.
 
+### `rolling_pitcher_features`
+
+Derived from `game_level_starting_pitchers`, this table contains rolling-window
+statistics for each pitcher. For every numeric metric we compute prior-game
+means, extrema, standard deviations and linear trend slopes over the window
+sizes defined in `StrikeoutModelConfig.WINDOW_SIZES`. Momentum features capture
+the difference between the current game value and the previous rolling mean.
+All calculations use a one-game shift to avoid any data that occurs after the
+game begins.
+
 
 ## Pipeline Structure
 
