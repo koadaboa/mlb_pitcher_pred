@@ -4,10 +4,14 @@ import sqlite3
 from pathlib import Path
 
 from src.utils import DBConnection, setup_logger
-from src.config import DBConfig, LogConfig
+from src.config import (
+    DBConfig,
+    LogConfig,
+    STATCAST_STARTING_PITCHERS_TABLE,
+)
 
 BATTERS_VS_STARTERS_TABLE = "game_level_batters_vs_starters"
-STARTERS_TABLE = "game_level_starting_pitchers"
+STARTERS_TABLE = STATCAST_STARTING_PITCHERS_TABLE
 TEAM_BATTING_TABLE = "game_level_team_batting"
 MATCHUP_TABLE = "game_level_matchup_stats"
 

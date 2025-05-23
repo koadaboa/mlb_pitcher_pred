@@ -37,12 +37,12 @@ Includes metadata for each game such as:
 ['game_pk', 'game_date', 'away_team', 'home_team', 'game_number', 'double_header', 'away_pitcher_ids', 'home_pitcher_ids', 'hp_umpire', '1b_umpire', '2b_umpire', '3b_umpire', 'weather', 'temp', 'wind', 'elevation', 'dayNight', 'first_pitch', 'scraped_timestamp']
 ```
 
-### `game_level_starting_pitchers`
+### `statcast_starting_pitchers`
 
-Aggregated per-game stats for starting pitchers only. Rows are filtered from `statcast_pitchers` using the first pitch of each team in a game and requiring at least 3 innings pitched or 50 total pitches.
+Aggregated per-game stats for verified starting pitchers. Rows come from `statcast_pitchers` but filtered to the first pitcher for each team in inning 1 and only kept when they throw at least 25 pitches (avoiding openers).
 
 ```text
-['game_pk', 'pitcher_id', 'pitching_team', 'opponent_team', 'innings_pitched', 'pitches', 'strikeouts', 'swinging_strike_rate', 'first_pitch_strike_rate', 'fastball_pct', 'fastball_then_breaking_rate']
+['game_pk', 'pitcher', 'pitching_team', 'opponent_team', 'total_pitches', 'csw_rate', 'whiff_rate', 'first_pitch_strike_rate', 'strikeouts', 'pitch_type_FF', ...]
 ```
 ### `game_level_batters_vs_starters`
 
@@ -63,7 +63,7 @@ Aggregated per-game batting stats for each team facing the opponent's starting p
 
 ### `game_level_matchup_stats`
 
-Joins `game_level_starting_pitchers` with `game_level_team_batting` so each row represents one pitcher/team matchup for a game. Contains all pitcher metrics along with the aggregated opponent batting features.
+Joins `statcast_starting_pitchers` with `game_level_team_batting` so each row represents one pitcher/team matchup for a game. Contains all pitcher metrics along with the aggregated opponent batting features.
 
 
 ## Pipeline Structure
