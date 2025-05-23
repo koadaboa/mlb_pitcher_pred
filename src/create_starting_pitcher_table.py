@@ -5,8 +5,8 @@ import numpy as np
 from pathlib import Path
 import logging
 
-from typing import Dict, Iterable, Optional
-from concurrent.futures import ProcessPoolExecutor
+from typing import Dict, Optional
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import os
 
 from src.utils import DBConnection, setup_logger
@@ -26,7 +26,9 @@ logger = setup_logger(
 LOG_EVERY_N = 100
 
 # Number of worker processes for parallel aggregation
-MAX_WORKERS = os.cpu_count() or 1
+MAX_WORKERS = int(os.environ.get("MAX_WORKERS", os.cpu_count() or 1))
+# Submit this many tasks to the pool at a time
+BATCH_SIZE = 500
 
 def filter_starting_pitchers(conn) -> pd.DataFrame:
     """Return game_pk/pitcher combos likely representing true starters."""
@@ -48,14 +50,13 @@ def load_pitcher_game(conn, game_pk: int, pitcher: int) -> pd.DataFrame:
     q = "SELECT * FROM statcast_pitchers WHERE game_pk = ? AND pitcher = ?"
     return pd.read_sql_query(q, conn, params=(game_pk, pitcher))
 
-def process_game(args: tuple[int, int, Path]) -> Optional[Dict]:
-    """Worker helper to load a single game and compute features."""
-    game_pk, pitcher, db_path = args
+def compute_game_features(game_pk: int, pitcher: int, db_path: Path) -> Optional[Dict]:
+    """Load one pitcher/game from SQLite and compute features."""
     with DBConnection(db_path) as conn:
         df = load_pitcher_game(conn, game_pk, pitcher)
-        if df.empty:
-            return None
-        return compute_features(df)
+    if df.empty:
+        return None
+    return compute_features(df)
 
 def compute_features(df: pd.DataFrame) -> Dict:
     df = df.sort_values(["at_bat_number", "pitch_number"])
@@ -120,38 +121,37 @@ def aggregate_to_game_level(db_path: Path = DBConfig.PATH) -> pd.DataFrame:
         starters = filter_starting_pitchers(conn)
         total_games = len(starters)
 
-    tasks: Iterable[tuple[int, int, Path]] = (
-        (game_pk, pitcher, db_path) for game_pk, pitcher in starters.itertuples(index=False)
-    )
     result_rows: list[Dict] = []
+    processed = 0
     with ProcessPoolExecutor(max_workers=MAX_WORKERS) as exc:
-        for i, res in enumerate(exc.map(process_game, tasks, chunksize=20), start=1):
+        pending = []
+        for game_pk, pitcher in starters.itertuples(index=False):
+            pending.append(exc.submit(compute_game_features, game_pk, pitcher, db_path))
+            if len(pending) >= BATCH_SIZE:
+                for fut in as_completed(pending):
+                    res = fut.result()
+                    processed += 1
+                    if res:
+                        result_rows.append(res)
+                    if processed % LOG_EVERY_N == 0:
+                        logger.info("Processed %d/%d games", processed, total_games)
+                pending.clear()
+
+        for fut in as_completed(pending):
+            res = fut.result()
+            processed += 1
             if res:
                 result_rows.append(res)
-            if i % LOG_EVERY_N == 0:
-                logger.info("Processed %d/%d games", i, total_games)
+            if processed % LOG_EVERY_N == 0:
+                logger.info("Processed %d/%d games", processed, total_games)
 
+    game_df = pd.DataFrame(result_rows)
     with DBConnection(db_path) as conn:
-        game_df = pd.DataFrame(result_rows)
         game_df.to_sql(
             "game_level_starting_pitchers",
             conn,
             index=False,
             if_exists="replace",
-        result_rows = []
-        for i, (game_pk, pitcher) in enumerate(
-            starters.itertuples(index=False), start=1
-        ):
-            df = load_pitcher_game(conn, game_pk, pitcher)
-            if df.empty:
-                continue
-            feats = compute_features(df)
-            result_rows.append(feats)
-            if i % LOG_EVERY_N == 0:
-                logger.info("Processed %d/%d games", i, total_games)
-        game_df = pd.DataFrame(result_rows)
-        game_df.to_sql(
-            "game_level_starting_pitchers", conn, index=False, if_exists="replace"
         )
     return game_df
 

@@ -101,6 +101,16 @@ found and prints progress every 100 games to `logs/create_starting_pitcher_table
 The script also leverages all available CPU cores to process games in parallel,
 dramatically reducing runtime on multi-core machines.
 
+### Multi-core Usage
+
+`create_starting_pitcher_table.py` launches one process per CPU by default. If
+you want to limit the number of workers, set the `MAX_WORKERS` environment
+variable before running the script:
+
+```bash
+MAX_WORKERS=4 python -m src.create_starting_pitcher_table
+```
+
 ## Next Steps
 
 * Finalize feature aggregation logic
