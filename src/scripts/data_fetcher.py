@@ -20,6 +20,25 @@ from concurrent.futures import ThreadPoolExecutor, as_completed # Keep for paral
 import warnings
 import threading # Needed for parallel checkpoint updates
 
+# Columns that uniquely identify a pitch in Statcast data
+UNIQUE_PITCH_COLS = [
+    "game_pk",
+    "pitcher",
+    "inning",
+    "batter",
+    "pitch_number",
+]
+
+
+def dedup_pitch_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Drop duplicate pitch rows based on key columns."""
+    before = len(df)
+    df = df.drop_duplicates(subset=UNIQUE_PITCH_COLS)
+    dropped = before - len(df)
+    if dropped > 0:
+        logger.debug(f"Removed {dropped} duplicate pitch rows")
+    return df
+
 # --- REMOVED requests and bs4 imports as they are no longer needed here ---
 # try: import requests; import bs4
 # except ImportError: pass
@@ -474,6 +493,7 @@ class DataFetcher:
                 if all(col in pd_data.columns for col in essential_cols):
                      # Use dropna without inplace=True
                      pd_data = pd_data.dropna(subset=essential_cols)
+                     pd_data = dedup_pitch_df(pd_data)
                 else:
                      logger.warning(f"Missing essential columns in fetched data for P {name} ({pitcher_id}) on {target_date_str}. Cannot clean NaNs reliably.")
 
@@ -563,6 +583,7 @@ class DataFetcher:
             if all(col in combined_data.columns for col in essential_cols):
                 # Use dropna without inplace=True
                 combined_data = combined_data.dropna(subset=essential_cols)
+                combined_data = dedup_pitch_df(combined_data)
             else:
                 logger.warning(f"Missing essential columns in combined historical data for P {name} ({pitcher_id}). Cannot clean NaNs reliably.")
 
@@ -1273,6 +1294,9 @@ def store_data_to_sql(df, table_name, db_path, if_exists='append'):
     if df is None or df.empty:
         logger.debug(f"Empty DataFrame provided for '{table_name}'. Skipping database save.")
         return True # Nothing to save is considered success
+
+    if table_name == 'statcast_pitchers':
+        df = dedup_pitch_df(df)
 
     db_path_str = str(db_path)
     num_columns = len(df.columns)
