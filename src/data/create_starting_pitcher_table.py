@@ -26,9 +26,9 @@ logger = setup_logger(
 LOG_EVERY_N = 100
 
 # Number of worker processes for parallel aggregation
-MAX_WORKERS = int(os.environ.get("MAX_WORKERS", os.cpu_count() or 1))
+MAX_WORKERS = 9
 # Submit this many tasks to the pool at a time
-BATCH_SIZE = 500
+BATCH_SIZE = 5000
 
 def filter_starting_pitchers(conn) -> pd.DataFrame:
     """Return game_pk/pitcher combos likely representing true starters."""
