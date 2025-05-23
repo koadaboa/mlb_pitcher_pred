@@ -92,6 +92,14 @@ Joins `game_level_starting_pitchers` with `game_level_team_batting` so each row 
 * Pandas, NumPy (data processing)
 * LightGBM (modeling)
 
+### Logging
+
+Logs are written to the `logs/` directory using the helper in `src.utils`.
+`create_starting_pitcher_table.py` now reports how many potential starters were
+found and prints progress every 100 games to `logs/create_starting_pitcher_table.log`.
+The script also leverages all available CPU cores to process games in parallel,
+dramatically reducing runtime on multi-core machines.
+
 ## Next Steps
 
 * Finalize feature aggregation logic
