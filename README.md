@@ -64,7 +64,6 @@ Aggregated per-game batting stats for each team facing the opponent's starting p
 ### `game_level_matchup_stats`
 
 Joins `game_level_starting_pitchers` with `game_level_team_batting` so each row represents one pitcher/team matchup for a game. Contains all pitcher metrics along with the aggregated opponent batting features.
-
 ### `rolling_pitcher_features`
 
 Derived from `game_level_starting_pitchers`, this table contains rolling-window
@@ -77,6 +76,7 @@ game begins.
 
 
 ## Pipeline Structure
+
 
 1. **Data Fetching**
 
