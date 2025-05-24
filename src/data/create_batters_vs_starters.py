@@ -44,6 +44,7 @@ def load_batter_game(conn, game_pk: int, pitcher: int) -> pd.DataFrame:
     return pd.read_sql_query(q, conn, params=(game_pk, pitcher))
 
 
+
 def compute_batter_rows(df: pd.DataFrame) -> list[Dict]:
     """Aggregate one game's batter data against the starter."""
     df = df.sort_values(["batter", "at_bat_number", "pitch_number"])
@@ -54,8 +55,8 @@ def compute_batter_rows(df: pd.DataFrame) -> list[Dict]:
     else:
         pitching_team = first["away_team"]
         opponent_team = first["home_team"]
-
     rows = []
+
     for batter_id, bdf in df.groupby("batter"):
         last_pitch = bdf.sort_values("pitch_number").groupby("at_bat_number").tail(1)
         plate_appearances = len(last_pitch)
@@ -144,7 +145,6 @@ def compute_batter_rows(df: pd.DataFrame) -> list[Dict]:
             row["woba"] = bdf["woba_value"].sum() / woba_denom if woba_denom else np.nan
         else:
             row["woba"] = np.nan
-
         rows.append(row)
     return rows
 
@@ -162,6 +162,7 @@ def aggregate_to_game_level(db_path: Path = DBConfig.PATH) -> pd.DataFrame:
         starters = filter_starting_pitchers(conn)
         total_games = len(starters)
 
+    frames: list[pd.DataFrame] = []
     rows: list[Dict] = []
     processed = 0
     with ProcessPoolExecutor(max_workers=MAX_WORKERS) as exc:
