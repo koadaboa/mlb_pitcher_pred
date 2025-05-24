@@ -54,18 +54,24 @@ def add_rolling_features(
         if c not in {"game_pk", group_col}
     ]
 
+    frames = [df]
     for col in numeric_cols:
         grouped = df.groupby(group_col)[col]
         shifted = grouped.shift(1)
         for window in windows:
             roll = shifted.rolling(window, min_periods=1)
-            mean_col = f"{col}_mean_{window}"
-            df[mean_col] = roll.mean()
-            df[f"{col}_std_{window}"] = roll.std()
-            df[f"{col}_min_{window}"] = roll.min()
-            df[f"{col}_max_{window}"] = roll.max()
-            df[f"{col}_trend_{window}"] = roll.apply(_trend, raw=True)
-            df[f"{col}_momentum_{window}"] = df[col] - df[mean_col]
+            mean = roll.mean()
+            stats = pd.DataFrame({
+                f"{col}_mean_{window}": mean,
+                f"{col}_std_{window}": roll.std(),
+                f"{col}_min_{window}": roll.min(),
+                f"{col}_max_{window}": roll.max(),
+                f"{col}_trend_{window}": roll.apply(_trend, raw=True),
+            })
+            stats[f"{col}_momentum_{window}"] = df[col] - mean
+            frames.append(stats)
+
+    df = pd.concat(frames, axis=1)
     return df
 
 
