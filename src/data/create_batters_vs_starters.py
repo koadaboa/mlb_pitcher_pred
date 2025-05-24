@@ -4,7 +4,9 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 import logging
-from typing import Optional
+
+from typing import Dict, Optional
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from src.utils import DBConnection, setup_logger
 from src.config import DBConfig, LogConfig
@@ -42,8 +44,8 @@ def load_batter_game(conn, game_pk: int, pitcher: int) -> pd.DataFrame:
     return pd.read_sql_query(q, conn, params=(game_pk, pitcher))
 
 
-def compute_batter_rows(df: pd.DataFrame) -> pd.DataFrame:
-    """Aggregate one game's batter data against the starter and return a DataFrame."""
+
+def compute_batter_rows(df: pd.DataFrame) -> list[Dict]:
     """Aggregate one game's batter data against the starter."""
     df = df.sort_values(["batter", "at_bat_number", "pitch_number"])
     first = df.iloc[0]
@@ -53,8 +55,8 @@ def compute_batter_rows(df: pd.DataFrame) -> pd.DataFrame:
     else:
         pitching_team = first["away_team"]
         opponent_team = first["home_team"]
+    rows = []
 
-    records: list[Dict] = []
     for batter_id, bdf in df.groupby("batter"):
         last_pitch = bdf.sort_values("pitch_number").groupby("at_bat_number").tail(1)
         plate_appearances = len(last_pitch)
@@ -143,12 +145,11 @@ def compute_batter_rows(df: pd.DataFrame) -> pd.DataFrame:
             row["woba"] = bdf["woba_value"].sum() / woba_denom if woba_denom else np.nan
         else:
             row["woba"] = np.nan
+        rows.append(row)
+    return rows
 
-        records.append(row)
-    return pd.DataFrame.from_records(records)
 
-
-def compute_game_features(game_pk: int, pitcher: int, db_path: Path) -> Optional[pd.DataFrame]:
+def compute_game_features(game_pk: int, pitcher: int, db_path: Path) -> Optional[list[Dict]]:
     with DBConnection(db_path) as conn:
         df = load_batter_game(conn, game_pk, pitcher)
     if df.empty:
@@ -172,8 +173,8 @@ def aggregate_to_game_level(db_path: Path = DBConfig.PATH) -> pd.DataFrame:
                 for fut in as_completed(pending):
                     res = fut.result()
                     processed += 1
-                    if res is not None:
-                        frames.append(res)
+                    if res:
+                        rows.extend(res)
                     if processed % LOG_EVERY_N == 0:
                         logger.info("Processed %d/%d games", processed, total_games)
                 pending.clear()
@@ -181,15 +182,6 @@ def aggregate_to_game_level(db_path: Path = DBConfig.PATH) -> pd.DataFrame:
         for fut in as_completed(pending):
             res = fut.result()
             processed += 1
-            if res is not None:
-                frames.append(res)
-            if processed % LOG_EVERY_N == 0:
-                logger.info("Processed %d/%d games", processed, total_games)
-
-    if frames:
-        game_df = pd.concat(frames, ignore_index=True)
-    else:
-        game_df = pd.DataFrame()
             if res:
                 rows.extend(res)
             if processed % LOG_EVERY_N == 0:
