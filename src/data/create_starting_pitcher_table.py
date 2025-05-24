@@ -15,7 +15,7 @@ from src.config import DBConfig, LogConfig
 # --- Pitch Type Groups ---
 FASTBALL_TYPES = {"FF", "FA", "FT", "SI", "F4", "F2", "FC", "FS", "SF", "FO"}
 BREAKING_TYPES = {"SL", "CU", "KC", "SV", "SC"}
-OFFSPEED_TYPES = {"CH", "FS", "FO", "KN", "EP"}
+OFFSPEED_TYPES = {"CH", "FO", "KN", "EP"}
 
 logger = setup_logger(
     "create_starting_pitcher_table",
@@ -81,6 +81,10 @@ def compute_features(df: pd.DataFrame) -> Dict:
     breaking_mask = df["pitch_type"].isin(BREAKING_TYPES)
     offspeed_mask = df["pitch_type"].isin(OFFSPEED_TYPES)
 
+    # Use mutually exclusive pitch type sets for ratio calculations
+    fastball_only = df["pitch_type"].isin(FASTBALL_TYPES - OFFSPEED_TYPES)
+    offspeed_only = df["pitch_type"].isin(OFFSPEED_TYPES - FASTBALL_TYPES)
+
     types = df["pitch_type"].values
     next_types = np.roll(types, -1)
     fastball_then_break = fastball_mask & np.isin(next_types, list(BREAKING_TYPES))
@@ -101,9 +105,9 @@ def compute_features(df: pd.DataFrame) -> Dict:
             first_pitch_strikes.mean() if len(first_pitch) else np.nan
         ),
         "csw_pct": ((called | swinging | foul_tip).mean()),
-        "fastball_pct": fastball_mask.mean(),
+        "fastball_pct": fastball_only.mean(),
         "offspeed_to_fastball_ratio": (
-            offspeed_mask.sum() / fastball_mask.sum() if fastball_mask.sum() else np.nan
+            offspeed_only.sum() / fastball_only.sum() if fastball_only.sum() else np.nan
         ),
         "fastball_then_breaking_rate": (
             fastball_then_break[:-1].mean() if len(df) > 1 else np.nan
