@@ -87,10 +87,6 @@ trends are aggregated alongside stadium information based on the home team. Raw
 weather values such as temperature, wind speed and park elevation are also
 included for each game.
 
-### `model_features`
-
-Joined dataset containing all engineered features ready for model training.
-
 ## Pipeline Structure
 
 
