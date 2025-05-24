@@ -87,7 +87,6 @@ trends are aggregated alongside stadium information based on the home team. Raw
 weather values such as temperature, wind speed and park elevation are also
 included for each game.
 
-
 ## Pipeline Structure
 
 
@@ -96,7 +95,7 @@ included for each game.
    * Pulls recent data from both Statcast and the MLB API
    * Stores raw data in SQLite tables
 
-2. **Aggregation & Feature Engineering** (WIP)
+2. **Aggregation & Feature Engineering**
 
    * Aggregate pitch-level data to game-level stats per pitcher
    * Feature examples: rolling averages, pitch mix %, rest days, weather, batter quality, etc.
@@ -134,10 +133,18 @@ variable before running the script:
 MAX_WORKERS=4 python -m src.create_starting_pitcher_table
 ```
 
+### Running Feature Engineering
+
+Execute all feature builders and produce the `model_features` table:
+
+```bash
+python -m src.scripts.run_feature_engineering --db-path path/to/pitcher_stats.db
+```
+
 ## Next Steps
 
-* Finalize feature aggregation logic
 * Train baseline model and evaluate performance
+* Explore feature importance using SHAP values
 * Add model monitoring & alerting for production use
 
 ## How to Contribute
