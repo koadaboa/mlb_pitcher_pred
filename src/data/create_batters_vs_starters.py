@@ -4,9 +4,7 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 import logging
-
 from typing import Optional
-from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from src.utils import DBConnection, setup_logger
 from src.config import DBConfig, LogConfig
@@ -46,6 +44,7 @@ def load_batter_game(conn, game_pk: int, pitcher: int) -> pd.DataFrame:
 
 def compute_batter_rows(df: pd.DataFrame) -> pd.DataFrame:
     """Aggregate one game's batter data against the starter and return a DataFrame."""
+    """Aggregate one game's batter data against the starter."""
     df = df.sort_values(["batter", "at_bat_number", "pitch_number"])
     first = df.iloc[0]
     if first["inning_topbot"] == "Top":
@@ -163,6 +162,7 @@ def aggregate_to_game_level(db_path: Path = DBConfig.PATH) -> pd.DataFrame:
         total_games = len(starters)
 
     frames: list[pd.DataFrame] = []
+    rows: list[Dict] = []
     processed = 0
     with ProcessPoolExecutor(max_workers=MAX_WORKERS) as exc:
         pending = []
@@ -190,6 +190,12 @@ def aggregate_to_game_level(db_path: Path = DBConfig.PATH) -> pd.DataFrame:
         game_df = pd.concat(frames, ignore_index=True)
     else:
         game_df = pd.DataFrame()
+            if res:
+                rows.extend(res)
+            if processed % LOG_EVERY_N == 0:
+                logger.info("Processed %d/%d games", processed, total_games)
+
+    game_df = pd.DataFrame(rows)
     with DBConnection(db_path) as conn:
         game_df.to_sql(
             "game_level_batters_vs_starters",
