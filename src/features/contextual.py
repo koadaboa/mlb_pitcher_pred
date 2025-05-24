@@ -68,10 +68,11 @@ def _add_group_rolling(
         windows = StrikeoutModelConfig.WINDOW_SIZES
 
     df = df.sort_values(list(group_cols) + [date_col])
+    exclude_cols = {"game_pk"}.union(set(group_cols))
     numeric_cols = [
         c
         for c in df.select_dtypes(include=np.number).columns
-        if c not in {"game_pk"}
+        if c not in exclude_cols
     ]
 
     grouped = df.groupby(list(group_cols))
