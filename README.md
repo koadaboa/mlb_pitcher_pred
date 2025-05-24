@@ -74,6 +74,19 @@ the difference between the current game value and the previous rolling mean.
 All calculations use a one-game shift to avoid any data that occurs after the
 game begins.
 
+### `rolling_pitcher_vs_team`
+
+Rolling-window statistics for each pitcher against a specific opponent. These
+features are computed from `game_level_matchup_details` and capture how a
+pitcher has performed historically versus that team.
+
+### `contextual_features`
+
+Adds rolling averages for game context variables. Umpire- and weather-specific
+trends are aggregated alongside stadium information based on the home team. Raw
+weather values such as temperature, wind speed and park elevation are also
+included for each game.
+
 
 ## Pipeline Structure
 

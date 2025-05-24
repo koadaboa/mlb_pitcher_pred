@@ -40,8 +40,21 @@ def build_matchup_table(db_path: Path = DBConfig.PATH) -> pd.DataFrame:
             merge_cols = ["game_pk", "pitching_team", "opponent_team"]
         merged = starters.merge(team_bat, on=merge_cols, how="left")
 
-        # Add boxscore information (joined on game_pk)
-        merged = merged.merge(boxscores, on="game_pk", how="left")
+        # Add boxscore information (joined on game_pk) and preserve existing
+        # columns (including game_date) without automatic suffixing.
+        merged = merged.merge(
+            boxscores,
+            on="game_pk",
+            how="left",
+            suffixes=("", "_bx"),
+        )
+
+        # If the boxscores table also contains a ``game_date`` column, fill any
+        # missing values in the starter data and drop the extra column so the
+        # final table has a single ``game_date`` field.
+        if "game_date_bx" in merged.columns:
+            merged["game_date"] = merged["game_date"].fillna(merged["game_date_bx"])
+            merged = merged.drop(columns=["game_date_bx"])
         merged.to_sql(OUTPUT_TABLE, conn, if_exists="replace", index=False)
         logger.info("Wrote %d rows to %s", len(merged), OUTPUT_TABLE)
         return merged
