@@ -1,24 +1,25 @@
-"""Run all feature engineering steps."""
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
 from src.features import (
     engineer_pitcher_features,
     engineer_opponent_features,
     engineer_contextual_features,
-)
-from src.utils import setup_logger
-from src.config import LogConfig
-
-logger = setup_logger(
-    "run_feature_engineering",
-    LogConfig.LOG_DIR / "run_feature_engineering.log",
+    build_model_features,
 )
 
 
-def main() -> None:
-    logger.info("Starting feature engineering pipeline")
-    engineer_pitcher_features()
-    engineer_opponent_features()
-    engineer_contextual_features()
-    logger.info("Feature engineering pipeline complete")
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Run feature engineering pipeline")
+    parser.add_argument("--db-path", type=Path, default=None, help="Path to SQLite DB")
+    args = parser.parse_args(argv)
+
+    engineer_pitcher_features(db_path=args.db_path)
+    engineer_opponent_features(db_path=args.db_path)
+    engineer_contextual_features(db_path=args.db_path)
+    build_model_features(db_path=args.db_path)
 
 
 if __name__ == "__main__":

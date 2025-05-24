@@ -75,16 +75,23 @@ def _add_group_rolling(
     ]
 
     grouped = df.groupby(list(group_cols))
+    frames = [df]
     for col in numeric_cols:
         shifted = grouped[col].shift(1)
         for window in windows:
             roll = shifted.rolling(window, min_periods=1)
-            df[f"{prefix}{col}_mean_{window}"] = roll.mean()
-            df[f"{prefix}{col}_std_{window}"] = roll.std()
-            df[f"{prefix}{col}_min_{window}"] = roll.min()
-            df[f"{prefix}{col}_max_{window}"] = roll.max()
-            df[f"{prefix}{col}_trend_{window}"] = roll.apply(_trend, raw=True)
-            df[f"{prefix}{col}_momentum_{window}"] = df[col] - df[f"{prefix}{col}_mean_{window}"]
+            mean = roll.mean()
+            stats = pd.DataFrame({
+                f"{prefix}{col}_mean_{window}": mean,
+                f"{prefix}{col}_std_{window}": roll.std(),
+                f"{prefix}{col}_min_{window}": roll.min(),
+                f"{prefix}{col}_max_{window}": roll.max(),
+                f"{prefix}{col}_trend_{window}": roll.apply(_trend, raw=True),
+            })
+            stats[f"{prefix}{col}_momentum_{window}"] = df[col] - mean
+            frames.append(stats)
+
+    df = pd.concat(frames, axis=1)
     return df
 
 
