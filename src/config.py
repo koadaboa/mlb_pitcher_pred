@@ -66,6 +66,41 @@ class StrikeoutModelConfig:
     WINDOW_SIZES = [3, 5, 10, 25]
     DEFAULT_TRAIN_YEARS = (2016, 2017, 2018, 2019, 2021, 2022, 2023)
     DEFAULT_TEST_YEARS = (2024, 2025)
+    TARGET_VARIABLE = "strikeouts"
+
+    # --- LightGBM Hyperparameter Defaults ---
+    LGBM_BASE_PARAMS = {
+        "objective": "poisson",
+        "metric": "poisson",
+        "boosting_type": "gbdt",
+        "learning_rate": 0.05,
+        "num_leaves": 31,
+        "seed": RANDOM_STATE,
+    }
+
+    LGBM_PARAM_GRID = {
+        "learning_rate": (0.01, 0.2),
+        "num_leaves": (16, 64),
+        "max_depth": (3, 8),
+        "min_child_samples": (5, 50),
+        "feature_fraction": (0.6, 1.0),
+        "bagging_fraction": (0.6, 1.0),
+        "bagging_freq": (0, 5),
+        "reg_alpha": (1e-3, 10.0),
+        "reg_lambda": (1e-3, 10.0),
+    }
+
+    OPTUNA_TRIALS = 50
+    OPTUNA_TIMEOUT = 1800  # seconds
+    OPTUNA_CV_SPLITS = 5
+
+    FINAL_ESTIMATORS = 500
+    EARLY_STOPPING_ROUNDS = 50
+    VERBOSE_FIT_FREQUENCY = 20
+
+    VIF_THRESHOLD = 7.5
+    SHAP_THRESHOLD = 0.01
+    SHAP_SAMPLE_FRAC = 0.3
 
 class LogConfig:
     # Define Log directory relative to project root
