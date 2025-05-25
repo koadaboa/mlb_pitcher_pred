@@ -9,6 +9,7 @@ This project aims to predict the number of strikeouts a Major League Baseball (M
   * `pybaseball` for Statcast data (pitch-level stats)
   * MLB Stats API for box scores and scheduling metadata
 * **Data Pipeline:** Fully automated data-fetching and preprocessing pipeline
+* **Multi-core Processing:** Aggregation scripts use all CPUs by default; override with `MAX_WORKERS` env var
 * **Current Focus:** Aggregation, feature engineering, and LightGBM model training
 
 ## Tables & Schemas
@@ -120,7 +121,7 @@ Logs are written to the `logs/` directory using the helper in `src.utils`.
 `create_starting_pitcher_table.py` now reports how many potential starters were
 found and prints progress every 100 games to `logs/create_starting_pitcher_table.log`.
 
-The script also leverages all available CPU cores to process games in parallel,
+The script leverages multiple CPU cores to process games in parallel,
 dramatically reducing runtime on multi-core machines.
 
 ### Multi-core Usage
@@ -139,6 +140,13 @@ Execute all feature builders and produce the `model_features` table:
 
 ```bash
 python -m src.scripts.run_feature_engineering --db-path path/to/pitcher_stats.db
+```
+
+Use the `--n-jobs` option to control how many processes are used when computing
+rolling features:
+
+```bash
+python -m src.scripts.run_feature_engineering --db-path path/to/pitcher_stats.db --n-jobs 8
 ```
 
 ## Next Steps

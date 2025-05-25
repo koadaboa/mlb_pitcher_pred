@@ -7,6 +7,7 @@ import logging
 
 from typing import Dict, Optional
 from concurrent.futures import ProcessPoolExecutor, as_completed
+import os
 
 from src.utils import DBConnection, setup_logger
 from src.config import DBConfig, LogConfig
@@ -18,7 +19,7 @@ logger = setup_logger(
 
 # Progress logging
 LOG_EVERY_N = 100
-MAX_WORKERS = 9
+MAX_WORKERS = int(os.getenv("MAX_WORKERS", os.cpu_count() or 1))
 BATCH_SIZE = 5000
 
 # --- Helper functions ---
