@@ -660,7 +660,7 @@ class DataFetcher:
 
         # --- Parallel vs Sequential Execution ---
         if self.args.parallel:
-            workers = min(DataConfig.MAX_WORKERS, os.cpu_count() or 1) if hasattr(DataConfig, 'MAX_WORKERS') else min(12, os.cpu_count() or 1)
+            workers = min(DataConfig.MAX_WORKERS, os.cpu_count() or 1)
             logger.info(f"Using PARALLEL pitcher fetch ({workers} workers).")
             with ThreadPoolExecutor(max_workers=workers) as executor:
                 # Map futures back to pitcher info
@@ -995,7 +995,7 @@ class DataFetcher:
             successful_end_dates = [] # Collect end dates of successfully processed chunks
 
             if self.args.parallel:
-                workers = min(DataConfig.MAX_WORKERS, os.cpu_count() or 1) if hasattr(DataConfig, 'MAX_WORKERS') else min(8, os.cpu_count() or 1) # Slightly fewer for batters maybe?
+                workers = min(DataConfig.MAX_WORKERS, os.cpu_count() or 1)
                 logger.info(f"Using PARALLEL batter fetch for season {season} ({workers} workers).")
                 with ThreadPoolExecutor(max_workers=workers) as executor:
                     future_to_range = {

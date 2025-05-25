@@ -125,9 +125,9 @@ dramatically reducing runtime on multi-core machines.
 
 ### Multi-core Usage
 
-`create_starting_pitcher_table.py` launches one process per CPU by default. If
-you want to limit the number of workers, set the `MAX_WORKERS` environment
-variable before running the script:
+`create_starting_pitcher_table.py` launches one process per CPU by default.
+The worker count is controlled by `DataConfig.MAX_WORKERS`, which can be
+overridden via the `MAX_WORKERS` environment variable:
 
 ```bash
 MAX_WORKERS=4 python -m src.create_starting_pitcher_table
