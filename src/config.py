@@ -3,6 +3,7 @@ from pathlib import Path
 import pandas as pd
 import numpy as np
 import logging
+import os
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -60,6 +61,7 @@ class DataConfig:
     SEASONS = [2016, 2017, 2018, 2019, 2021, 2022, 2023, 2024, 2025]
     RATE_LIMIT_PAUSE = 5
     CHUNK_SIZE = 1000000
+    MAX_WORKERS = int(os.getenv('MAX_WORKERS', os.cpu_count() or 1))
 
 class StrikeoutModelConfig:
     RANDOM_STATE = 3
