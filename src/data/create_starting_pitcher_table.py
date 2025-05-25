@@ -26,7 +26,7 @@ logger = setup_logger(
 LOG_EVERY_N = 100
 
 # Number of worker processes for parallel aggregation
-MAX_WORKERS = 9
+MAX_WORKERS = int(os.getenv("MAX_WORKERS", os.cpu_count() or 1))
 # Submit this many tasks to the pool at a time
 BATCH_SIZE = 5000
 
