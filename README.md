@@ -141,6 +141,13 @@ Execute all feature builders and produce the `model_features` table:
 python -m src.scripts.run_feature_engineering --db-path path/to/pitcher_stats.db
 ```
 
+Use the `--n-jobs` option to control how many processes are used when computing
+rolling features:
+
+```bash
+python -m src.scripts.run_feature_engineering --db-path path/to/pitcher_stats.db --n-jobs 8
+```
+
 ## Next Steps
 
 * Train baseline model and evaluate performance
