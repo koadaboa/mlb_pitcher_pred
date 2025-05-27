@@ -86,8 +86,9 @@ def engineer_pitcher_features(
     target_table: str = "rolling_pitcher_features",
     year: int | None = None,
 ) -> pd.DataFrame:
-    """Load pitcher game stats, compute rolling features, and store the result."""
+    """Compute rolling pitcher features and append new rows to the database."""
     logger.info("Loading data from %s", source_table)
+    max_window = max(StrikeoutModelConfig.WINDOW_SIZES)
     with DBConnection(db_path) as conn:
         query = f"SELECT * FROM {source_table}"
         if year:

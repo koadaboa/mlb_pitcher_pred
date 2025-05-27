@@ -6,6 +6,7 @@ from typing import Optional, Union
 import logging
 import re
 from datetime import datetime
+import pandas as pd
 
 from src.config import DBConfig
 import pandas as pd

@@ -7,7 +7,6 @@ from typing import List, Sequence
 import numpy as np
 import pandas as pd
 from joblib import Parallel, delayed
-
 from src.utils import (
     DBConnection,
     setup_logger,
@@ -124,6 +123,7 @@ def engineer_opponent_features(
 ) -> pd.DataFrame:
     db_path = db_path or DBConfig.PATH
     logger.info("Loading matchup data from %s", source_table)
+    max_window = max(StrikeoutModelConfig.WINDOW_SIZES)
     with DBConnection(db_path) as conn:
         query = f"SELECT * FROM {source_table}"
         if year:
@@ -155,7 +155,6 @@ def engineer_opponent_features(
         logger.info("Saved opponent features to %s", target_table)
         return df
 
-
 def engineer_contextual_features(
     db_path: str | None = None,
     source_table: str = "game_level_matchup_details",
@@ -165,6 +164,7 @@ def engineer_contextual_features(
 ) -> pd.DataFrame:
     db_path = db_path or DBConfig.PATH
     logger.info("Loading matchup data from %s", source_table)
+    max_window = max(StrikeoutModelConfig.WINDOW_SIZES)
     with DBConnection(db_path) as conn:
         query = f"SELECT * FROM {source_table}"
         if year:
