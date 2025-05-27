@@ -7,7 +7,7 @@ import logging
 
 from typing import List
 
-from src.utils import DBConnection, setup_logger
+from src.utils import DBConnection, setup_logger, get_latest_date
 from src.config import DBConfig, StrikeoutModelConfig, LogConfig
 
 logger = setup_logger(
@@ -80,10 +80,30 @@ def engineer_pitcher_features(
     source_table: str = "game_level_starting_pitchers",
     target_table: str = "rolling_pitcher_features",
 ) -> pd.DataFrame:
-    """Load pitcher game stats, compute rolling features, and store the result."""
+    """Compute rolling pitcher features and append new rows to the database."""
     logger.info("Loading data from %s", source_table)
+    max_window = max(StrikeoutModelConfig.WINDOW_SIZES)
     with DBConnection(db_path) as conn:
-        df = pd.read_sql_query(f"SELECT * FROM {source_table}", conn)
+        latest = get_latest_date(conn, target_table)
+        if latest is not None:
+            logger.info("Existing features found up to %s", latest.date())
+            prev = pd.read_sql_query(
+                f"SELECT * FROM {source_table} WHERE game_date <= ? ORDER BY pitcher_id, game_date DESC",
+                conn,
+                params=(latest,),
+            )
+            prev = prev.groupby("pitcher_id").head(max_window)
+            new_rows = pd.read_sql_query(
+                f"SELECT * FROM {source_table} WHERE game_date > ?",
+                conn,
+                params=(latest,),
+            )
+            if new_rows.empty:
+                logger.info("No new games to process")
+                return pd.DataFrame()
+            df = pd.concat([prev, new_rows], ignore_index=True)
+        else:
+            df = pd.read_sql_query(f"SELECT * FROM {source_table}", conn)
 
     if "game_date" not in df.columns:
         logger.error("Required column 'game_date' not found in %s", source_table)
@@ -91,12 +111,22 @@ def engineer_pitcher_features(
 
     df["game_date"] = pd.to_datetime(df["game_date"])
     logger.info("Computing rolling features for %d rows", len(df))
-    df = add_rolling_features(df, group_col="pitcher_id", date_col="game_date")
+    features = add_rolling_features(df, group_col="pitcher_id", date_col="game_date")
 
-    with DBConnection(db_path) as conn:
-        df.to_sql(target_table, conn, if_exists="replace", index=False)
-    logger.info("Saved features to table '%s'", target_table)
-    return df
+    if latest is not None:
+        new_features = features[features["game_date"] > latest]
+        if new_features.empty:
+            logger.info("No new features generated")
+            return pd.DataFrame()
+        with DBConnection(db_path) as conn:
+            new_features.to_sql(target_table, conn, if_exists="append", index=False)
+        logger.info("Appended %d new rows to %s", len(new_features), target_table)
+        return new_features
+    else:
+        with DBConnection(db_path) as conn:
+            features.to_sql(target_table, conn, if_exists="replace", index=False)
+        logger.info("Saved features to table '%s'", target_table)
+        return features
 
 
 def main() -> None:
