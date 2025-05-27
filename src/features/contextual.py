@@ -79,8 +79,9 @@ def _add_group_rolling(
         c for c in df.select_dtypes(include=np.number).columns if c not in exclude_cols
     ]
 
-    def _calc_for_col(col: str) -> pd.DataFrame:
-        grouped = df.groupby(list(group_cols))[col]
+    def _calc_for_col(col: str, local_df: pd.DataFrame) -> pd.DataFrame:
+        """Calculate rolling stats for a single column using a dataframe slice."""
+        grouped = local_df.groupby(list(group_cols))[col]
         shifted = grouped.shift(1)
         parts = []
         for window in windows:
@@ -95,12 +96,14 @@ def _add_group_rolling(
                     f"{prefix}{col}_trend_{window}": roll.apply(_trend, raw=True),
                 }
             )
-            stats[f"{prefix}{col}_momentum_{window}"] = df[col] - mean
+            stats[f"{prefix}{col}_momentum_{window}"] = local_df[col] - mean
             parts.append(stats)
         return pd.concat(parts, axis=1)
 
     frames = [df]
-    results = Parallel(n_jobs=n_jobs)(delayed(_calc_for_col)(c) for c in numeric_cols)
+    results = Parallel(n_jobs=n_jobs)(
+        delayed(_calc_for_col)(c, df[[c, *group_cols, date_col]]) for c in numeric_cols
+    )
     frames.extend(results)
 
     df = pd.concat(frames, axis=1)
