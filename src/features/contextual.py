@@ -7,8 +7,12 @@ from typing import List, Sequence
 import numpy as np
 import pandas as pd
 from joblib import Parallel, delayed
-
-from src.utils import DBConnection, setup_logger, get_latest_date
+from src.utils import (
+    DBConnection,
+    setup_logger,
+    table_exists,
+    get_latest_date,
+)
 from src.config import DBConfig, StrikeoutModelConfig, LogConfig
 from .engineer_features import _trend
 
@@ -115,128 +119,93 @@ def engineer_opponent_features(
     source_table: str = "game_level_matchup_details",
     target_table: str = "rolling_pitcher_vs_team",
     n_jobs: int | None = None,
+    year: int | None = None,
 ) -> pd.DataFrame:
     db_path = db_path or DBConfig.PATH
     logger.info("Loading matchup data from %s", source_table)
     max_window = max(StrikeoutModelConfig.WINDOW_SIZES)
     with DBConnection(db_path) as conn:
-        latest = get_latest_date(conn, target_table)
+        query = f"SELECT * FROM {source_table}"
+        if year:
+            query += f" WHERE strftime('%Y', game_date) = '{year}'"
+        df = pd.read_sql_query(query, conn)
+        latest = get_latest_date(conn, target_table, "game_date")
+
+        if df.empty:
+            logger.warning("No data found in %s", source_table)
+            return df
+
+        df["game_date"] = pd.to_datetime(df["game_date"])
         if latest is not None:
-            logger.info("Existing opponent features up to %s", latest.date())
-            prev = pd.read_sql_query(
-                f"SELECT * FROM {source_table} WHERE game_date <= ? ORDER BY pitcher_id, opponent_team, game_date DESC",
-                conn,
-                params=(latest,),
-            )
-            prev = prev.groupby(["pitcher_id", "opponent_team"]).head(max_window)
-            new_rows = pd.read_sql_query(
-                f"SELECT * FROM {source_table} WHERE game_date > ?",
-                conn,
-                params=(latest,),
-            )
-            if new_rows.empty:
-                logger.info("No new games to process")
-                return pd.DataFrame()
-            df = pd.concat([prev, new_rows], ignore_index=True)
+            df = df[df["game_date"] > latest]
+        if df.empty:
+            logger.info("No new rows to process for %s", target_table)
+            return df
+        df = _add_group_rolling(
+            df,
+            ["pitcher_id", "opponent_team"],
+            "game_date",
+            prefix="opp_",
+            n_jobs=n_jobs,
+        )
+        if table_exists(conn, target_table):
+            df.to_sql(target_table, conn, if_exists="append", index=False)
         else:
-            df = pd.read_sql_query(f"SELECT * FROM {source_table}", conn)
-
-    if df.empty:
-        logger.warning("No data found in %s", source_table)
-        return df
-
-    df["game_date"] = pd.to_datetime(df["game_date"])
-    features = _add_group_rolling(
-        df,
-        ["pitcher_id", "opponent_team"],
-        "game_date",
-        prefix="opp_",
-        n_jobs=n_jobs,
-    )
-
-    if latest is not None:
-        new_features = features[features["game_date"] > latest]
-        if new_features.empty:
-            logger.info("No new opponent features generated")
-            return pd.DataFrame()
-        with DBConnection(db_path) as conn:
-            new_features.to_sql(target_table, conn, if_exists="append", index=False)
-        logger.info("Appended %d new rows to %s", len(new_features), target_table)
-        return new_features
-    else:
-        with DBConnection(db_path) as conn:
-            features.to_sql(target_table, conn, if_exists="replace", index=False)
+            df.to_sql(target_table, conn, if_exists="replace", index=False)
         logger.info("Saved opponent features to %s", target_table)
-        return features
-
+        return df
 
 def engineer_contextual_features(
     db_path: str | None = None,
     source_table: str = "game_level_matchup_details",
     target_table: str = "contextual_features",
     n_jobs: int | None = None,
+    year: int | None = None,
 ) -> pd.DataFrame:
     db_path = db_path or DBConfig.PATH
     logger.info("Loading matchup data from %s", source_table)
     max_window = max(StrikeoutModelConfig.WINDOW_SIZES)
     with DBConnection(db_path) as conn:
-        latest = get_latest_date(conn, target_table)
+        query = f"SELECT * FROM {source_table}"
+        if year:
+            query += f" WHERE strftime('%Y', game_date) = '{year}'"
+        df = pd.read_sql_query(query, conn)
+        latest = get_latest_date(conn, target_table, "game_date")
+
+        if df.empty:
+            logger.warning("No data found in %s", source_table)
+            return df
+
+        df["game_date"] = pd.to_datetime(df["game_date"])
         if latest is not None:
-            logger.info("Existing contextual features up to %s", latest.date())
-            prev = pd.read_sql_query(
-                f"SELECT * FROM {source_table} WHERE game_date <= ? ORDER BY pitcher_id, game_date DESC",
-                conn,
-                params=(latest,),
-            )
-            prev = prev.groupby("pitcher_id").head(max_window)
-            new_rows = pd.read_sql_query(
-                f"SELECT * FROM {source_table} WHERE game_date > ?",
-                conn,
-                params=(latest,),
-            )
-            if new_rows.empty:
-                logger.info("No new games to process")
-                return pd.DataFrame()
-            df = pd.concat([prev, new_rows], ignore_index=True)
-        else:
-            df = pd.read_sql_query(f"SELECT * FROM {source_table}", conn)
+            df = df[df["game_date"] > latest]
+        if df.empty:
+            logger.info("No new rows to process for %s", target_table)
+            return df
 
-    if df.empty:
-        logger.warning("No data found in %s", source_table)
-        return df
+        if "temp" in df.columns:
+            df["temp"] = pd.to_numeric(df["temp"], errors="coerce")
+        if "wind" in df.columns:
+            df["wind_speed"] = df["wind"].apply(_parse_wind_speed)
+        if "elevation" in df.columns:
+            df["elevation"] = pd.to_numeric(df["elevation"], errors="coerce")
 
-    df["game_date"] = pd.to_datetime(df["game_date"])
-    if "temp" in df.columns:
-        df["temp"] = pd.to_numeric(df["temp"], errors="coerce")
-    if "wind" in df.columns:
-        df["wind_speed"] = df["wind"].apply(_parse_wind_speed)
-    if "elevation" in df.columns:
-        df["elevation"] = pd.to_numeric(df["elevation"], errors="coerce")
-
-    features = _add_group_rolling(
-        df, ["hp_umpire"], "game_date", prefix="ump_", n_jobs=n_jobs
-    )
-    if "weather" in df.columns:
-        features = _add_group_rolling(
-            features, ["weather"], "game_date", prefix="wx_", n_jobs=n_jobs
+        df = _add_group_rolling(
+            df, ["hp_umpire"], "game_date", prefix="ump_", n_jobs=n_jobs
         )
-    features = _add_group_rolling(
-        features, ["home_team"], "game_date", prefix="venue_", n_jobs=n_jobs
-    )
+        if "weather" in df.columns:
+            df = _add_group_rolling(
+                df, ["weather"], "game_date", prefix="wx_", n_jobs=n_jobs
+            )
+        df = _add_group_rolling(
+            df, ["home_team"], "game_date", prefix="venue_", n_jobs=n_jobs
+        )
 
-    features["stadium"] = features["home_team"].map(TEAM_TO_BALLPARK)
+        df["stadium"] = df["home_team"].map(TEAM_TO_BALLPARK)
 
-    if latest is not None:
-        new_features = features[features["game_date"] > latest]
-        if new_features.empty:
-            logger.info("No new contextual features generated")
-            return pd.DataFrame()
-        with DBConnection(db_path) as conn:
-            new_features.to_sql(target_table, conn, if_exists="append", index=False)
-        logger.info("Appended %d new rows to %s", len(new_features), target_table)
-        return new_features
-    else:
-        with DBConnection(db_path) as conn:
-            features.to_sql(target_table, conn, if_exists="replace", index=False)
+        if table_exists(conn, target_table):
+            df.to_sql(target_table, conn, if_exists="append", index=False)
+        else:
+            df.to_sql(target_table, conn, if_exists="replace", index=False)
         logger.info("Saved contextual features to %s", target_table)
-        return features
+        return df

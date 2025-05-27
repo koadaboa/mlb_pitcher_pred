@@ -7,7 +7,12 @@ import logging
 
 from typing import List
 
-from src.utils import DBConnection, setup_logger, get_latest_date
+from src.utils import (
+    DBConnection,
+    setup_logger,
+    table_exists,
+    get_latest_date,
+)
 from src.config import DBConfig, StrikeoutModelConfig, LogConfig
 
 logger = setup_logger(
@@ -79,54 +84,39 @@ def engineer_pitcher_features(
     db_path: Path = DBConfig.PATH,
     source_table: str = "game_level_starting_pitchers",
     target_table: str = "rolling_pitcher_features",
+    year: int | None = None,
 ) -> pd.DataFrame:
     """Compute rolling pitcher features and append new rows to the database."""
     logger.info("Loading data from %s", source_table)
     max_window = max(StrikeoutModelConfig.WINDOW_SIZES)
     with DBConnection(db_path) as conn:
-        latest = get_latest_date(conn, target_table)
-        if latest is not None:
-            logger.info("Existing features found up to %s", latest.date())
-            prev = pd.read_sql_query(
-                f"SELECT * FROM {source_table} WHERE game_date <= ? ORDER BY pitcher_id, game_date DESC",
-                conn,
-                params=(latest,),
-            )
-            prev = prev.groupby("pitcher_id").head(max_window)
-            new_rows = pd.read_sql_query(
-                f"SELECT * FROM {source_table} WHERE game_date > ?",
-                conn,
-                params=(latest,),
-            )
-            if new_rows.empty:
-                logger.info("No new games to process")
-                return pd.DataFrame()
-            df = pd.concat([prev, new_rows], ignore_index=True)
-        else:
-            df = pd.read_sql_query(f"SELECT * FROM {source_table}", conn)
+        query = f"SELECT * FROM {source_table}"
+        if year:
+            query += f" WHERE strftime('%Y', game_date) = '{year}'"
+        df = pd.read_sql_query(query, conn)
+        latest = get_latest_date(conn, target_table, "game_date")
 
     if "game_date" not in df.columns:
         logger.error("Required column 'game_date' not found in %s", source_table)
         raise KeyError("game_date not found")
 
     df["game_date"] = pd.to_datetime(df["game_date"])
-    logger.info("Computing rolling features for %d rows", len(df))
-    features = add_rolling_features(df, group_col="pitcher_id", date_col="game_date")
-
     if latest is not None:
-        new_features = features[features["game_date"] > latest]
-        if new_features.empty:
-            logger.info("No new features generated")
-            return pd.DataFrame()
-        with DBConnection(db_path) as conn:
-            new_features.to_sql(target_table, conn, if_exists="append", index=False)
-        logger.info("Appended %d new rows to %s", len(new_features), target_table)
-        return new_features
+        df = df[df["game_date"] > latest]
+
+    if df.empty:
+        logger.info("No new rows to process for %s", target_table)
+        return df
+
+    logger.info("Computing rolling features for %d rows", len(df))
+    df = add_rolling_features(df, group_col="pitcher_id", date_col="game_date")
+
+    if table_exists(conn, target_table):
+        df.to_sql(target_table, conn, if_exists="append", index=False)
     else:
-        with DBConnection(db_path) as conn:
-            features.to_sql(target_table, conn, if_exists="replace", index=False)
-        logger.info("Saved features to table '%s'", target_table)
-        return features
+        df.to_sql(target_table, conn, if_exists="replace", index=False)
+    logger.info("Saved features to table '%s'", target_table)
+    return df
 
 
 def main() -> None:

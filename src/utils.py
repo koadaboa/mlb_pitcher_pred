@@ -9,6 +9,7 @@ from datetime import datetime
 import pandas as pd
 
 from src.config import DBConfig
+import pandas as pd
 
 class DBConnection:
     """Simple context manager for SQLite connections."""
@@ -102,7 +103,7 @@ def find_latest_file(directory: Union[str, Path], pattern: str) -> Optional[Path
 
 
 def table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    """Return ``True`` if ``table`` exists in the SQLite database."""
+    """Return ``True`` if ``table`` exists in the connected SQLite database."""
     cur = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)
     )
@@ -112,16 +113,13 @@ def table_exists(conn: sqlite3.Connection, table: str) -> bool:
 def get_latest_date(
     conn: sqlite3.Connection, table: str, date_col: str = "game_date"
 ) -> Optional[pd.Timestamp]:
-    """Return the maximum ``date_col`` from ``table`` if it exists."""
-    try:
-        if not table_exists(conn, table):
-            return None
-        cur = conn.execute(f"SELECT MAX({date_col}) FROM {table}")
-        row = cur.fetchone()
-        if row and row[0] is not None:
-            return pd.to_datetime(row[0])
-    except sqlite3.Error as exc:
-        logging.error("Failed reading latest date from %s: %s", table, exc)
+    """Return the most recent ``date_col`` value from ``table`` if it exists."""
+    if not table_exists(conn, table):
+        return None
+    cur = conn.execute(f"SELECT MAX({date_col}) FROM {table}")
+    row = cur.fetchone()
+    if row and row[0] is not None:
+        return pd.to_datetime(row[0])
     return None
 
 

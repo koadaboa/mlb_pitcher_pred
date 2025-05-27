@@ -142,6 +142,12 @@ Execute all feature builders and produce the `model_features` table:
 python -m src.scripts.run_feature_engineering --db-path path/to/pitcher_stats.db
 ```
 
+Limit processing to a single season with `--year`:
+
+```bash
+python -m src.scripts.run_feature_engineering --db-path path/to/pitcher_stats.db --year 2024
+```
+
 If the feature tables already exist, the script only processes games newer than
 the latest date stored in each table and appends the new rows.
 
