@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 from joblib import Parallel, delayed
 
-from src.utils import DBConnection, setup_logger
+from src.utils import DBConnection, setup_logger, get_latest_date
 from src.config import DBConfig, StrikeoutModelConfig, LogConfig
 from .engineer_features import _trend
 
@@ -79,8 +79,9 @@ def _add_group_rolling(
         c for c in df.select_dtypes(include=np.number).columns if c not in exclude_cols
     ]
 
-    def _calc_for_col(col: str) -> pd.DataFrame:
-        grouped = df.groupby(list(group_cols))[col]
+    def _calc_for_col(col: str, local_df: pd.DataFrame) -> pd.DataFrame:
+        """Calculate rolling stats for a single column using a dataframe slice."""
+        grouped = local_df.groupby(list(group_cols))[col]
         shifted = grouped.shift(1)
         parts = []
         for window in windows:
@@ -95,12 +96,14 @@ def _add_group_rolling(
                     f"{prefix}{col}_trend_{window}": roll.apply(_trend, raw=True),
                 }
             )
-            stats[f"{prefix}{col}_momentum_{window}"] = df[col] - mean
+            stats[f"{prefix}{col}_momentum_{window}"] = local_df[col] - mean
             parts.append(stats)
         return pd.concat(parts, axis=1)
 
     frames = [df]
-    results = Parallel(n_jobs=n_jobs)(delayed(_calc_for_col)(c) for c in numeric_cols)
+    results = Parallel(n_jobs=n_jobs)(
+        delayed(_calc_for_col)(c, df[[c, *group_cols, date_col]]) for c in numeric_cols
+    )
     frames.extend(results)
 
     df = pd.concat(frames, axis=1)
@@ -115,15 +118,35 @@ def engineer_opponent_features(
 ) -> pd.DataFrame:
     db_path = db_path or DBConfig.PATH
     logger.info("Loading matchup data from %s", source_table)
+    max_window = max(StrikeoutModelConfig.WINDOW_SIZES)
     with DBConnection(db_path) as conn:
-        df = pd.read_sql_query(f"SELECT * FROM {source_table}", conn)
+        latest = get_latest_date(conn, target_table)
+        if latest is not None:
+            logger.info("Existing opponent features up to %s", latest.date())
+            prev = pd.read_sql_query(
+                f"SELECT * FROM {source_table} WHERE game_date <= ? ORDER BY pitcher_id, opponent_team, game_date DESC",
+                conn,
+                params=(latest,),
+            )
+            prev = prev.groupby(["pitcher_id", "opponent_team"]).head(max_window)
+            new_rows = pd.read_sql_query(
+                f"SELECT * FROM {source_table} WHERE game_date > ?",
+                conn,
+                params=(latest,),
+            )
+            if new_rows.empty:
+                logger.info("No new games to process")
+                return pd.DataFrame()
+            df = pd.concat([prev, new_rows], ignore_index=True)
+        else:
+            df = pd.read_sql_query(f"SELECT * FROM {source_table}", conn)
 
     if df.empty:
         logger.warning("No data found in %s", source_table)
         return df
 
     df["game_date"] = pd.to_datetime(df["game_date"])
-    df = _add_group_rolling(
+    features = _add_group_rolling(
         df,
         ["pitcher_id", "opponent_team"],
         "game_date",
@@ -131,10 +154,20 @@ def engineer_opponent_features(
         n_jobs=n_jobs,
     )
 
-    with DBConnection(db_path) as conn:
-        df.to_sql(target_table, conn, if_exists="replace", index=False)
-    logger.info("Saved opponent features to %s", target_table)
-    return df
+    if latest is not None:
+        new_features = features[features["game_date"] > latest]
+        if new_features.empty:
+            logger.info("No new opponent features generated")
+            return pd.DataFrame()
+        with DBConnection(db_path) as conn:
+            new_features.to_sql(target_table, conn, if_exists="append", index=False)
+        logger.info("Appended %d new rows to %s", len(new_features), target_table)
+        return new_features
+    else:
+        with DBConnection(db_path) as conn:
+            features.to_sql(target_table, conn, if_exists="replace", index=False)
+        logger.info("Saved opponent features to %s", target_table)
+        return features
 
 
 def engineer_contextual_features(
@@ -145,8 +178,28 @@ def engineer_contextual_features(
 ) -> pd.DataFrame:
     db_path = db_path or DBConfig.PATH
     logger.info("Loading matchup data from %s", source_table)
+    max_window = max(StrikeoutModelConfig.WINDOW_SIZES)
     with DBConnection(db_path) as conn:
-        df = pd.read_sql_query(f"SELECT * FROM {source_table}", conn)
+        latest = get_latest_date(conn, target_table)
+        if latest is not None:
+            logger.info("Existing contextual features up to %s", latest.date())
+            prev = pd.read_sql_query(
+                f"SELECT * FROM {source_table} WHERE game_date <= ? ORDER BY pitcher_id, game_date DESC",
+                conn,
+                params=(latest,),
+            )
+            prev = prev.groupby("pitcher_id").head(max_window)
+            new_rows = pd.read_sql_query(
+                f"SELECT * FROM {source_table} WHERE game_date > ?",
+                conn,
+                params=(latest,),
+            )
+            if new_rows.empty:
+                logger.info("No new games to process")
+                return pd.DataFrame()
+            df = pd.concat([prev, new_rows], ignore_index=True)
+        else:
+            df = pd.read_sql_query(f"SELECT * FROM {source_table}", conn)
 
     if df.empty:
         logger.warning("No data found in %s", source_table)
@@ -160,20 +213,30 @@ def engineer_contextual_features(
     if "elevation" in df.columns:
         df["elevation"] = pd.to_numeric(df["elevation"], errors="coerce")
 
-    df = _add_group_rolling(
+    features = _add_group_rolling(
         df, ["hp_umpire"], "game_date", prefix="ump_", n_jobs=n_jobs
     )
     if "weather" in df.columns:
-        df = _add_group_rolling(
-            df, ["weather"], "game_date", prefix="wx_", n_jobs=n_jobs
+        features = _add_group_rolling(
+            features, ["weather"], "game_date", prefix="wx_", n_jobs=n_jobs
         )
-    df = _add_group_rolling(
-        df, ["home_team"], "game_date", prefix="venue_", n_jobs=n_jobs
+    features = _add_group_rolling(
+        features, ["home_team"], "game_date", prefix="venue_", n_jobs=n_jobs
     )
 
-    df["stadium"] = df["home_team"].map(TEAM_TO_BALLPARK)
+    features["stadium"] = features["home_team"].map(TEAM_TO_BALLPARK)
 
-    with DBConnection(db_path) as conn:
-        df.to_sql(target_table, conn, if_exists="replace", index=False)
-    logger.info("Saved contextual features to %s", target_table)
-    return df
+    if latest is not None:
+        new_features = features[features["game_date"] > latest]
+        if new_features.empty:
+            logger.info("No new contextual features generated")
+            return pd.DataFrame()
+        with DBConnection(db_path) as conn:
+            new_features.to_sql(target_table, conn, if_exists="append", index=False)
+        logger.info("Appended %d new rows to %s", len(new_features), target_table)
+        return new_features
+    else:
+        with DBConnection(db_path) as conn:
+            features.to_sql(target_table, conn, if_exists="replace", index=False)
+        logger.info("Saved contextual features to %s", target_table)
+        return features

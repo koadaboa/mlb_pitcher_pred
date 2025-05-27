@@ -142,6 +142,9 @@ Execute all feature builders and produce the `model_features` table:
 python -m src.scripts.run_feature_engineering --db-path path/to/pitcher_stats.db
 ```
 
+If the feature tables already exist, the script only processes games newer than
+the latest date stored in each table and appends the new rows.
+
 Use the `--n-jobs` option to control how many processes are used when computing
 rolling features:
 
