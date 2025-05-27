@@ -8,6 +8,7 @@ import re
 from datetime import datetime
 
 from src.config import DBConfig
+import pandas as pd
 
 class DBConnection:
     """Simple context manager for SQLite connections."""
@@ -98,5 +99,26 @@ def find_latest_file(directory: Union[str, Path], pattern: str) -> Optional[Path
     except Exception as exc:
         logging.error("Unexpected error in find_latest_file: %s", exc, exc_info=True)
         return None
+
+
+def table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    """Return ``True`` if ``table`` exists in the connected SQLite database."""
+    cur = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)
+    )
+    return cur.fetchone() is not None
+
+
+def get_latest_date(
+    conn: sqlite3.Connection, table: str, date_col: str = "game_date"
+) -> Optional[pd.Timestamp]:
+    """Return the most recent ``date_col`` value from ``table`` if it exists."""
+    if not table_exists(conn, table):
+        return None
+    cur = conn.execute(f"SELECT MAX({date_col}) FROM {table}")
+    row = cur.fetchone()
+    if row and row[0] is not None:
+        return pd.to_datetime(row[0])
+    return None
 
 

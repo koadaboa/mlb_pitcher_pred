@@ -20,12 +20,18 @@ def main(argv: list[str] | None = None) -> None:
         default=None,
         help="Number of parallel workers for rolling features",
     )
+    parser.add_argument(
+        "--year",
+        type=int,
+        default=None,
+        help="Process only games from the specified year",
+    )
     args = parser.parse_args(argv)
 
-    engineer_pitcher_features(db_path=args.db_path)
-    engineer_opponent_features(db_path=args.db_path, n_jobs=args.n_jobs)
-    engineer_contextual_features(db_path=args.db_path, n_jobs=args.n_jobs)
-    build_model_features(db_path=args.db_path)
+    engineer_pitcher_features(db_path=args.db_path, year=args.year)
+    engineer_opponent_features(db_path=args.db_path, n_jobs=args.n_jobs, year=args.year)
+    engineer_contextual_features(db_path=args.db_path, n_jobs=args.n_jobs, year=args.year)
+    build_model_features(db_path=args.db_path, year=args.year)
 
 
 if __name__ == "__main__":

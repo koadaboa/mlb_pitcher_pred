@@ -8,7 +8,12 @@ import numpy as np
 import pandas as pd
 from joblib import Parallel, delayed
 
-from src.utils import DBConnection, setup_logger
+from src.utils import (
+    DBConnection,
+    setup_logger,
+    table_exists,
+    get_latest_date,
+)
 from src.config import DBConfig, StrikeoutModelConfig, LogConfig
 from .engineer_features import _trend
 
@@ -79,8 +84,9 @@ def _add_group_rolling(
         c for c in df.select_dtypes(include=np.number).columns if c not in exclude_cols
     ]
 
-    def _calc_for_col(col: str) -> pd.DataFrame:
-        grouped = df.groupby(list(group_cols))[col]
+    def _calc_for_col(col: str, local_df: pd.DataFrame) -> pd.DataFrame:
+        """Calculate rolling stats for a single column using a dataframe slice."""
+        grouped = local_df.groupby(list(group_cols))[col]
         shifted = grouped.shift(1)
         parts = []
         for window in windows:
@@ -95,12 +101,14 @@ def _add_group_rolling(
                     f"{prefix}{col}_trend_{window}": roll.apply(_trend, raw=True),
                 }
             )
-            stats[f"{prefix}{col}_momentum_{window}"] = df[col] - mean
+            stats[f"{prefix}{col}_momentum_{window}"] = local_df[col] - mean
             parts.append(stats)
         return pd.concat(parts, axis=1)
 
     frames = [df]
-    results = Parallel(n_jobs=n_jobs)(delayed(_calc_for_col)(c) for c in numeric_cols)
+    results = Parallel(n_jobs=n_jobs)(
+        delayed(_calc_for_col)(c, df[[c, *group_cols, date_col]]) for c in numeric_cols
+    )
     frames.extend(results)
 
     df = pd.concat(frames, axis=1)
@@ -112,29 +120,40 @@ def engineer_opponent_features(
     source_table: str = "game_level_matchup_details",
     target_table: str = "rolling_pitcher_vs_team",
     n_jobs: int | None = None,
+    year: int | None = None,
 ) -> pd.DataFrame:
     db_path = db_path or DBConfig.PATH
     logger.info("Loading matchup data from %s", source_table)
     with DBConnection(db_path) as conn:
-        df = pd.read_sql_query(f"SELECT * FROM {source_table}", conn)
+        query = f"SELECT * FROM {source_table}"
+        if year:
+            query += f" WHERE strftime('%Y', game_date) = '{year}'"
+        df = pd.read_sql_query(query, conn)
+        latest = get_latest_date(conn, target_table, "game_date")
 
-    if df.empty:
-        logger.warning("No data found in %s", source_table)
+        if df.empty:
+            logger.warning("No data found in %s", source_table)
+            return df
+
+        df["game_date"] = pd.to_datetime(df["game_date"])
+        if latest is not None:
+            df = df[df["game_date"] > latest]
+        if df.empty:
+            logger.info("No new rows to process for %s", target_table)
+            return df
+        df = _add_group_rolling(
+            df,
+            ["pitcher_id", "opponent_team"],
+            "game_date",
+            prefix="opp_",
+            n_jobs=n_jobs,
+        )
+        if table_exists(conn, target_table):
+            df.to_sql(target_table, conn, if_exists="append", index=False)
+        else:
+            df.to_sql(target_table, conn, if_exists="replace", index=False)
+        logger.info("Saved opponent features to %s", target_table)
         return df
-
-    df["game_date"] = pd.to_datetime(df["game_date"])
-    df = _add_group_rolling(
-        df,
-        ["pitcher_id", "opponent_team"],
-        "game_date",
-        prefix="opp_",
-        n_jobs=n_jobs,
-    )
-
-    with DBConnection(db_path) as conn:
-        df.to_sql(target_table, conn, if_exists="replace", index=False)
-    logger.info("Saved opponent features to %s", target_table)
-    return df
 
 
 def engineer_contextual_features(
@@ -142,38 +161,51 @@ def engineer_contextual_features(
     source_table: str = "game_level_matchup_details",
     target_table: str = "contextual_features",
     n_jobs: int | None = None,
+    year: int | None = None,
 ) -> pd.DataFrame:
     db_path = db_path or DBConfig.PATH
     logger.info("Loading matchup data from %s", source_table)
     with DBConnection(db_path) as conn:
-        df = pd.read_sql_query(f"SELECT * FROM {source_table}", conn)
+        query = f"SELECT * FROM {source_table}"
+        if year:
+            query += f" WHERE strftime('%Y', game_date) = '{year}'"
+        df = pd.read_sql_query(query, conn)
+        latest = get_latest_date(conn, target_table, "game_date")
 
-    if df.empty:
-        logger.warning("No data found in %s", source_table)
-        return df
+        if df.empty:
+            logger.warning("No data found in %s", source_table)
+            return df
 
-    df["game_date"] = pd.to_datetime(df["game_date"])
-    if "temp" in df.columns:
-        df["temp"] = pd.to_numeric(df["temp"], errors="coerce")
-    if "wind" in df.columns:
-        df["wind_speed"] = df["wind"].apply(_parse_wind_speed)
-    if "elevation" in df.columns:
-        df["elevation"] = pd.to_numeric(df["elevation"], errors="coerce")
+        df["game_date"] = pd.to_datetime(df["game_date"])
+        if latest is not None:
+            df = df[df["game_date"] > latest]
+        if df.empty:
+            logger.info("No new rows to process for %s", target_table)
+            return df
 
-    df = _add_group_rolling(
-        df, ["hp_umpire"], "game_date", prefix="ump_", n_jobs=n_jobs
-    )
-    if "weather" in df.columns:
+        if "temp" in df.columns:
+            df["temp"] = pd.to_numeric(df["temp"], errors="coerce")
+        if "wind" in df.columns:
+            df["wind_speed"] = df["wind"].apply(_parse_wind_speed)
+        if "elevation" in df.columns:
+            df["elevation"] = pd.to_numeric(df["elevation"], errors="coerce")
+
         df = _add_group_rolling(
-            df, ["weather"], "game_date", prefix="wx_", n_jobs=n_jobs
+            df, ["hp_umpire"], "game_date", prefix="ump_", n_jobs=n_jobs
         )
-    df = _add_group_rolling(
-        df, ["home_team"], "game_date", prefix="venue_", n_jobs=n_jobs
-    )
+        if "weather" in df.columns:
+            df = _add_group_rolling(
+                df, ["weather"], "game_date", prefix="wx_", n_jobs=n_jobs
+            )
+        df = _add_group_rolling(
+            df, ["home_team"], "game_date", prefix="venue_", n_jobs=n_jobs
+        )
 
-    df["stadium"] = df["home_team"].map(TEAM_TO_BALLPARK)
+        df["stadium"] = df["home_team"].map(TEAM_TO_BALLPARK)
 
-    with DBConnection(db_path) as conn:
-        df.to_sql(target_table, conn, if_exists="replace", index=False)
-    logger.info("Saved contextual features to %s", target_table)
-    return df
+        if table_exists(conn, target_table):
+            df.to_sql(target_table, conn, if_exists="append", index=False)
+        else:
+            df.to_sql(target_table, conn, if_exists="replace", index=False)
+        logger.info("Saved contextual features to %s", target_table)
+        return df

@@ -142,6 +142,12 @@ Execute all feature builders and produce the `model_features` table:
 python -m src.scripts.run_feature_engineering --db-path path/to/pitcher_stats.db
 ```
 
+Limit processing to a single season with `--year`:
+
+```bash
+python -m src.scripts.run_feature_engineering --db-path path/to/pitcher_stats.db --year 2024
+```
+
 Use the `--n-jobs` option to control how many processes are used when computing
 rolling features:
 
