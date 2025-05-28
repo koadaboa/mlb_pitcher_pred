@@ -20,6 +20,7 @@ logger = setup_logger(
     LogConfig.LOG_DIR / "engineer_features.log",
 )
 
+
 def add_rolling_features(
     df: pd.DataFrame,
     group_col: str,
@@ -54,7 +55,11 @@ def add_rolling_features(
             if c not in {"game_pk", group_col}
         ]
     else:
-        numeric_cols = [c for c in numeric_cols if c in df.columns and c not in {"game_pk", group_col}]
+        numeric_cols = [
+            c
+            for c in numeric_cols
+            if c in df.columns and c not in {"game_pk", group_col}
+        ]
 
     frames = [df]
     for col in numeric_cols:
@@ -82,16 +87,29 @@ def engineer_pitcher_features(
     source_table: str = "game_level_starting_pitchers",
     target_table: str = "rolling_pitcher_features",
     year: int | None = None,
+    rebuild: bool = False,
 ) -> pd.DataFrame:
-    """Compute rolling pitcher features and append new rows to the database."""
+    """Compute rolling pitcher features and append new rows to the database.
+
+    Parameters
+    ----------
+    rebuild : bool, default False
+        If ``True`` drop ``target_table`` before computing features so the table
+        is recreated from scratch.
+    """
     logger.info("Loading data from %s", source_table)
     max_window = max(StrikeoutModelConfig.WINDOW_SIZES)
     with DBConnection(db_path) as conn:
+        if rebuild and table_exists(conn, target_table):
+            conn.execute(f"DROP TABLE IF EXISTS {target_table}")
+            latest = None
+        else:
+            latest = get_latest_date(conn, target_table, "game_date")
+
         query = f"SELECT * FROM {source_table}"
         if year:
             query += f" WHERE strftime('%Y', game_date) = '{year}'"
         df = pd.read_sql_query(query, conn)
-        latest = get_latest_date(conn, target_table, "game_date")
 
     if "game_date" not in df.columns:
         logger.error("Required column 'game_date' not found in %s", source_table)
@@ -113,10 +131,10 @@ def engineer_pitcher_features(
         numeric_cols=StrikeoutModelConfig.PITCHER_ROLLING_COLS,
     )
 
-    if table_exists(conn, target_table):
-        df.to_sql(target_table, conn, if_exists="append", index=False)
-    else:
+    if rebuild or not table_exists(conn, target_table):
         df.to_sql(target_table, conn, if_exists="replace", index=False)
+    else:
+        df.to_sql(target_table, conn, if_exists="append", index=False)
     logger.info("Saved features to table '%s'", target_table)
     return df
 
