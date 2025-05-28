@@ -75,6 +75,17 @@ def build_model_features(
         ]
         if drop_cols:
             df = df.drop(columns=drop_cols)
+
+        # Remove numeric columns that are not rolled features or explicitly allowed
+        allowed_numeric = set(StrikeoutModelConfig.ALLOWED_BASE_NUMERIC_COLS)
+        target = StrikeoutModelConfig.TARGET_VARIABLE
+        keep_cols = []
+        for col in df.columns:
+            if pattern.search(col) or col in allowed_numeric or col == target:
+                keep_cols.append(col)
+            elif not pd.api.types.is_numeric_dtype(df[col]):
+                keep_cols.append(col)
+        df = df[keep_cols]
         if df.empty:
             logger.info("No new rows to process for %s", target_table)
             return df

@@ -52,6 +52,8 @@ def test_feature_pipeline(tmp_path: Path) -> None:
         assert len(df) == 3
         assert any(col == "strikeouts_mean_3" for col in df.columns)
         assert all("_mean_5" not in c for c in df.columns)
+        # ensure raw game stats are dropped
+        assert "pitches" not in df.columns
 
 
 def test_old_window_columns_removed(tmp_path: Path) -> None:

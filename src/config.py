@@ -70,6 +70,8 @@ class StrikeoutModelConfig:
     # Limit which numeric columns get rolling stats to avoid huge tables
     PITCHER_ROLLING_COLS = ["strikeouts", "pitches"]
     CONTEXT_ROLLING_COLS = ["strikeouts", "pitches", "temp", "wind_speed", "elevation"]
+    # Numeric columns that may be used without rolling (known before the game)
+    ALLOWED_BASE_NUMERIC_COLS = ["temp", "wind_speed", "elevation"]
     DEFAULT_TRAIN_YEARS = (2016, 2017, 2018, 2019, 2021, 2022, 2023)
     DEFAULT_TEST_YEARS = (2024, 2025)
     TARGET_VARIABLE = "strikeouts"
@@ -119,6 +121,7 @@ class FileConfig:
     MODELS_DIR = PROJECT_ROOT / 'models'
     PLOTS_DIR = PROJECT_ROOT / 'plots'
     DATA_DIR = PROJECT_ROOT / 'data'
+    FEATURE_IMPORTANCE_FILE = MODELS_DIR / 'feature_importance.csv'
     # Ensure these directories exist
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
     PLOTS_DIR.mkdir(parents=True, exist_ok=True)
