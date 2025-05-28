@@ -103,7 +103,8 @@ class DataConfig:
 class StrikeoutModelConfig:
     RANDOM_STATE = 3
     # Dramatically smaller windows to keep feature counts manageable
-    WINDOW_SIZES = [3]
+    # Expanded windows to provide more temporal context
+    WINDOW_SIZES = [3, 5, 10]
     # Limit which numeric columns get rolling stats to avoid huge tables
     PITCHER_ROLLING_COLS = ["strikeouts", "pitches"]
     CONTEXT_ROLLING_COLS = [
@@ -116,7 +117,7 @@ class StrikeoutModelConfig:
         "park_factor",
     ]
     # Numeric columns that may be used without rolling (known before the game)
-    ALLOWED_BASE_NUMERIC_COLS = ["temp", "wind_speed", "elevation"]
+    ALLOWED_BASE_NUMERIC_COLS = ["temp", "wind_speed", "elevation", "rest_days"]
     DEFAULT_TRAIN_YEARS = (2016, 2017, 2018, 2019, 2021, 2022, 2023)
     DEFAULT_TEST_YEARS = (2024, 2025)
     TARGET_VARIABLE = "strikeouts"

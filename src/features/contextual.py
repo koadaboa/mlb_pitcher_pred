@@ -173,6 +173,23 @@ def engineer_opponent_features(
             query += f" WHERE strftime('%Y', game_date) = '{year}'"
         df = pd.read_sql_query(query, conn)
 
+        hand_query = """
+            SELECT b.game_pk,
+                   b.opponent_team,
+                   s.pitcher_hand,
+                   SUM(b.strikeouts) AS strikeouts,
+                   SUM(b.plate_appearances) AS plate_appearances
+            FROM game_level_batters_vs_starters b
+            JOIN game_level_starting_pitchers s
+              ON b.game_pk = s.game_pk AND b.pitcher_id = s.pitcher_id
+            GROUP BY b.game_pk, b.opponent_team, s.pitcher_hand
+        """
+        hand_df = pd.read_sql_query(hand_query, conn)
+        if not hand_df.empty:
+            hand_df["team_k_rate"] = hand_df["strikeouts"] / hand_df["plate_appearances"]
+            hand_df = hand_df[["game_pk", "opponent_team", "pitcher_hand", "team_k_rate"]]
+            df = df.merge(hand_df, on=["game_pk", "opponent_team", "pitcher_hand"], how="left")
+
         if df.empty:
             logger.warning("No data found in %s", source_table)
             return df
@@ -191,6 +208,16 @@ def engineer_opponent_features(
             n_jobs=n_jobs,
             numeric_cols=StrikeoutModelConfig.PITCHER_ROLLING_COLS,
         )
+        if "team_k_rate" in df.columns:
+            df = _add_group_rolling(
+                df,
+                ["opponent_team", "pitcher_hand"],
+                "game_date",
+                prefix="team_hand_",
+                n_jobs=n_jobs,
+                numeric_cols=["team_k_rate"],
+            )
+            df = df.drop(columns=["team_k_rate"])
         if rebuild or not table_exists(conn, target_table):
             df.to_sql(target_table, conn, if_exists="replace", index=False)
         else:
