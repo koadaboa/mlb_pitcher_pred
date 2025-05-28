@@ -88,6 +88,7 @@ class StrikeoutModelConfig:
         "splitter_whiff_rate",
     ]
     CONTEXT_ROLLING_COLS = ["strikeouts", "pitches", "temp", "wind_speed", "elevation"]
+    TEAM_HAND_RATE_COLS = ["team_k_rate"]
     # Numeric columns that may be used without rolling (known before the game)
     ALLOWED_BASE_NUMERIC_COLS = ["temp", "wind_speed", "elevation", "rest_days"]
     DEFAULT_TRAIN_YEARS = (2016, 2017, 2018, 2019, 2021, 2022, 2023)
