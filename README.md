@@ -104,7 +104,8 @@ included for each game.
 3. **Model Training**
 
    * Predict target: strikeouts (`K`) in a game
-   * Model: LightGBM with hyperparameter tuning
+   * Model: LightGBM with hyperparameter tuning (`src/tune_lightgbm.py`)
+   * Alternative model: XGBoost (`src/train_xgb_model.py`)
    * Evaluation metrics: MAE, RMSE, R^2
 
 ## Tools & Tech
@@ -114,6 +115,7 @@ included for each game.
 * SQLite (data storage)
 * Pandas, NumPy (data processing)
 * LightGBM (modeling)
+* XGBoost (alternate modeling)
 
 ### Logging
 
