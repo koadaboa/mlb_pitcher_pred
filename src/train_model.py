@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Sequence, Tuple, Dict
-
+import numpy as np
 import pandas as pd
 import lightgbm as lgb
 from lightgbm import LGBMRegressor
@@ -73,7 +73,8 @@ def train_lgbm(
     )
 
     preds = model.predict(X_test)
-    rmse = mean_squared_error(y_test, preds, squared=False)
+    mse = mean_squared_error(y_test, preds)
+    rmse = np.sqrt(mse)
     mae = mean_absolute_error(y_test, preds)
     within_1 = ((pd.Series(preds).round() - y_test).abs() <= 1).mean()
 
