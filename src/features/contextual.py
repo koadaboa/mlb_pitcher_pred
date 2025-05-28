@@ -190,6 +190,9 @@ def engineer_contextual_features(
             query += f" WHERE strftime('%Y', game_date) = '{year}'"
         df = pd.read_sql_query(query, conn)
         latest = get_latest_date(conn, target_table, "game_date")
+        drop_ump_cols = [c for c in ["1b_umpire", "2b_umpire", "3b_umpire"] if c in df.columns]
+        if drop_ump_cols:
+            df = df.drop(columns=drop_ump_cols)
 
         if df.empty:
             logger.warning("No data found in %s", source_table)
