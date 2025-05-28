@@ -74,8 +74,8 @@ def add_rolling_features(
                     f"{col}_std_{window}": roll.std(),
                 }
             )
-            # Momentum captures the difference from recent average
-            stats[f"{col}_momentum_{window}"] = df[col] - mean
+            # Momentum compares last game's value to the previous average
+            stats[f"{col}_momentum_{window}"] = shifted - mean
             frames.append(stats)
 
     df = pd.concat(frames, axis=1)
