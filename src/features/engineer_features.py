@@ -21,6 +21,27 @@ logger = setup_logger(
 )
 
 
+def calculate_rest_days(
+    df: pd.DataFrame,
+    group_col: str = "pitcher_id",
+    date_col: str = "game_date",
+) -> pd.Series:
+    """Return days between consecutive appearances for each ``group_col``.
+
+    Parameters
+    ----------
+    df : DataFrame
+        Input dataframe containing ``group_col`` and ``date_col``.
+    group_col : str, default "pitcher_id"
+        Column to group by when computing rest days.
+    date_col : str, default "game_date"
+        Column with chronological ordering of games.
+    """
+
+    ordered = df.sort_values([group_col, date_col])
+    return ordered.groupby(group_col)[date_col].diff().dt.days
+
+
 def add_rolling_features(
     df: pd.DataFrame,
     group_col: str,
@@ -122,6 +143,8 @@ def engineer_pitcher_features(
     if df.empty:
         logger.info("No new rows to process for %s", target_table)
         return df
+
+    df["rest_days"] = calculate_rest_days(df, "pitcher_id", "game_date")
 
     logger.info("Computing rolling features for %d rows", len(df))
     df = add_rolling_features(

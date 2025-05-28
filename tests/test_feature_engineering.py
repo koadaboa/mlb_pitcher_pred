@@ -10,13 +10,17 @@ from src.features import (
 )
 from src.features.engineer_features import add_rolling_features
 
-def setup_test_db(tmp_path: Path) -> Path:
+def setup_test_db(tmp_path: Path, cross_season: bool = False) -> Path:
     db_path = tmp_path / "test.db"
     with sqlite3.connect(db_path) as conn:
+        if cross_season:
+            dates = ["2023-09-28", "2024-04-01", "2024-04-08"]
+        else:
+            dates = ["2024-04-01", "2024-04-08", "2024-04-15"]
         pitcher_df = pd.DataFrame(
             {
                 "game_pk": [1, 2, 3],
-                "game_date": pd.to_datetime(["2024-04-01", "2024-04-08", "2024-04-15"]),
+                "game_date": pd.to_datetime(dates),
                 "pitcher_id": [10, 10, 10],
                 "opponent_team": ["A", "B", "C"],
                 "home_team": ["H1", "H1", "H2"],
@@ -111,3 +115,18 @@ def test_log_features_added(tmp_path: Path) -> None:
     with sqlite3.connect(db_path) as conn:
         df = pd.read_sql_query("SELECT * FROM model_features", conn)
         assert any(c.startswith("log_") for c in df.columns)
+
+
+def test_rest_days_across_seasons(tmp_path: Path) -> None:
+    db_path = setup_test_db(tmp_path, cross_season=True)
+
+    engineer_pitcher_features(db_path=db_path)
+
+    with sqlite3.connect(db_path) as conn:
+        df = pd.read_sql_query("SELECT * FROM rolling_pitcher_features", conn)
+        assert "rest_days" in df.columns
+        # First start has no prior appearance
+        assert pd.isna(df.loc[0, "rest_days"])
+        # Cross-season gap should be calculated correctly
+        assert df.loc[1, "rest_days"] == 186
+        assert df.loc[2, "rest_days"] == 7
