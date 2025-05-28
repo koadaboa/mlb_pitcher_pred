@@ -10,7 +10,6 @@ from src.features import (
 )
 from src.features.engineer_features import add_rolling_features
 
-
 def setup_test_db(tmp_path: Path) -> Path:
     db_path = tmp_path / "test.db"
     with sqlite3.connect(db_path) as conn:
@@ -76,7 +75,6 @@ def test_old_window_columns_removed(tmp_path: Path) -> None:
     with sqlite3.connect(db_path) as conn:
         df = pd.read_sql_query("SELECT * FROM model_features", conn)
         assert all("_mean_5" not in c for c in df.columns)
-
 
 def test_group_specific_rolling() -> None:
     df = pd.DataFrame(
