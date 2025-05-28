@@ -5,6 +5,7 @@ from typing import Sequence, Tuple, Dict
 
 import pandas as pd
 import lightgbm as lgb
+from lightgbm import LGBMRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 from src.config import (
@@ -45,7 +46,7 @@ def train_lgbm(
     train_df: pd.DataFrame,
     test_df: pd.DataFrame,
     target: str = StrikeoutModelConfig.TARGET_VARIABLE,
-) -> Tuple[lgb.Booster, Dict[str, float]]:
+) -> Tuple[LGBMRegressor, Dict[str, float]]:
     """Train LightGBM model and return the trained model and metrics."""
     features, _ = select_features(train_df, target)
     X_train = train_df[features]
@@ -53,17 +54,19 @@ def train_lgbm(
     X_test = test_df[features]
     y_test = test_df[target]
 
-    train_set = lgb.Dataset(X_train, label=y_train)
-    valid_set = lgb.Dataset(X_test, label=y_test, reference=train_set)
 
     params = StrikeoutModelConfig.LGBM_BASE_PARAMS.copy()
-    model = lgb.train(
-        params,
-        train_set,
-        num_boost_round=StrikeoutModelConfig.FINAL_ESTIMATORS,
-        valid_sets=[valid_set],
+    model = LGBMRegressor(
+        **params,
+        n_estimators=StrikeoutModelConfig.FINAL_ESTIMATORS,
+    )
+
+    model.fit(
+        X_train,
+        y_train,
+        eval_set=[(X_test, y_test)],
         early_stopping_rounds=StrikeoutModelConfig.EARLY_STOPPING_ROUNDS,
-        verbose_eval=False,
+        verbose=False,
     )
 
     preds = model.predict(X_test)
@@ -85,7 +88,7 @@ def main(db_path: Path | None = None) -> None:
     train_df, test_df = split_by_year(df)
     model, metrics = train_lgbm(train_df, test_df)
     model_path = FileConfig.MODELS_DIR / "lgbm_model.txt"
-    model.save_model(str(model_path))
+    model.booster_.save_model(str(model_path))
     logger.info("Saved model to %s", model_path)
     for name, val in metrics.items():
         logger.info("%s: %.4f", name, val)
