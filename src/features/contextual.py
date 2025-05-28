@@ -160,7 +160,6 @@ def engineer_opponent_features(
 
     db_path = db_path or DBConfig.PATH
     logger.info("Loading matchup data from %s", source_table)
-    max_window = max(StrikeoutModelConfig.WINDOW_SIZES)
     with DBConnection(db_path) as conn:
         if rebuild and table_exists(conn, target_table):
             conn.execute(f"DROP TABLE IF EXISTS {target_table}")
@@ -244,7 +243,6 @@ def engineer_contextual_features(
 
     db_path = db_path or DBConfig.PATH
     logger.info("Loading matchup data from %s", source_table)
-    max_window = max(StrikeoutModelConfig.WINDOW_SIZES)
     with DBConnection(db_path) as conn:
         if rebuild and table_exists(conn, target_table):
             conn.execute(f"DROP TABLE IF EXISTS {target_table}")
