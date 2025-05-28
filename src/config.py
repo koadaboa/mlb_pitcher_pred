@@ -66,7 +66,8 @@ class DataConfig:
 class StrikeoutModelConfig:
     RANDOM_STATE = 3
     # Dramatically smaller windows to keep feature counts manageable
-    WINDOW_SIZES = [3]
+    # Expanded windows to provide more temporal context
+    WINDOW_SIZES = [3, 5, 10]
     # Limit which numeric columns get rolling stats to avoid huge tables
     PITCHER_ROLLING_COLS = ["strikeouts", "pitches"]
     CONTEXT_ROLLING_COLS = ["strikeouts", "pitches", "temp", "wind_speed", "elevation"]
