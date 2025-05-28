@@ -49,3 +49,4 @@ def test_feature_pipeline(tmp_path: Path) -> None:
         df = pd.read_sql_query("SELECT * FROM model_features", conn)
         assert len(df) == 3
         assert any(col.startswith("strikeouts_mean_") for col in df.columns)
+        assert not any(col.endswith("_x") or col.endswith("_y") for col in df.columns)
