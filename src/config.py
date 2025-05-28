@@ -132,16 +132,17 @@ class StrikeoutModelConfig:
         "seed": RANDOM_STATE,
     }
 
+    # Hyperparameter ranges widened to explore a larger search space
     LGBM_PARAM_GRID = {
-        "learning_rate": (0.01, 0.2),
-        "num_leaves": (16, 64),
-        "max_depth": (3, 8),
-        "min_child_samples": (5, 50),
-        "feature_fraction": (0.6, 1.0),
-        "bagging_fraction": (0.6, 1.0),
-        "bagging_freq": (0, 5),
-        "reg_alpha": (1e-3, 10.0),
-        "reg_lambda": (1e-3, 10.0),
+        "learning_rate": (0.005, 0.3),
+        "num_leaves": (16, 128),
+        "max_depth": (3, 12),
+        "min_child_samples": (1, 100),
+        "feature_fraction": (0.4, 1.0),
+        "bagging_fraction": (0.4, 1.0),
+        "bagging_freq": (0, 10),
+        "reg_alpha": (1e-3, 20.0),
+        "reg_lambda": (1e-3, 20.0),
     }
 
     # --- XGBoost Defaults and Search Space ---
@@ -155,13 +156,13 @@ class StrikeoutModelConfig:
     }
 
     XGB_PARAM_GRID = {
-        "learning_rate": (0.01, 0.2),
-        "max_depth": (3, 8),
-        "min_child_weight": (1, 10),
-        "subsample": (0.6, 1.0),
-        "colsample_bytree": (0.6, 1.0),
-        "reg_alpha": (1e-3, 10.0),
-        "reg_lambda": (1e-3, 10.0),
+        "learning_rate": (0.005, 0.3),
+        "max_depth": (3, 12),
+        "min_child_weight": (1, 20),
+        "subsample": (0.5, 1.0),
+        "colsample_bytree": (0.5, 1.0),
+        "reg_alpha": (1e-3, 20.0),
+        "reg_lambda": (1e-3, 20.0),
     }
 
     OPTUNA_TRIALS = 50

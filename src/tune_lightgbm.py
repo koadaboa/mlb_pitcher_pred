@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
-from typing import Dict
+from typing import Dict, Optional
+import argparse
 
 import numpy as np
 import optuna
@@ -87,7 +88,12 @@ def _objective_factory(X, y):
     return objective
 
 
-def tune_lgbm(db_path: Path = DBConfig.PATH) -> Dict[str, float]:
+def tune_lgbm(
+    db_path: Path = DBConfig.PATH,
+    *,
+    n_trials: int = StrikeoutModelConfig.OPTUNA_TRIALS,
+    csv_path: Optional[Path] = None,
+) -> Dict[str, float]:
     df = load_dataset(db_path)
     train_df, _ = split_by_year(df)
     features, _ = select_features(train_df, StrikeoutModelConfig.TARGET_VARIABLE)
@@ -98,7 +104,7 @@ def tune_lgbm(db_path: Path = DBConfig.PATH) -> Dict[str, float]:
     study = optuna.create_study(direction="minimize")
     study.optimize(
         objective,
-        n_trials=StrikeoutModelConfig.OPTUNA_TRIALS,
+        n_trials=n_trials,
         timeout=StrikeoutModelConfig.OPTUNA_TIMEOUT,
     )
     logger.info("Best params: %s", study.best_params)
@@ -106,8 +112,33 @@ def tune_lgbm(db_path: Path = DBConfig.PATH) -> Dict[str, float]:
     with open(out_path, "w") as f:
         json.dump(study.best_params, f, indent=2)
     logger.info("Saved best params to %s", out_path)
+
+    if csv_path:
+        df = study.trials_dataframe()
+        df.to_csv(csv_path, index=False)
+        logger.info("Wrote study history to %s", csv_path)
     return study.best_params
 
 
 if __name__ == "__main__":
-    tune_lgbm()
+    parser = argparse.ArgumentParser(description="Tune LightGBM model")
+    parser.add_argument(
+        "--db-path",
+        type=Path,
+        default=DBConfig.PATH,
+        help="Path to SQLite database",
+    )
+    parser.add_argument(
+        "--trials",
+        type=int,
+        default=StrikeoutModelConfig.OPTUNA_TRIALS,
+        help="Number of Optuna trials to run",
+    )
+    parser.add_argument(
+        "--csv-path",
+        type=Path,
+        default=None,
+        help="Optional path to save Optuna study results as CSV",
+    )
+    args = parser.parse_args()
+    tune_lgbm(args.db_path, n_trials=args.trials, csv_path=args.csv_path)
