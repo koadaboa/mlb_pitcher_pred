@@ -18,6 +18,7 @@ def setup_test_db(tmp_path: Path) -> Path:
                 "game_pk": [1, 2, 3],
                 "game_date": pd.to_datetime(["2024-04-01", "2024-04-08", "2024-04-15"]),
                 "pitcher_id": [10, 10, 10],
+                "pitcher_hand": ["R", "L", "R"],
                 "opponent_team": ["A", "B", "C"],
                 "home_team": ["H1", "H1", "H2"],
                 "hp_umpire": ["U1", "U1", "U2"],
@@ -32,6 +33,17 @@ def setup_test_db(tmp_path: Path) -> Path:
         matchup_df = pitcher_df.copy()
         pitcher_df.to_sql("game_level_starting_pitchers", conn, index=False)
         matchup_df.to_sql("game_level_matchup_details", conn, index=False)
+
+        batter_df = pd.DataFrame(
+            {
+                "game_pk": [1, 2, 3],
+                "pitcher_id": [10, 10, 10],
+                "opponent_team": ["A", "B", "C"],
+                "plate_appearances": [4, 4, 4],
+                "strikeouts": [1, 2, 1],
+            }
+        )
+        batter_df.to_sql("game_level_batters_vs_starters", conn, index=False)
     return db_path
 
 
