@@ -122,7 +122,7 @@ def _add_group_rolling(
                     f"{prefix}{col}_std_{window}": roll.std(),
                 }
             )
-            stats[f"{prefix}{col}_momentum_{window}"] = local_df[col] - mean
+            stats[f"{prefix}{col}_momentum_{window}"] = shifted - mean
             parts.append(stats)
         return pd.concat(parts, axis=1)
 
