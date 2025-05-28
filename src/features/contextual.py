@@ -114,12 +114,17 @@ def _add_group_rolling(
         shifted = grouped.shift(1)
         parts = []
         for window in windows:
-            roll = shifted.rolling(window, min_periods=1)
-            mean = roll.mean()
+            roll = (
+                shifted
+                .groupby([local_df[c] for c in group_cols])
+                .rolling(window, min_periods=1)
+            )
+            mean = roll.mean().reset_index(level=list(range(len(group_cols))), drop=True)
+            std = roll.std().reset_index(level=list(range(len(group_cols))), drop=True)
             stats = pd.DataFrame(
                 {
                     f"{prefix}{col}_mean_{window}": mean,
-                    f"{prefix}{col}_std_{window}": roll.std(),
+                    f"{prefix}{col}_std_{window}": std,
                 }
             )
             stats[f"{prefix}{col}_momentum_{window}"] = shifted - mean
