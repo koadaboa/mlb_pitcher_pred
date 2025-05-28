@@ -27,6 +27,7 @@ def setup_test_db(tmp_path: Path) -> Path:
                 "elevation": [500, 500, 600],
                 "strikeouts": [5, 6, 7],
                 "pitches": [80, 85, 90],
+                "fip": [4.0, 3.5, 3.0],
             }
         )
         matchup_df = pitcher_df.copy()
@@ -51,6 +52,7 @@ def test_feature_pipeline(tmp_path: Path) -> None:
         df = pd.read_sql_query("SELECT * FROM model_features", conn)
         assert len(df) == 3
         assert any(col == "strikeouts_mean_3" for col in df.columns)
+        assert any(col == "fip_mean_3" for col in df.columns)
         assert all("_mean_5" not in c for c in df.columns)
         # ensure raw game stats are dropped
         assert "pitches" not in df.columns
@@ -68,6 +70,7 @@ def test_old_window_columns_removed(tmp_path: Path) -> None:
     with sqlite3.connect(db_path) as conn:
         df = pd.read_sql_query("SELECT * FROM rolling_pitcher_features", conn)
         df["strikeouts_mean_5"] = 1
+        df["fip_mean_5"] = 1
         df.to_sql("rolling_pitcher_features", conn, if_exists="replace", index=False)
 
     build_model_features(db_path=db_path)

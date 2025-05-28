@@ -68,7 +68,7 @@ class StrikeoutModelConfig:
     # Dramatically smaller windows to keep feature counts manageable
     WINDOW_SIZES = [3]
     # Limit which numeric columns get rolling stats to avoid huge tables
-    PITCHER_ROLLING_COLS = ["strikeouts", "pitches"]
+    PITCHER_ROLLING_COLS = ["strikeouts", "pitches", "fip"]
     CONTEXT_ROLLING_COLS = ["strikeouts", "pitches", "temp", "wind_speed", "elevation"]
     # Numeric columns that may be used without rolling (known before the game)
     ALLOWED_BASE_NUMERIC_COLS = ["temp", "wind_speed", "elevation"]

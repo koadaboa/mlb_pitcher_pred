@@ -116,6 +116,21 @@ def compute_features(df: pd.DataFrame) -> Dict:
         "max_release_speed": df["release_speed"].max(),
         "avg_spin_rate": df["release_spin_rate"].mean(),
         "unique_pitch_types": df["pitch_type"].nunique(),
+        # FIP formula without constant: (13*HR + 3*(BB+HBP) - 2*K) / IP
+        "fip": (
+            (
+                13 * df["events"].eq("home_run").sum()
+                + 3
+                * (
+                    df["events"].isin(["walk", "intent_walk"]).sum()
+                    + df["events"].eq("hit_by_pitch").sum()
+                )
+                - 2 * strike_events.sum()
+            )
+            / df["inning"].nunique()
+            if df["inning"].nunique()
+            else np.nan
+        ),
     }
     return features
 
