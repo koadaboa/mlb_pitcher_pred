@@ -10,9 +10,12 @@ from __future__ import annotations
 
 from typing import Iterable, List, Optional, Tuple
 
+import re
+
 import numpy as np
 import pandas as pd
 from statsmodels.stats.outliers_influence import variance_inflation_factor
+from src.config import StrikeoutModelConfig
 
 # Columns that should never be used as model features
 BASE_EXCLUDE_COLS: List[str] = [
@@ -84,8 +87,15 @@ def select_features(
         exclude_set.update(exclude_cols)
     exclude_set.add(target_variable)
 
+    pattern = re.compile(r"_(?:mean|std|momentum)_\d+$")
+    allowed_numeric = set(StrikeoutModelConfig.ALLOWED_BASE_NUMERIC_COLS)
+
     numeric_cols = [
-        c for c in df.columns if c not in exclude_set and pd.api.types.is_numeric_dtype(df[c])
+        c
+        for c in df.columns
+        if c not in exclude_set
+        and pd.api.types.is_numeric_dtype(df[c])
+        and (pattern.search(c) or c in allowed_numeric)
     ]
     selected = numeric_cols
 

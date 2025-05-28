@@ -82,6 +82,15 @@ def train_lgbm(
     return model, metrics
 
 
+def get_feature_importance(model: LGBMRegressor) -> pd.DataFrame:
+    """Return feature importance sorted by gain."""
+    booster = model.booster_
+    importance = booster.feature_importance(importance_type="gain")
+    fi = pd.DataFrame({"feature": booster.feature_name(), "importance": importance})
+    fi.sort_values("importance", ascending=False, inplace=True)
+    return fi
+
+
 def main(db_path: Path | None = None) -> None:
     db_path = db_path or DBConfig.PATH
     df = load_dataset(db_path)
@@ -93,6 +102,10 @@ def main(db_path: Path | None = None) -> None:
     model_path = FileConfig.MODELS_DIR / "lgbm_model.txt"
     model.booster_.save_model(str(model_path))
     logger.info("Saved model to %s", model_path)
+    fi_df = get_feature_importance(model)
+    fi_path = FileConfig.FEATURE_IMPORTANCE_FILE
+    fi_df.to_csv(fi_path, index=False)
+    logger.info("Saved feature importance to %s", fi_path)
     for name, val in metrics.items():
         logger.info("%s: %.4f", name, val)
 
