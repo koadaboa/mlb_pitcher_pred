@@ -66,16 +66,16 @@ def add_rolling_features(
         grouped = df.groupby(group_col)[col]
         shifted = grouped.shift(1)
         for window in windows:
-            roll = shifted.rolling(window, min_periods=1)
-            mean = roll.mean()
+            roll = shifted.groupby(df[group_col]).rolling(window, min_periods=1)
+            mean = roll.mean().reset_index(level=0, drop=True)
             stats = pd.DataFrame(
                 {
                     f"{col}_mean_{window}": mean,
-                    f"{col}_std_{window}": roll.std(),
+                    f"{col}_std_{window}": roll.std().reset_index(level=0, drop=True),
                 }
             )
-            # Momentum captures the difference from recent average
-            stats[f"{col}_momentum_{window}"] = df[col] - mean
+            # Momentum compares last game's value to the previous average
+            stats[f"{col}_momentum_{window}"] = shifted - mean
             frames.append(stats)
 
     df = pd.concat(frames, axis=1)
