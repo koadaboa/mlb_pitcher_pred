@@ -56,6 +56,14 @@ def build_model_features(
 
         df = pitcher_df.merge(opp_df, on=["game_pk", "pitcher_id"], how="left")
         df = df.merge(ctx_df, on=["game_pk", "pitcher_id"], how="left")
+
+        drop_ump_cols = [
+            c
+            for c in df.columns
+            if c.startswith("1b_umpire") or c.startswith("2b_umpire") or c.startswith("3b_umpire")
+        ]
+        if drop_ump_cols:
+            df = df.drop(columns=drop_ump_cols)
         if latest is not None:
             df = df[df["game_date"] > latest]
 
