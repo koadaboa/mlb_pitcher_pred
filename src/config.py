@@ -52,6 +52,43 @@ BALLPARK_COORDS = {
     'Nationals Park'                : (38.8731, -77.0074),
 }
 
+# Approximate run-scoring park factors indexed by stadium name. Values above 100
+# indicate a hitter-friendly environment while numbers below 100 favor
+# pitchers.  These are coarse averages and can be refined when more granular
+# data is available.
+BALLPARK_FACTORS = {
+    'Chase Field'                   : 99,
+    'Truist Park'                   : 101,
+    'Oriole Park at Camden Yards'   : 97,
+    'Fenway Park'                   : 104,
+    'Wrigley Field'                 : 100,
+    'Guaranteed Rate Field'         : 102,
+    'Great American Ball Park'      : 103,
+    'Progressive Field'             : 98,
+    'Coors Field'                   : 115,
+    'Comerica Park'                 : 99,
+    'Minute Maid Park'              : 101,
+    'Kauffman Stadium'              : 98,
+    'Angel Stadium'                 : 99,
+    'Dodger Stadium'                : 100,
+    'loanDepot Park'                : 96,
+    'American Family Field'         : 101,
+    'Target Field'                  : 99,
+    'Citi Field'                    : 98,
+    'Yankee Stadium'                : 103,
+    'Oakland Coliseum'              : 95,
+    'Citizens Bank Park'            : 103,
+    'PNC Park'                      : 97,
+    'Petco Park'                    : 96,
+    'Oracle Park'                   : 95,
+    'T-Mobile Park'                 : 97,
+    'Busch Stadium'                 : 98,
+    'Tropicana Field'               : 97,
+    'Globe Life Field'              : 100,
+    'Rogers Centre'                 : 102,
+    'Nationals Park'                : 100,
+}
+
 class DBConfig:
     # Use an absolute path so scripts work from any CWD
     PATH = PROJECT_ROOT / "data" / "pitcher_stats.db"
@@ -69,9 +106,16 @@ class StrikeoutModelConfig:
     # Expanded windows to provide more temporal context
     WINDOW_SIZES = [3, 5, 10]
     # Limit which numeric columns get rolling stats to avoid huge tables
-    PITCHER_ROLLING_COLS = ["strikeouts", "pitches", "fip"]
-    CONTEXT_ROLLING_COLS = ["strikeouts", "pitches", "temp", "wind_speed", "elevation"]
-    TEAM_HAND_RATE_COLS = ["team_k_rate"]
+    PITCHER_ROLLING_COLS = ["strikeouts", "pitches"]
+    CONTEXT_ROLLING_COLS = [
+        "strikeouts",
+        "pitches",
+        "temp",
+        "wind_speed",
+        "elevation",
+        "humidity",
+        "park_factor",
+    ]
     # Numeric columns that may be used without rolling (known before the game)
     ALLOWED_BASE_NUMERIC_COLS = ["temp", "wind_speed", "elevation", "rest_days"]
     DEFAULT_TRAIN_YEARS = (2016, 2017, 2018, 2019, 2021, 2022, 2023)

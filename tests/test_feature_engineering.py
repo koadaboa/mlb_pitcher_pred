@@ -24,10 +24,11 @@ def setup_test_db(tmp_path: Path, cross_season: bool = False) -> Path:
                 "pitcher_id": [10, 10, 10],
                 "pitcher_hand": ["R", "L", "R"],
                 "opponent_team": ["A", "B", "C"],
-                "home_team": ["H1", "H1", "H2"],
+                "home_team": ["ARI", "ARI", "BOS"],
                 "hp_umpire": ["U1", "U1", "U2"],
                 "weather": ["Sunny", "Cloudy", "Sunny"],
                 "temp": [70, 65, 60],
+                "humidity": [40, 50, 55],
                 "wind": ["5 mph", "10 mph", "5 mph"],
                 "elevation": [500, 500, 600],
                 "strikeouts": [5, 6, 7],
@@ -72,6 +73,8 @@ def test_feature_pipeline(tmp_path: Path) -> None:
         assert all("_mean_5" not in c for c in df.columns)
         # ensure raw game stats are dropped
         assert "pitches" not in df.columns
+        assert "venue_humidity_mean_3" in df.columns
+        assert "venue_park_factor_mean_3" in df.columns
 
 
 def test_old_window_columns_removed(tmp_path: Path) -> None:

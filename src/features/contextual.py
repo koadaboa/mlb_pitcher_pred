@@ -13,7 +13,12 @@ from src.utils import (
     table_exists,
     get_latest_date,
 )
-from src.config import DBConfig, StrikeoutModelConfig, LogConfig
+from src.config import (
+    DBConfig,
+    StrikeoutModelConfig,
+    LogConfig,
+    BALLPARK_FACTORS,
+)
 
 logger = setup_logger(
     "contextual_features",
@@ -269,6 +274,11 @@ def engineer_contextual_features(
             df["wind_speed"] = df["wind"].apply(_parse_wind_speed)
         if "elevation" in df.columns:
             df["elevation"] = pd.to_numeric(df["elevation"], errors="coerce")
+        if "humidity" in df.columns:
+            df["humidity"] = pd.to_numeric(df["humidity"], errors="coerce")
+
+        df["stadium"] = df["home_team"].map(TEAM_TO_BALLPARK)
+        df["park_factor"] = df["stadium"].map(BALLPARK_FACTORS)
 
         df = _add_group_rolling(
             df,
@@ -295,8 +305,6 @@ def engineer_contextual_features(
             n_jobs=n_jobs,
             numeric_cols=StrikeoutModelConfig.CONTEXT_ROLLING_COLS,
         )
-
-        df["stadium"] = df["home_team"].map(TEAM_TO_BALLPARK)
 
         if rebuild or not table_exists(conn, target_table):
             df.to_sql(target_table, conn, if_exists="replace", index=False)
