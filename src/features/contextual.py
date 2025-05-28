@@ -99,10 +99,14 @@ def _add_group_rolling(
     exclude_cols = {"game_pk"}.union(set(group_cols))
     if numeric_cols is None:
         numeric_cols = [
-            c for c in df.select_dtypes(include=np.number).columns if c not in exclude_cols
+            c
+            for c in df.select_dtypes(include=np.number).columns
+            if c not in exclude_cols
         ]
     else:
-        numeric_cols = [c for c in numeric_cols if c in df.columns and c not in exclude_cols]
+        numeric_cols = [
+            c for c in numeric_cols if c in df.columns and c not in exclude_cols
+        ]
 
     def _calc_for_col(col: str, local_df: pd.DataFrame) -> pd.DataFrame:
         """Calculate rolling stats for a single column using a dataframe slice."""
@@ -138,16 +142,31 @@ def engineer_opponent_features(
     target_table: str = "rolling_pitcher_vs_team",
     n_jobs: int | None = None,
     year: int | None = None,
+    rebuild: bool = False,
 ) -> pd.DataFrame:
+    """Compute rolling opponent statistics for each pitcher/team matchup.
+
+    Parameters
+    ----------
+    rebuild : bool, default False
+        When ``True`` the ``target_table`` is dropped before new rows are
+        inserted so only features using the current window sizes remain.
+    """
+
     db_path = db_path or DBConfig.PATH
     logger.info("Loading matchup data from %s", source_table)
     max_window = max(StrikeoutModelConfig.WINDOW_SIZES)
     with DBConnection(db_path) as conn:
+        if rebuild and table_exists(conn, target_table):
+            conn.execute(f"DROP TABLE IF EXISTS {target_table}")
+            latest = None
+        else:
+            latest = get_latest_date(conn, target_table, "game_date")
+
         query = f"SELECT * FROM {source_table}"
         if year:
             query += f" WHERE strftime('%Y', game_date) = '{year}'"
         df = pd.read_sql_query(query, conn)
-        latest = get_latest_date(conn, target_table, "game_date")
 
         if df.empty:
             logger.warning("No data found in %s", source_table)
@@ -167,12 +186,13 @@ def engineer_opponent_features(
             n_jobs=n_jobs,
             numeric_cols=StrikeoutModelConfig.PITCHER_ROLLING_COLS,
         )
-        if table_exists(conn, target_table):
-            df.to_sql(target_table, conn, if_exists="append", index=False)
-        else:
+        if rebuild or not table_exists(conn, target_table):
             df.to_sql(target_table, conn, if_exists="replace", index=False)
+        else:
+            df.to_sql(target_table, conn, if_exists="append", index=False)
         logger.info("Saved opponent features to %s", target_table)
         return df
+
 
 def engineer_contextual_features(
     db_path: str | None = None,
@@ -180,19 +200,30 @@ def engineer_contextual_features(
     target_table: str = "contextual_features",
     n_jobs: int | None = None,
     year: int | None = None,
+    rebuild: bool = False,
 ) -> pd.DataFrame:
+    """Aggregate contextual factors and compute rolling statistics.
+
+    Parameters
+    ----------
+    rebuild : bool, default False
+        Drop and recreate ``target_table`` so outdated window sizes are removed.
+    """
+
     db_path = db_path or DBConfig.PATH
     logger.info("Loading matchup data from %s", source_table)
     max_window = max(StrikeoutModelConfig.WINDOW_SIZES)
     with DBConnection(db_path) as conn:
+        if rebuild and table_exists(conn, target_table):
+            conn.execute(f"DROP TABLE IF EXISTS {target_table}")
+            latest = None
+        else:
+            latest = get_latest_date(conn, target_table, "game_date")
+
         query = f"SELECT * FROM {source_table}"
         if year:
             query += f" WHERE strftime('%Y', game_date) = '{year}'"
         df = pd.read_sql_query(query, conn)
-        latest = get_latest_date(conn, target_table, "game_date")
-        drop_ump_cols = [c for c in ["1b_umpire", "2b_umpire", "3b_umpire"] if c in df.columns]
-        if drop_ump_cols:
-            df = df.drop(columns=drop_ump_cols)
 
         if df.empty:
             logger.warning("No data found in %s", source_table)
@@ -240,9 +271,9 @@ def engineer_contextual_features(
 
         df["stadium"] = df["home_team"].map(TEAM_TO_BALLPARK)
 
-        if table_exists(conn, target_table):
-            df.to_sql(target_table, conn, if_exists="append", index=False)
-        else:
+        if rebuild or not table_exists(conn, target_table):
             df.to_sql(target_table, conn, if_exists="replace", index=False)
+        else:
+            df.to_sql(target_table, conn, if_exists="append", index=False)
         logger.info("Saved contextual features to %s", target_table)
         return df
