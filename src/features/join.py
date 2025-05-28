@@ -7,8 +7,24 @@ from src.utils import DBConnection, setup_logger
 from src.utils import table_exists, get_latest_date
 from src.config import DBConfig, LogConfig, StrikeoutModelConfig
 import re
+import numpy as np
 
 logger = setup_logger("join_features", LogConfig.LOG_DIR / "join_features.log")
+
+
+def _winsorize_columns(df: pd.DataFrame, cols: list[str], lower_q: float = 0.01, upper_q: float = 0.99) -> None:
+    """Clip numeric columns to specified quantiles to limit outliers."""
+    for col in cols:
+        lower = df[col].quantile(lower_q)
+        upper = df[col].quantile(upper_q)
+        df[col] = df[col].clip(lower, upper)
+
+
+def _log_transform(df: pd.DataFrame, cols: list[str]) -> None:
+    """Apply log1p transform to positive-valued columns and store as new features."""
+    for col in cols:
+        if (df[col] >= 0).all() and df[col].max() > 1:
+            df[f"log_{col}"] = np.log1p(df[col])
 
 
 def build_model_features(
@@ -86,6 +102,10 @@ def build_model_features(
             elif not pd.api.types.is_numeric_dtype(df[col]):
                 keep_cols.append(col)
         df = df[keep_cols]
+
+        numeric_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c]) and c != target]
+        _winsorize_columns(df, numeric_cols)
+        _log_transform(df, numeric_cols)
         if df.empty:
             logger.info("No new rows to process for %s", target_table)
             return df
