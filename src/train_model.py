@@ -54,6 +54,7 @@ def train_lgbm(
     X_test = test_df[features]
     y_test = test_df[target]
 
+
     params = StrikeoutModelConfig.LGBM_BASE_PARAMS.copy()
     model = LGBMRegressor(
         **params,
