@@ -98,6 +98,26 @@ class StrikeoutModelConfig:
         "reg_lambda": (1e-3, 10.0),
     }
 
+    # --- XGBoost Defaults and Search Space ---
+    XGB_BASE_PARAMS = {
+        "objective": "count:poisson",
+        "learning_rate": 0.05,
+        "max_depth": 6,
+        "subsample": 0.8,
+        "colsample_bytree": 0.8,
+        "random_state": RANDOM_STATE,
+    }
+
+    XGB_PARAM_GRID = {
+        "learning_rate": (0.01, 0.2),
+        "max_depth": (3, 8),
+        "min_child_weight": (1, 10),
+        "subsample": (0.6, 1.0),
+        "colsample_bytree": (0.6, 1.0),
+        "reg_alpha": (1e-3, 10.0),
+        "reg_lambda": (1e-3, 10.0),
+    }
+
     OPTUNA_TRIALS = 50
     OPTUNA_TIMEOUT = 1800  # seconds
     OPTUNA_CV_SPLITS = 5
