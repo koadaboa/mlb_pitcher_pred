@@ -131,10 +131,11 @@ def engineer_pitcher_features(
         numeric_cols=StrikeoutModelConfig.PITCHER_ROLLING_COLS,
     )
 
-    if rebuild or not table_exists(conn, target_table):
-        df.to_sql(target_table, conn, if_exists="replace", index=False)
-    else:
-        df.to_sql(target_table, conn, if_exists="append", index=False)
+    with DBConnection(db_path) as conn:
+        if rebuild or not table_exists(conn, target_table):
+            df.to_sql(target_table, conn, if_exists="replace", index=False)
+        else:
+            df.to_sql(target_table, conn, if_exists="append", index=False)
     logger.info("Saved features to table '%s'", target_table)
     return df
 
