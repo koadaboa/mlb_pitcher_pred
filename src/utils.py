@@ -9,7 +9,6 @@ from datetime import datetime
 import pandas as pd
 
 from src.config import DBConfig
-import pandas as pd
 
 class DBConnection:
     """Simple context manager for SQLite connections."""
