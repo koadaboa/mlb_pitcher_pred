@@ -61,6 +61,7 @@ def train_lgbm(
         n_estimators=StrikeoutModelConfig.FINAL_ESTIMATORS,
     )
 
+    # Use LightGBM callbacks for early stopping and periodic logging
     model.fit(
         X_train,
         y_train,
