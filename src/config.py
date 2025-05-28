@@ -65,7 +65,8 @@ class DataConfig:
 
 class StrikeoutModelConfig:
     RANDOM_STATE = 3
-    WINDOW_SIZES = [3, 5, 10, 25]
+    # Fewer windows to speed up feature engineering
+    WINDOW_SIZES = [5, 10]
     DEFAULT_TRAIN_YEARS = (2016, 2017, 2018, 2019, 2021, 2022, 2023)
     DEFAULT_TEST_YEARS = (2024, 2025)
     TARGET_VARIABLE = "strikeouts"

@@ -14,7 +14,6 @@ from src.utils import (
     get_latest_date,
 )
 from src.config import DBConfig, StrikeoutModelConfig, LogConfig
-from .engineer_features import _trend
 
 logger = setup_logger(
     "contextual_features",
@@ -95,9 +94,6 @@ def _add_group_rolling(
                 {
                     f"{prefix}{col}_mean_{window}": mean,
                     f"{prefix}{col}_std_{window}": roll.std(),
-                    f"{prefix}{col}_min_{window}": roll.min(),
-                    f"{prefix}{col}_max_{window}": roll.max(),
-                    f"{prefix}{col}_trend_{window}": roll.apply(_trend, raw=True),
                 }
             )
             stats[f"{prefix}{col}_momentum_{window}"] = local_df[col] - mean

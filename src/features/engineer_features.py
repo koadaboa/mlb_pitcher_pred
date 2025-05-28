@@ -20,23 +20,13 @@ logger = setup_logger(
     LogConfig.LOG_DIR / "engineer_features.log",
 )
 
-
-def _trend(values: np.ndarray) -> float:
-    """Return the slope of a simple linear regression for the input values."""
-    if len(values) < 2:
-        return np.nan
-    x = np.arange(len(values))
-    slope, _ = np.polyfit(x, values, 1)
-    return float(slope)
-
-
 def add_rolling_features(
     df: pd.DataFrame,
     group_col: str,
     date_col: str,
     windows: List[int] | None = None,
 ) -> pd.DataFrame:
-    """Add rolling stats, momentum, and trend features to ``df``.
+    """Add rolling statistics and momentum features to ``df``.
 
     Parameters
     ----------
@@ -66,13 +56,13 @@ def add_rolling_features(
         for window in windows:
             roll = shifted.rolling(window, min_periods=1)
             mean = roll.mean()
-            stats = pd.DataFrame({
-                f"{col}_mean_{window}": mean,
-                f"{col}_std_{window}": roll.std(),
-                f"{col}_min_{window}": roll.min(),
-                f"{col}_max_{window}": roll.max(),
-                f"{col}_trend_{window}": roll.apply(_trend, raw=True),
-            })
+            stats = pd.DataFrame(
+                {
+                    f"{col}_mean_{window}": mean,
+                    f"{col}_std_{window}": roll.std(),
+                }
+            )
+            # Momentum captures the difference from recent average
             stats[f"{col}_momentum_{window}"] = df[col] - mean
             frames.append(stats)
 
