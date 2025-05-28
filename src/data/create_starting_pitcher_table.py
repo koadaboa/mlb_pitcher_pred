@@ -85,6 +85,14 @@ def compute_features(df: pd.DataFrame) -> Dict:
     fastball_only = df["pitch_type"].isin(FASTBALL_TYPES - OFFSPEED_TYPES)
     offspeed_only = df["pitch_type"].isin(OFFSPEED_TYPES - FASTBALL_TYPES)
 
+    # Pitch type category masks
+    slider_mask = df["pitch_type"].eq("SL")
+    curve_mask = df["pitch_type"].isin({"CU", "KC", "SV", "SC"})
+    changeup_mask = df["pitch_type"].eq("CH")
+    cutter_mask = df["pitch_type"].eq("FC")
+    sinker_mask = df["pitch_type"].isin({"SI", "FT"})
+    splitter_mask = df["pitch_type"].isin({"FS", "SF"})
+
     types = df["pitch_type"].values
     next_types = np.roll(types, -1)
     fastball_then_break = fastball_mask & np.isin(next_types, list(BREAKING_TYPES))
@@ -117,6 +125,25 @@ def compute_features(df: pd.DataFrame) -> Dict:
         "avg_spin_rate": df["release_spin_rate"].mean(),
         "unique_pitch_types": df["pitch_type"].nunique(),
     }
+
+    # --- Pitch Usage Percentages ---
+    for name, mask in {
+        "slider": slider_mask,
+        "curve": curve_mask,
+        "changeup": changeup_mask,
+        "cutter": cutter_mask,
+        "sinker": sinker_mask,
+        "splitter": splitter_mask,
+    }.items():
+        features[f"{name}_pct"] = mask.mean()
+        features[f"{name}_whiff_rate"] = (
+            swinging[mask].mean() if mask.sum() else np.nan
+        )
+
+    # Fastball whiff rate
+    features["fastball_whiff_rate"] = (
+        swinging[fastball_only].mean() if fastball_only.sum() else np.nan
+    )
     return features
 
 
