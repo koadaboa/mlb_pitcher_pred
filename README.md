@@ -40,10 +40,15 @@ Includes metadata for each game such as:
 
 ### `game_level_starting_pitchers`
 
-Aggregated per-game stats for starting pitchers only. Rows are filtered from `statcast_pitchers` using the first pitch of each team in a game and requiring at least 3 innings pitched or 50 total pitches.
+Aggregated per-game stats for starting pitchers only. Rows are filtered from `statcast_pitchers` using the first pitch of each team in a game and requiring at least 3 innings pitched or 50 total pitches. The table now includes pitch usage percentages and whiff rates for common pitch types.
 
 ```text
-['game_pk', 'pitcher_id', 'pitching_team', 'opponent_team', 'innings_pitched', 'pitches', 'strikeouts', 'swinging_strike_rate', 'first_pitch_strike_rate', 'fastball_pct', 'fastball_then_breaking_rate']
+['game_pk', 'pitcher_id', 'pitching_team', 'opponent_team', 'innings_pitched',
+ 'pitches', 'strikeouts', 'swinging_strike_rate', 'first_pitch_strike_rate',
+ 'fastball_pct', 'slider_pct', 'curve_pct', 'changeup_pct', 'cutter_pct',
+ 'sinker_pct', 'splitter_pct', 'fastball_whiff_rate', 'slider_whiff_rate',
+ 'curve_whiff_rate', 'changeup_whiff_rate', 'cutter_whiff_rate',
+ 'sinker_whiff_rate', 'splitter_whiff_rate', 'fastball_then_breaking_rate']
 ```
 ### `game_level_batters_vs_starters`
 
