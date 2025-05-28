@@ -5,7 +5,7 @@ import numpy as np
 from pathlib import Path
 import logging
 
-from typing import List
+from typing import List, Sequence
 
 from src.utils import (
     DBConnection,
@@ -25,6 +25,7 @@ def add_rolling_features(
     group_col: str,
     date_col: str,
     windows: List[int] | None = None,
+    numeric_cols: Sequence[str] | None = None,
 ) -> pd.DataFrame:
     """Add rolling statistics and momentum features to ``df``.
 
@@ -38,16 +39,22 @@ def add_rolling_features(
         Column containing the chronological order of games.
     windows : list[int], optional
         Rolling window sizes. Defaults to ``StrikeoutModelConfig.WINDOW_SIZES``.
+    numeric_cols : Sequence[str], optional
+        Limit calculations to these numeric columns. If ``None`` (default), use
+        all numeric columns except identifiers.
     """
     if windows is None:
         windows = StrikeoutModelConfig.WINDOW_SIZES
 
     df = df.sort_values([group_col, date_col])
-    numeric_cols = [
-        c
-        for c in df.select_dtypes(include=np.number).columns
-        if c not in {"game_pk", group_col}
-    ]
+    if numeric_cols is None:
+        numeric_cols = [
+            c
+            for c in df.select_dtypes(include=np.number).columns
+            if c not in {"game_pk", group_col}
+        ]
+    else:
+        numeric_cols = [c for c in numeric_cols if c in df.columns and c not in {"game_pk", group_col}]
 
     frames = [df]
     for col in numeric_cols:
@@ -99,7 +106,12 @@ def engineer_pitcher_features(
         return df
 
     logger.info("Computing rolling features for %d rows", len(df))
-    df = add_rolling_features(df, group_col="pitcher_id", date_col="game_date")
+    df = add_rolling_features(
+        df,
+        group_col="pitcher_id",
+        date_col="game_date",
+        numeric_cols=StrikeoutModelConfig.PITCHER_ROLLING_COLS,
+    )
 
     if table_exists(conn, target_table):
         df.to_sql(target_table, conn, if_exists="append", index=False)

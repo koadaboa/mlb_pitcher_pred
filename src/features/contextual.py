@@ -69,7 +69,26 @@ def _add_group_rolling(
     prefix: str,
     windows: List[int] | None = None,
     n_jobs: int | None = None,
+    numeric_cols: Sequence[str] | None = None,
 ) -> pd.DataFrame:
+    """Compute rolling stats for specified groups.
+
+    Parameters
+    ----------
+    df : DataFrame
+        Input data containing all columns.
+    group_cols : Sequence[str]
+        Columns used to group consecutive games.
+    date_col : str
+        Column containing the chronological order of games.
+    prefix : str
+        Prefix for the generated feature names.
+    windows : list[int], optional
+        Rolling window sizes. Defaults to ``StrikeoutModelConfig.WINDOW_SIZES``.
+    numeric_cols : Sequence[str], optional
+        Restrict calculations to these numeric columns. If ``None`` (default),
+        all numeric columns except identifiers are used.
+    """
     if windows is None:
         windows = StrikeoutModelConfig.WINDOW_SIZES
 
@@ -78,9 +97,12 @@ def _add_group_rolling(
 
     df = df.sort_values(list(group_cols) + [date_col])
     exclude_cols = {"game_pk"}.union(set(group_cols))
-    numeric_cols = [
-        c for c in df.select_dtypes(include=np.number).columns if c not in exclude_cols
-    ]
+    if numeric_cols is None:
+        numeric_cols = [
+            c for c in df.select_dtypes(include=np.number).columns if c not in exclude_cols
+        ]
+    else:
+        numeric_cols = [c for c in numeric_cols if c in df.columns and c not in exclude_cols]
 
     def _calc_for_col(col: str, local_df: pd.DataFrame) -> pd.DataFrame:
         """Calculate rolling stats for a single column using a dataframe slice."""
@@ -143,6 +165,7 @@ def engineer_opponent_features(
             "game_date",
             prefix="opp_",
             n_jobs=n_jobs,
+            numeric_cols=StrikeoutModelConfig.PITCHER_ROLLING_COLS,
         )
         if table_exists(conn, target_table):
             df.to_sql(target_table, conn, if_exists="append", index=False)
@@ -187,14 +210,29 @@ def engineer_contextual_features(
             df["elevation"] = pd.to_numeric(df["elevation"], errors="coerce")
 
         df = _add_group_rolling(
-            df, ["hp_umpire"], "game_date", prefix="ump_", n_jobs=n_jobs
+            df,
+            ["hp_umpire"],
+            "game_date",
+            prefix="ump_",
+            n_jobs=n_jobs,
+            numeric_cols=StrikeoutModelConfig.CONTEXT_ROLLING_COLS,
         )
         if "weather" in df.columns:
             df = _add_group_rolling(
-                df, ["weather"], "game_date", prefix="wx_", n_jobs=n_jobs
+                df,
+                ["weather"],
+                "game_date",
+                prefix="wx_",
+                n_jobs=n_jobs,
+                numeric_cols=StrikeoutModelConfig.CONTEXT_ROLLING_COLS,
             )
         df = _add_group_rolling(
-            df, ["home_team"], "game_date", prefix="venue_", n_jobs=n_jobs
+            df,
+            ["home_team"],
+            "game_date",
+            prefix="venue_",
+            n_jobs=n_jobs,
+            numeric_cols=StrikeoutModelConfig.CONTEXT_ROLLING_COLS,
         )
 
         df["stadium"] = df["home_team"].map(TEAM_TO_BALLPARK)
