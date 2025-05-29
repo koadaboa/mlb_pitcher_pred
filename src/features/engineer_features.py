@@ -119,7 +119,6 @@ def engineer_pitcher_features(
         is recreated from scratch.
     """
     logger.info("Loading data from %s", source_table)
-    max_window = max(StrikeoutModelConfig.WINDOW_SIZES)
     with DBConnection(db_path) as conn:
         if rebuild and table_exists(conn, target_table):
             conn.execute(f"DROP TABLE IF EXISTS {target_table}")
