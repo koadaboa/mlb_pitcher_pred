@@ -7,6 +7,7 @@ import pandas as pd
 import lightgbm as lgb
 from lightgbm import LGBMRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error
+from sklearn.model_selection import TimeSeriesSplit
 
 from src.config import (
     DBConfig,
@@ -120,6 +121,60 @@ def train_lgbm(
     return model, metrics
 
 
+def cross_validate_lgbm(
+    df: pd.DataFrame,
+    *,
+    n_splits: int = 5,
+    target: str = StrikeoutModelConfig.TARGET_VARIABLE,
+) -> float:
+    """Return average RMSE using ``TimeSeriesSplit`` cross-validation."""
+    if df.empty:
+        raise ValueError("Training dataframe is empty")
+
+    features, _ = select_features(
+        df,
+        target,
+        prune_importance=True,
+        importance_threshold=StrikeoutModelConfig.IMPORTANCE_THRESHOLD,
+        importance_method="lightgbm",
+        prune_vif=True,
+        vif_threshold=StrikeoutModelConfig.VIF_THRESHOLD,
+    )
+
+    X = df.sort_values("game_date")[features]
+    y = df.sort_values("game_date")[target]
+
+    params = StrikeoutModelConfig.LGBM_BASE_PARAMS.copy()
+    cv = TimeSeriesSplit(n_splits=n_splits)
+    scores = []
+    for train_idx, valid_idx in cv.split(X):
+        X_train, X_valid = X.iloc[train_idx], X.iloc[valid_idx]
+        y_train, y_valid = y.iloc[train_idx], y.iloc[valid_idx]
+        model = LGBMRegressor(
+            **params,
+            n_estimators=StrikeoutModelConfig.FINAL_ESTIMATORS,
+        )
+        model.fit(
+            X_train,
+            y_train,
+            eval_set=[(X_valid, y_valid)],
+            callbacks=[
+                lgb.early_stopping(
+                    StrikeoutModelConfig.EARLY_STOPPING_ROUNDS
+                ),
+                lgb.log_evaluation(StrikeoutModelConfig.VERBOSE_FIT_FREQUENCY),
+            ],
+        )
+        preds = model.predict(X_valid)
+        rmse = np.sqrt(mean_squared_error(y_valid, preds))
+        scores.append(rmse)
+        logger.info("Fold RMSE: %.4f", rmse)
+
+    avg_rmse = float(np.mean(scores))
+    logger.info("Average CV RMSE: %.4f", avg_rmse)
+    return avg_rmse
+
+
 def get_feature_importance(model: LGBMRegressor) -> pd.DataFrame:
     """Return feature importance sorted by gain."""
     booster = model.booster_
@@ -136,6 +191,9 @@ def main(db_path: Path | None = None) -> None:
         logger.error("No data available for training")
         return
     train_df, test_df = split_by_year(df)
+    cv_rmse = cross_validate_lgbm(
+        train_df, n_splits=StrikeoutModelConfig.OPTUNA_CV_SPLITS
+    )
     model, metrics = train_lgbm(train_df, test_df)
     model_path = FileConfig.MODELS_DIR / "lgbm_model.txt"
     model.booster_.save_model(str(model_path))
@@ -144,6 +202,7 @@ def main(db_path: Path | None = None) -> None:
     fi_path = FileConfig.FEATURE_IMPORTANCE_FILE
     fi_df.to_csv(fi_path, index=False)
     logger.info("Saved feature importance to %s", fi_path)
+    logger.info("CV RMSE: %.4f", cv_rmse)
     for name, val in metrics.items():
         logger.info("%s: %.4f", name, val)
 
