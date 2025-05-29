@@ -87,12 +87,15 @@ def tune_xgb(
 ) -> Dict[str, float]:
     df = load_dataset(db_path)
     train_df, _ = split_by_year(df)
+    all_features, _ = select_features(train_df, StrikeoutModelConfig.TARGET_VARIABLE)
+    logger.info("Initial candidate features: %d", len(all_features))
+
     features, _ = select_features(
         train_df,
         StrikeoutModelConfig.TARGET_VARIABLE,
         prune_importance=True,
         importance_threshold=StrikeoutModelConfig.IMPORTANCE_THRESHOLD,
-    )
+    logger.info("Features after importance pruning: %d", len(features))
     X = train_df[features]
     y = train_df[StrikeoutModelConfig.TARGET_VARIABLE]
 
