@@ -106,7 +106,31 @@ class StrikeoutModelConfig:
     # Expanded windows to provide more temporal context
     WINDOW_SIZES = [3, 5, 10]
     # Limit which numeric columns get rolling stats to avoid huge tables
-    PITCHER_ROLLING_COLS = ["strikeouts", "pitches"]
+    PITCHER_ROLLING_COLS = [
+        "strikeouts",
+        "pitches",
+        "fip",
+        "csw_pct",
+        "swinging_strike_rate",
+        "first_pitch_strike_rate",
+        "fastball_pct",
+        "fastball_whiff_rate",
+        "slider_pct",
+        "curve_pct",
+        "changeup_pct",
+        "cutter_pct",
+        "sinker_pct",
+        "splitter_pct",
+        "slider_whiff_rate",
+        "curve_whiff_rate",
+        "changeup_whiff_rate",
+        "cutter_whiff_rate",
+        "sinker_whiff_rate",
+        "splitter_whiff_rate",
+        "avg_release_speed",
+        "max_release_speed",
+        "avg_spin_rate",
+    ]
     CONTEXT_ROLLING_COLS = [
         "strikeouts",
         "pitches",
