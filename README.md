@@ -169,7 +169,6 @@ python -m src.scripts.run_feature_engineering --db-path path/to/pitcher_stats.db
 ## Next Steps
 
 * Train baseline model and evaluate performance
-* Explore feature importance using SHAP values
 * Add model monitoring & alerting for production use
 
 ## How to Contribute

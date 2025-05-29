@@ -214,9 +214,6 @@ class StrikeoutModelConfig:
     VERBOSE_FIT_FREQUENCY = 20
 
     IMPORTANCE_THRESHOLD = 0.02
-    VIF_THRESHOLD = 7.5
-    SHAP_THRESHOLD = 0.01
-    SHAP_SAMPLE_FRAC = 0.3
 
 class LogConfig:
     # Define Log directory relative to project root

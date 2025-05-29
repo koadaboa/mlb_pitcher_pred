@@ -1,9 +1,8 @@
 """Feature selection utilities used during model training.
 
-This module exposes a simple interface for selecting model features. The
-current implementation keeps the logic lightweight: unless requested via
-arguments, all numeric columns are used. Optional Variance Inflation
-Factor (VIF) and LightGBM SHAP pruning can be applied when desired.
+All numeric columns are considered as candidate features unless explicitly
+excluded. When requested via arguments, low-importance features can be
+pruned using tree-based model importances.
 """
 
 from __future__ import annotations
@@ -11,13 +10,10 @@ from __future__ import annotations
 from typing import Iterable, List, Optional, Tuple
 
 import re
-from sklearn.ensemble import ExtraTreesRegressor
 from lightgbm import LGBMRegressor
-
-import numpy as np
-import pandas as pd
 from sklearn.ensemble import ExtraTreesRegressor
-from statsmodels.stats.outliers_influence import variance_inflation_factor
+
+import pandas as pd
 from src.config import StrikeoutModelConfig
 
 # Columns that should never be used as model features
@@ -28,31 +24,6 @@ BASE_EXCLUDE_COLS: List[str] = [
     "pitching_team",
     "opponent_team",
 ]
-
-
-def _calculate_vif(df: pd.DataFrame) -> pd.Series:
-    """Return VIF for each column in ``df``."""
-    if df.empty:
-        return pd.Series(dtype=float)
-
-    # Replace infinities then drop any rows containing NaN values
-    clean_df = df.replace([np.inf, -np.inf], np.nan).dropna()
-    if clean_df.empty:
-        return pd.Series([np.nan] * len(df.columns), index=df.columns)
-
-    # Drop any constant columns so ``variance_inflation_factor`` doesn't blow up
-    non_constant = [c for c in clean_df.columns if clean_df[c].nunique(dropna=False) > 1]
-    if not non_constant:
-        return pd.Series([np.nan] * len(df.columns), index=df.columns)
-
-    X = clean_df[non_constant].assign(const=1)
-    vifs = []
-    for i in range(len(non_constant)):
-        with np.errstate(divide="ignore", invalid="ignore"):
-            vifs.append(variance_inflation_factor(X.values, i))
-
-    series = pd.Series(vifs, index=non_constant)
-    return series.reindex(df.columns)
 
 def _prune_feature_importance(
     df: pd.DataFrame,
@@ -101,36 +72,7 @@ def _prune_feature_importance(
 
 
 
-def _prune_vif(df: pd.DataFrame, threshold: float) -> List[str]:
-    """Iteratively drop columns with VIF greater than ``threshold``."""
-    cols = df.columns.tolist()
-    while True:
-        vif = _calculate_vif(df[cols])
-        if vif.empty or vif.dropna().empty:
-            break
-        max_vif = vif.max()
-        if max_vif <= threshold:
-            break
-        drop_col = vif.idxmax()
-        cols.remove(drop_col)
-    return cols
 
-
-def _prune_shap(
-    df: pd.DataFrame,
-    model,
-    threshold: float,
-    sample_frac: float,
-) -> List[str]:
-    """Return columns with mean absolute SHAP value >= ``threshold``."""
-    if sample_frac < 1.0:
-        df = df.sample(frac=sample_frac, random_state=0)
-    shap_values = model.predict(df, pred_contrib=True)
-    # Exclude the bias term (last column)
-    shap_vals = np.abs(shap_values[:, :-1])
-    mean_importance = shap_vals.mean(axis=0)
-    keep_mask = mean_importance >= (threshold * mean_importance.max())
-    return df.columns[keep_mask].tolist()
 
 
 def select_features(
@@ -141,12 +83,6 @@ def select_features(
     prune_importance: bool = False,
     importance_threshold: float = 0.01,
     importance_method: str = "extra_trees",
-    prune_vif: bool = False,
-    vif_threshold: float = 5.0,
-    prune_shap: bool = False,
-    shap_model=None,
-    shap_threshold: float = 0.01,
-    shap_sample_frac: float = 1.0,
 ) -> Tuple[List[str], pd.DataFrame]:
     """Return a list of selected features and an optional info DataFrame.
 
@@ -180,14 +116,5 @@ def select_features(
             method=importance_method,
         )
         info_df = imp.rename("importance").to_frame()
-
-    if prune_vif and selected:
-        selected = _prune_vif(df[selected], vif_threshold)
-        info_df = _calculate_vif(df[selected]).rename("vif").to_frame()
-
-    if prune_shap and shap_model is not None and selected:
-        keep = _prune_shap(df[selected], shap_model, shap_threshold, shap_sample_frac)
-        info_df = info_df.reindex(keep)
-        selected = keep
 
     return selected, info_df
