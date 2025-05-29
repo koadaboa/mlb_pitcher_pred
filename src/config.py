@@ -205,6 +205,21 @@ class StrikeoutModelConfig:
         "reg_lambda": (1e-3, 20.0),
     }
 
+    # --- CatBoost Defaults and Search Space ---
+    CATBOOST_BASE_PARAMS = {
+        "loss_function": "RMSE",
+        "random_seed": RANDOM_STATE,
+        "verbose": False,
+    }
+
+    CATBOOST_PARAM_GRID = {
+        "depth": (4, 10),
+        "learning_rate": (0.01, 0.3),
+        "l2_leaf_reg": (1.0, 10.0),
+        "bagging_temperature": (0.0, 1.0),
+        "random_strength": (0.0, 10.0),
+    }
+
     OPTUNA_TRIALS = 50
     OPTUNA_TIMEOUT = 1800  # seconds
     OPTUNA_CV_SPLITS = 5
