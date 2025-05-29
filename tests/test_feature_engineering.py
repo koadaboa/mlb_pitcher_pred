@@ -134,6 +134,21 @@ def test_log_features_added(tmp_path: Path) -> None:
         assert any(c.startswith("log_") for c in df.columns)
 
 
+def test_base_context_fields_kept(tmp_path: Path) -> None:
+    """Ensure contextual stats like park_factor are retained and transformed."""
+    db_path = setup_test_db(tmp_path)
+
+    engineer_pitcher_features(db_path=db_path)
+    engineer_opponent_features(db_path=db_path)
+    engineer_contextual_features(db_path=db_path)
+    build_model_features(db_path=db_path)
+
+    with sqlite3.connect(db_path) as conn:
+        df = pd.read_sql_query("SELECT * FROM model_features", conn)
+        assert "park_factor" in df.columns
+        assert "log_park_factor" in df.columns
+
+
 def test_rest_days_across_seasons(tmp_path: Path) -> None:
     db_path = setup_test_db(tmp_path, cross_season=True)
 

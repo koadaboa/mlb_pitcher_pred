@@ -145,7 +145,15 @@ class StrikeoutModelConfig:
         "bat_woba",
     ]
     # Numeric columns that may be used without rolling (known before the game)
-    ALLOWED_BASE_NUMERIC_COLS = ["temp", "wind_speed", "elevation", "rest_days"]
+    ALLOWED_BASE_NUMERIC_COLS = [
+        "temp",
+        "wind_speed",
+        "elevation",
+        "rest_days",
+        "humidity",
+        "park_factor",
+        "team_k_rate",
+    ]
     DEFAULT_TRAIN_YEARS = (2016, 2017, 2018, 2019, 2021, 2022, 2023)
     DEFAULT_TEST_YEARS = (2024, 2025)
     TARGET_VARIABLE = "strikeouts"

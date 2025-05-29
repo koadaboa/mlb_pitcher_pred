@@ -93,11 +93,16 @@ def build_model_features(
             df = df.drop(columns=drop_cols)
 
         # Remove numeric columns that are not rolled features or explicitly allowed
+        # ``ALLOWED_BASE_NUMERIC_COLS`` now includes contextual stats like
+        # ``team_k_rate`` and ``park_factor`` that should remain in the model
+        # dataset even without rolling windows.
         allowed_numeric = set(StrikeoutModelConfig.ALLOWED_BASE_NUMERIC_COLS)
         target = StrikeoutModelConfig.TARGET_VARIABLE
         keep_cols = []
         for col in df.columns:
-            if pattern.search(col) or col in allowed_numeric or col == target:
+            if pattern.search(col):
+                keep_cols.append(col)
+            elif col in allowed_numeric or col == target:
                 keep_cols.append(col)
             elif not pd.api.types.is_numeric_dtype(df[col]):
                 keep_cols.append(col)
