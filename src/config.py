@@ -115,6 +115,10 @@ class StrikeoutModelConfig:
         "elevation",
         "humidity",
         "park_factor",
+        "team_k_rate",
+        "bat_whiff_rate",
+        "bat_ops",
+        "bat_woba",
     ]
     # Numeric columns that may be used without rolling (known before the game)
     ALLOWED_BASE_NUMERIC_COLS = ["temp", "wind_speed", "elevation", "rest_days"]
