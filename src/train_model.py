@@ -48,7 +48,13 @@ def train_lgbm(
     target: str = StrikeoutModelConfig.TARGET_VARIABLE,
 ) -> Tuple[LGBMRegressor, Dict[str, float]]:
     """Train LightGBM model and return the trained model and metrics."""
-    features, _ = select_features(train_df, target)
+    # Initial feature selection with VIF pruning to remove multicollinearity
+    features, _ = select_features(
+        train_df,
+        target,
+        prune_vif=True,
+        vif_threshold=StrikeoutModelConfig.VIF_THRESHOLD,
+    )
     X_train = train_df[features]
     y_train = train_df[target]
     X_test = test_df[features]
@@ -71,6 +77,33 @@ def train_lgbm(
             lgb.log_evaluation(StrikeoutModelConfig.VERBOSE_FIT_FREQUENCY),
         ],
     )
+
+    # Optionally prune features based on SHAP values and retrain
+    shap_features, _ = select_features(
+        train_df[features + [target]],
+        target,
+        prune_shap=True,
+        shap_model=model,
+        shap_threshold=StrikeoutModelConfig.SHAP_THRESHOLD,
+        shap_sample_frac=StrikeoutModelConfig.SHAP_SAMPLE_FRAC,
+    )
+    if set(shap_features) != set(features) and shap_features:
+        features = shap_features
+        X_train = train_df[features]
+        X_test = test_df[features]
+        model = LGBMRegressor(
+            **params,
+            n_estimators=StrikeoutModelConfig.FINAL_ESTIMATORS,
+        )
+        model.fit(
+            X_train,
+            y_train,
+            eval_set=[(X_test, y_test)],
+            callbacks=[
+                lgb.early_stopping(StrikeoutModelConfig.EARLY_STOPPING_ROUNDS),
+                lgb.log_evaluation(StrikeoutModelConfig.VERBOSE_FIT_FREQUENCY),
+            ],
+        )
 
     preds = model.predict(X_test)
     mse = mean_squared_error(y_test, preds)
