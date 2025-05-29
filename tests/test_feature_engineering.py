@@ -82,6 +82,9 @@ def test_feature_pipeline(tmp_path: Path) -> None:
         assert "park_factor" not in df.columns
         assert "venue_humidity_mean_3" in df.columns
         assert "venue_park_factor_mean_3" in df.columns
+        # encoded categorical columns should be numeric
+        assert "home_team_enc" in df.columns
+        assert pd.api.types.is_numeric_dtype(df["home_team_enc"])
 
 
 def test_old_window_columns_removed(tmp_path: Path) -> None:

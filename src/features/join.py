@@ -6,6 +6,8 @@ from pathlib import Path
 from src.utils import DBConnection, setup_logger
 from src.utils import table_exists, get_latest_date
 from src.config import DBConfig, LogConfig, StrikeoutModelConfig
+from .encoding import mean_target_encode
+from .selection import BASE_EXCLUDE_COLS
 import re
 import numpy as np
 
@@ -111,6 +113,15 @@ def build_model_features(
         numeric_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c]) and c != target]
         _winsorize_columns(df, numeric_cols)
         _log_transform(df, numeric_cols)
+        cat_cols = [
+            c
+            for c in df.columns
+            if c not in BASE_EXCLUDE_COLS
+            and not pd.api.types.is_numeric_dtype(df[c])
+            and c != target
+        ]
+        if cat_cols:
+            df, _ = mean_target_encode(df, cat_cols, target)
         if df.empty:
             logger.info("No new rows to process for %s", target_table)
             return df
