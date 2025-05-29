@@ -15,6 +15,7 @@ from src.config import (
     LogConfig,
 )
 from src.utils import setup_logger
+from pandas.api.types import is_object_dtype
 from src.train_model import load_dataset, split_by_year
 from src.features.selection import select_features
 
@@ -22,8 +23,19 @@ logger = setup_logger("train_catboost", LogConfig.LOG_DIR / "train_catboost.log"
 
 
 def _get_cat_features(df: pd.DataFrame, features: List[str]) -> List[int]:
-    cat_cols = [c for c in features if pd.api.types.is_object_dtype(df[c]) or pd.api.types.is_categorical_dtype(df[c])]
+    """Return indices of categorical columns in ``features``."""
+    cat_cols = [
+        c
+        for c in features
+        if is_object_dtype(df[c]) or isinstance(df[c].dtype, pd.CategoricalDtype)
+    ]
     return [features.index(c) for c in cat_cols]
+
+
+def _prepare_categoricals(df: pd.DataFrame, cat_cols: List[str]) -> None:
+    """Fill missing categorical values and ensure string dtype."""
+    for col in cat_cols:
+        df[col] = df[col].fillna("NA").astype(str)
 
 
 def train_catboost(
@@ -35,12 +47,16 @@ def train_catboost(
     cat_cols = [
         c
         for c in train_df.columns
-        if c not in numeric_features + [target] and (
-            pd.api.types.is_object_dtype(train_df[c])
-            or pd.api.types.is_categorical_dtype(train_df[c])
+        if c not in numeric_features + [target]
+        and (
+            is_object_dtype(train_df[c])
+            or isinstance(train_df[c].dtype, pd.CategoricalDtype)
         )
     ]
     features = numeric_features + cat_cols
+
+    _prepare_categoricals(train_df, cat_cols)
+    _prepare_categoricals(test_df, cat_cols)
 
     X_train = train_df[features]
     y_train = train_df[target]
