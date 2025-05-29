@@ -12,6 +12,7 @@ from typing import Iterable, List, Optional, Tuple
 
 import re
 from sklearn.ensemble import ExtraTreesRegressor
+from lightgbm import LGBMRegressor
 
 import numpy as np
 import pandas as pd
@@ -47,18 +48,47 @@ def _calculate_vif(df: pd.DataFrame) -> pd.Series:
     return series.reindex(df.columns)
 
 def _prune_feature_importance(
-    df: pd.DataFrame, target: pd.Series, threshold: float
+    df: pd.DataFrame,
+    target: pd.Series,
+    threshold: float,
+    *,
+    method: str = "extra_trees",
 ) -> Tuple[List[str], pd.Series]:
-    """Drop columns with low feature importance using ExtraTreesRegressor."""
+    """Drop columns with low feature importance.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Training features.
+    target : pd.Series
+        Target values.
+    threshold : float
+        Importance threshold relative to the maximum importance.
+    method : str, optional
+        ``"extra_trees"`` (default) or ``"lightgbm"`` to determine how
+        feature importance is calculated.
+    """
+
     if df.empty:
         return [], pd.Series(dtype=float)
-    model = ExtraTreesRegressor(
-        n_estimators=50,
-        random_state=StrikeoutModelConfig.RANDOM_STATE,
-        n_jobs=-1,
-    )
-    model.fit(df, target)
-    importances = pd.Series(model.feature_importances_, index=df.columns)
+
+    if method == "lightgbm":
+        model = LGBMRegressor(
+            n_estimators=100,
+            random_state=StrikeoutModelConfig.RANDOM_STATE,
+            n_jobs=-1,
+        )
+        model.fit(df, target)
+        importances = pd.Series(model.feature_importances_, index=df.columns)
+    else:
+        model = ExtraTreesRegressor(
+            n_estimators=50,
+            random_state=StrikeoutModelConfig.RANDOM_STATE,
+            n_jobs=-1,
+        )
+        model.fit(df, target)
+        importances = pd.Series(model.feature_importances_, index=df.columns)
+
     keep_mask = importances >= (threshold * importances.max())
     return df.columns[keep_mask].tolist(), importances
 
@@ -103,6 +133,7 @@ def select_features(
     *,
     prune_importance: bool = False,
     importance_threshold: float = 0.01,
+    importance_method: str = "extra_trees",
     prune_vif: bool = False,
     vif_threshold: float = 5.0,
     prune_shap: bool = False,
@@ -110,7 +141,11 @@ def select_features(
     shap_threshold: float = 0.01,
     shap_sample_frac: float = 1.0,
 ) -> Tuple[List[str], pd.DataFrame]:
-    """Return a list of selected features and an optional info DataFrame."""
+    """Return a list of selected features and an optional info DataFrame.
+
+    When ``prune_importance`` is ``True``, ``importance_method`` controls
+    whether Extra Trees or LightGBM feature importances are used.
+    """
 
     exclude_set = set(BASE_EXCLUDE_COLS)
     if exclude_cols:
@@ -132,7 +167,10 @@ def select_features(
     info_df = pd.DataFrame()
     if prune_importance and numeric_cols:
         selected, imp = _prune_feature_importance(
-            df[selected], df[target_variable], importance_threshold
+            df[selected],
+            df[target_variable],
+            importance_threshold,
+            method=importance_method,
         )
         info_df = imp.rename("importance").to_frame()
 
