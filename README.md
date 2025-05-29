@@ -115,7 +115,7 @@ included for each game.
 
 ## Tools & Tech
 
-* Python
+* Python 3.10+
 * `pybaseball`, `requests` (for data fetching)
 * SQLite (data storage)
 * Pandas, NumPy (data processing)
