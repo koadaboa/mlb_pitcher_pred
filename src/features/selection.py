@@ -46,6 +46,7 @@ def _calculate_vif(df: pd.DataFrame) -> pd.Series:
     return series.reindex(df.columns)
 
 
+
 def _prune_vif(df: pd.DataFrame, threshold: float) -> List[str]:
     """Iteratively drop columns with VIF greater than ``threshold``."""
     cols = df.columns.tolist()
