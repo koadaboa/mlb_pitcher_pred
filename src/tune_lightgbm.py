@@ -81,7 +81,7 @@ def _objective_factory(X, y):
             )
             preds = model.predict(X_valid)
             scores.append(
-                mean_squared_error(y_valid, preds, squared=False)
+                np.sqrt(mean_squared_error(y_valid, preds))
             )
         return float(np.mean(scores))
 
