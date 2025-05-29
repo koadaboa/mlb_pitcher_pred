@@ -40,11 +40,18 @@ def _calculate_vif(df: pd.DataFrame) -> pd.Series:
     if clean_df.empty:
         return pd.Series([np.nan] * len(df.columns), index=df.columns)
 
-    X = clean_df.assign(const=1)
-    vifs = [
-        variance_inflation_factor(X.values, i) for i in range(len(clean_df.columns))
-    ]
-    series = pd.Series(vifs, index=clean_df.columns)
+    # Drop any constant columns so ``variance_inflation_factor`` doesn't blow up
+    non_constant = [c for c in clean_df.columns if clean_df[c].nunique(dropna=False) > 1]
+    if not non_constant:
+        return pd.Series([np.nan] * len(df.columns), index=df.columns)
+
+    X = clean_df[non_constant].assign(const=1)
+    vifs = []
+    for i in range(len(non_constant)):
+        with np.errstate(divide="ignore", invalid="ignore"):
+            vifs.append(variance_inflation_factor(X.values, i))
+
+    series = pd.Series(vifs, index=non_constant)
     return series.reindex(df.columns)
 
 def _prune_feature_importance(
