@@ -54,6 +54,7 @@ def train_lgbm(
         target,
         prune_importance=True,
         importance_threshold=StrikeoutModelConfig.IMPORTANCE_THRESHOLD,
+        importance_method="lightgbm",
         prune_vif=True,
         vif_threshold=StrikeoutModelConfig.VIF_THRESHOLD,
     )
@@ -88,6 +89,7 @@ def train_lgbm(
         shap_model=model,
         shap_threshold=StrikeoutModelConfig.SHAP_THRESHOLD,
         shap_sample_frac=StrikeoutModelConfig.SHAP_SAMPLE_FRAC,
+        importance_method="lightgbm",
     )
     if set(shap_features) != set(features) and shap_features:
         features = shap_features
