@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Optuna tuning for XGBoost with built-in feature pruning."""
+
 from pathlib import Path
 import json
 from typing import Dict, Optional
@@ -85,7 +87,12 @@ def tune_xgb(
 ) -> Dict[str, float]:
     df = load_dataset(db_path)
     train_df, _ = split_by_year(df)
-    features, _ = select_features(train_df, StrikeoutModelConfig.TARGET_VARIABLE)
+    features, _ = select_features(
+        train_df,
+        StrikeoutModelConfig.TARGET_VARIABLE,
+        prune_importance=True,
+        importance_threshold=StrikeoutModelConfig.IMPORTANCE_THRESHOLD,
+    )
     X = train_df[features]
     y = train_df[StrikeoutModelConfig.TARGET_VARIABLE]
 

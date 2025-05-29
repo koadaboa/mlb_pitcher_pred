@@ -1,6 +1,6 @@
 import pandas as pd
 
-from src.features.selection import _prune_feature_importance
+from src.features.selection import _prune_feature_importance, select_features
 
 
 def test_prune_feature_importance() -> None:
@@ -21,3 +21,23 @@ def test_prune_feature_importance_lightgbm() -> None:
         method="lightgbm",
     )
     assert cols == ["x1"]
+
+
+def test_select_features_pruning() -> None:
+    df = pd.DataFrame(
+        {
+            "game_pk": [1, 2, 3, 4, 5],
+            "x1_mean_3": [0, 1, 2, 3, 4],
+            "x2_mean_3": [1, 1, 1, 1, 1],
+            "strikeouts": [0, 1, 2, 3, 4],
+        }
+    )
+    features_no_prune, _ = select_features(df, "strikeouts")
+    assert set(features_no_prune) == {"x1_mean_3", "x2_mean_3"}
+    features, _ = select_features(
+        df,
+        "strikeouts",
+        prune_importance=True,
+        importance_threshold=0.1,
+    )
+    assert features == ["x1_mean_3"]
