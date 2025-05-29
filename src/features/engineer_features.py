@@ -150,6 +150,7 @@ def engineer_pitcher_features(
         df,
         group_col="pitcher_id",
         date_col="game_date",
+        windows=StrikeoutModelConfig.WINDOW_SIZES,
         numeric_cols=StrikeoutModelConfig.PITCHER_ROLLING_COLS,
     )
 
