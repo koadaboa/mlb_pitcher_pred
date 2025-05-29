@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Iterable, List, Optional, Tuple
 
 import re
+from sklearn.ensemble import ExtraTreesRegressor
 
 import numpy as np
 import pandas as pd
@@ -32,11 +33,10 @@ def _calculate_vif(df: pd.DataFrame) -> pd.Series:
     if df.empty:
         return pd.Series(dtype=float)
 
-    # Drop rows with NaN or infinite values to avoid statsmodels errors
+    # Replace infinities then drop any rows containing NaN values
     clean_df = df.replace([np.inf, -np.inf], np.nan).dropna()
     if clean_df.empty:
-        # Maintain index length even if nothing left after cleaning
-        return pd.Series(np.nan, index=df.columns)
+        return pd.Series([np.nan] * len(df.columns), index=df.columns)
 
     X = clean_df.assign(const=1)
     vifs = [
@@ -45,14 +45,24 @@ def _calculate_vif(df: pd.DataFrame) -> pd.Series:
     series = pd.Series(vifs, index=clean_df.columns)
     return series.reindex(df.columns)
 
-
+def _prune_feature_importance(
+    df: pd.DataFrame,
+    target: pd.Series,
+    threshold: float,
+) -> List[str]:
+    """Return columns with relative importance >= ``threshold``."""
+    model = ExtraTreesRegressor(n_estimators=200, random_state=0, n_jobs=-1)
+    model.fit(df, target)
+    imp = model.feature_importances_
+    keep_mask = imp >= (threshold * imp.max())
+    return df.columns[keep_mask].tolist()
 
 def _prune_vif(df: pd.DataFrame, threshold: float) -> List[str]:
     """Iteratively drop columns with VIF greater than ``threshold``."""
     cols = df.columns.tolist()
     while True:
         vif = _calculate_vif(df[cols])
-        if vif.empty:
+        if vif.empty or vif.dropna().empty:
             break
         max_vif = vif.max()
         if max_vif <= threshold:
@@ -84,6 +94,8 @@ def select_features(
     target_variable: str,
     exclude_cols: Optional[Iterable[str]] = None,
     *,
+    prune_importance: bool = False,
+    importance_threshold: float = 0.0,
     prune_vif: bool = False,
     vif_threshold: float = 5.0,
     prune_shap: bool = False,
@@ -111,7 +123,12 @@ def select_features(
     selected = numeric_cols
 
     info_df = pd.DataFrame()
-    if prune_vif and numeric_cols:
+    if prune_importance and numeric_cols:
+        selected = _prune_feature_importance(
+            df[selected], df[target_variable], importance_threshold
+        )
+
+    if prune_vif and selected:
         selected = _prune_vif(df[selected], vif_threshold)
         info_df = _calculate_vif(df[selected]).rename("vif").to_frame()
 
