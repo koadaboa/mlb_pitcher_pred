@@ -32,11 +32,10 @@ def _calculate_vif(df: pd.DataFrame) -> pd.Series:
     if df.empty:
         return pd.Series(dtype=float)
 
-    # Drop rows with NaN or infinite values to avoid statsmodels errors
+    # Replace infinities then drop any rows containing NaN values
     clean_df = df.replace([np.inf, -np.inf], np.nan).dropna()
     if clean_df.empty:
-        # Maintain index length even if nothing left after cleaning
-        return pd.Series(np.nan, index=df.columns)
+        return pd.Series([np.nan] * len(df.columns), index=df.columns)
 
     X = clean_df.assign(const=1)
     vifs = [
@@ -52,7 +51,7 @@ def _prune_vif(df: pd.DataFrame, threshold: float) -> List[str]:
     cols = df.columns.tolist()
     while True:
         vif = _calculate_vif(df[cols])
-        if vif.empty:
+        if vif.empty or vif.dropna().empty:
             break
         max_vif = vif.max()
         if max_vif <= threshold:
