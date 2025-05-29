@@ -52,6 +52,8 @@ def train_lgbm(
     features, _ = select_features(
         train_df,
         target,
+        prune_importance=True,
+        importance_threshold=StrikeoutModelConfig.IMPORTANCE_THRESHOLD,
         prune_vif=True,
         vif_threshold=StrikeoutModelConfig.VIF_THRESHOLD,
     )
