@@ -104,7 +104,7 @@ class StrikeoutModelConfig:
     RANDOM_STATE = 3
     # Dramatically smaller windows to keep feature counts manageable
     # Expanded windows to provide more temporal context
-    WINDOW_SIZES = [3, 5, 10]
+    WINDOW_SIZES = [3, 5, 10, 50]
     # Limit which numeric columns get rolling stats to avoid huge tables
     PITCHER_ROLLING_COLS = [
         "strikeouts",
@@ -210,6 +210,11 @@ class StrikeoutModelConfig:
         "loss_function": "RMSE",
         "random_seed": RANDOM_STATE,
         "verbose": False,
+        'depth': 6, 
+        'learning_rate': 0.06653022135887977, 
+        'l2_leaf_reg': 4.1143640300797255, 
+        'bagging_temperature': 0.4708062119340739, 
+        'random_strength': 7.216807176944511
     }
 
     CATBOOST_PARAM_GRID = {

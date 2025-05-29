@@ -95,6 +95,8 @@ def tune_xgb(
         StrikeoutModelConfig.TARGET_VARIABLE,
         prune_importance=True,
         importance_threshold=StrikeoutModelConfig.IMPORTANCE_THRESHOLD,
+    )
+    
     logger.info("Features after importance pruning: %d", len(features))
     X = train_df[features]
     y = train_df[StrikeoutModelConfig.TARGET_VARIABLE]
