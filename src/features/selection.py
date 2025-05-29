@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Iterable, List, Optional, Tuple
 
 import re
+from sklearn.ensemble import ExtraTreesRegressor
 
 import numpy as np
 import pandas as pd
@@ -44,7 +45,6 @@ def _calculate_vif(df: pd.DataFrame) -> pd.Series:
     ]
     series = pd.Series(vifs, index=clean_df.columns)
     return series.reindex(df.columns)
-
 
 def _prune_feature_importance(
     df: pd.DataFrame, target: pd.Series, threshold: float
