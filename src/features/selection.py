@@ -31,7 +31,13 @@ def _calculate_vif(df: pd.DataFrame) -> pd.Series:
     """Return VIF for each column in ``df``."""
     if df.empty:
         return pd.Series(dtype=float)
-    X = df.assign(const=1)
+    # ``variance_inflation_factor`` from statsmodels fails when the matrix
+    # contains NaNs or infinite values. Replace inf with NaN and drop any rows
+    # with missing values before computing VIF. If all rows drop, return NaNs.
+    X = df.replace([np.inf, -np.inf], np.nan).dropna()
+    if X.empty:
+        return pd.Series([np.nan] * len(df.columns), index=df.columns)
+    X = X.assign(const=1)
     vifs = [variance_inflation_factor(X.values, i) for i in range(len(df.columns))]
     return pd.Series(vifs, index=df.columns)
 
