@@ -111,6 +111,7 @@ included for each game.
    * Predict target: strikeouts (`K`) in a game
    * Model: LightGBM with hyperparameter tuning (`src/tune_lightgbm.py`)
    * Alternative model: XGBoost (`src/train_xgb_model.py`)
+   * Additional model: CatBoost (`src/train_catboost.py`)
    * Evaluation metrics: MAE, RMSE, R^2
 
 ## Tools & Tech
