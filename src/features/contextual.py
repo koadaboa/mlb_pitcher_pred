@@ -206,7 +206,7 @@ def engineer_opponent_features(
             "game_date",
             prefix="opp_",
             n_jobs=n_jobs,
-            numeric_cols=StrikeoutModelConfig.PITCHER_ROLLING_COLS,
+            numeric_cols=StrikeoutModelConfig.CONTEXT_ROLLING_COLS,
         )
         if "team_k_rate" in df.columns:
             df = _add_group_rolling(
