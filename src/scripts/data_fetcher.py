@@ -39,6 +39,17 @@ def dedup_pitch_df(df: pd.DataFrame) -> pd.DataFrame:
         logger.debug(f"Removed {dropped} duplicate pitch rows")
     return df
 
+
+def filter_regular_season(df: pd.DataFrame) -> pd.DataFrame:
+    """Return only regular season rows if ``game_type`` column is present."""
+    if "game_type" in df.columns:
+        before = len(df)
+        df = df[df["game_type"] == "R"]
+        removed = before - len(df)
+        if removed > 0:
+            logger.debug(f"Filtered {removed} non-regular season rows")
+    return df
+
 # --- REMOVED requests and bs4 imports as they are no longer needed here ---
 # try: import requests; import bs4
 # except ImportError: pass
@@ -473,6 +484,9 @@ class DataFetcher:
         # Use fetch_with_retries, it now returns None on definitive failure
         pd_data = self.fetch_with_retries(pb.statcast_pitcher, target_date_str, target_date_str, pitcher_id)
 
+        # Drop spring training or other non-regular season rows
+        pd_data = filter_regular_season(pd_data)
+
         if pd_data is None: # Fetch failed after retries
             logger.error(f" -> Error fetching P {name} ({pitcher_id}) single date {target_date_str} after retries.")
             self.problematic_pitcher_ids.add(pitcher_id) # Add to problematic set
@@ -540,6 +554,9 @@ class DataFetcher:
 
             # Use fetch_with_retries
             pd_data = self.fetch_with_retries(pb.statcast_pitcher, start_str, end_str, pitcher_id)
+
+            # Filter to regular season games only
+            pd_data = filter_regular_season(pd_data)
 
             if pd_data is None: # Fetch failed after retries for this season
                 logger.error(f" -> Error fetching Hist Statcast P {name} ({pitcher_id}) season {season} after retries.")
@@ -834,6 +851,9 @@ class DataFetcher:
         # Use fetch_with_retries
         pdata = self.fetch_with_retries(pb.statcast, start_dt=target_date_str, end_dt=target_date_str)
 
+        # Filter out any non-regular season rows
+        pdata = filter_regular_season(pdata)
+
         if pdata is None: # Fetch failed definitively
              logger.error(f"Error fetching batter data for single date {target_date_str} after retries.")
              self.failed_batter_fetches.add(('single_date', target_date_str, target_date_str))
@@ -942,6 +962,9 @@ class DataFetcher:
                 fetch_key = (season, start_str, end_str) # Tuple for error tracking
                 logger.debug(f"Fetching hist batter: {start_str} to {end_str}")
                 pdata = self.fetch_with_retries(pb.statcast, start_dt=start_str, end_dt=end_str)
+
+                # Keep only regular season rows
+                pdata = filter_regular_season(pdata)
 
                 if pdata is None: # Fetch failed definitively
                     logger.error(f" -> Error fetching hist batter range {start_str}-{end_str} for season {season} after retries.")
