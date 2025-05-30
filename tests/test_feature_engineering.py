@@ -105,6 +105,9 @@ def test_feature_pipeline(tmp_path: Path) -> None:
         assert pd.api.types.is_numeric_dtype(df["home_team_enc"])
         assert "day_of_week" in df.columns
         assert "travel_distance" in df.columns
+        # ensure merge suffixes were resolved
+        assert "game_date" in df.columns
+        assert not any(c.endswith("_x") or c.endswith("_y") for c in df.columns)
 
 
 def test_old_window_columns_removed(tmp_path: Path) -> None:
