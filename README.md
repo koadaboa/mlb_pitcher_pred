@@ -37,6 +37,14 @@ Includes metadata for each game such as:
 ```
 ['game_pk', 'game_date', 'away_team', 'home_team', 'game_number', 'double_header', 'away_pitcher_ids', 'home_pitcher_ids', 'hp_umpire', '1b_umpire', '2b_umpire', '3b_umpire', 'weather', 'temp', 'wind', 'elevation', 'dayNight', 'first_pitch', 'scraped_timestamp']
 ```
+### `game_starting_lineups`
+
+Starting lineups pulled from the MLB boxscore endpoint.
+
+```text
+['game_pk', 'team', 'batter_id', 'batting_order', 'stand']
+```
+
 
 ### `game_level_starting_pitchers`
 
