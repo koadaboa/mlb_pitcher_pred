@@ -130,6 +130,9 @@ class StrikeoutModelConfig:
         "avg_release_speed",
         "max_release_speed",
         "avg_spin_rate",
+        "offspeed_to_fastball_ratio",
+        "fastball_then_breaking_rate",
+        "unique_pitch_types",
     ]
     CONTEXT_ROLLING_COLS = [
         "strikeouts",
