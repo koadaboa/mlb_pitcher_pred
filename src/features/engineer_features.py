@@ -66,8 +66,9 @@ def add_rolling_features(
         Limit calculations to these numeric columns. If ``None`` (default), use
         all numeric columns except identifiers.
     ewm_halflife : float, optional
-        If given, additionally compute exponentially weighted means using this
-        ``halflife`` and add ``_ewm_<halflife>`` columns.
+        If provided, also compute exponentially weighted moving averages using
+        ``halflife``. Columns ``<col>_ewm_<halflife>`` and
+        ``<col>_momentum_ewm_<halflife>`` will be appended.
     """
     if windows is None:
         windows = StrikeoutModelConfig.WINDOW_SIZES
@@ -162,6 +163,7 @@ def engineer_pitcher_features(
         date_col="game_date",
         windows=StrikeoutModelConfig.WINDOW_SIZES,
         numeric_cols=StrikeoutModelConfig.PITCHER_ROLLING_COLS,
+        ewm_halflife=StrikeoutModelConfig.EWM_HALFLIFE,
     )
 
     with DBConnection(db_path) as conn:

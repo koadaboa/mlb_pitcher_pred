@@ -95,7 +95,7 @@ def select_features(
         exclude_set.update(exclude_cols)
     exclude_set.add(target_variable)
 
-    pattern = re.compile(r"_(?:mean|std|momentum)_\d+$")
+    pattern = re.compile(r"_(?:mean|std|momentum(?:_ewm)?|ewm)_\d+$")
     allowed_numeric = set(StrikeoutModelConfig.ALLOWED_BASE_NUMERIC_COLS)
 
     numeric_cols = [
