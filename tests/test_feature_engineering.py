@@ -61,6 +61,23 @@ def setup_test_db(tmp_path: Path, cross_season: bool = False) -> Path:
             }
         )
         batter_df.to_sql("game_level_batters_vs_starters", conn, index=False)
+
+        lineup_rows = []
+        for game_pk, team in zip([1, 2, 3], ["A", "B", "C"]):
+            for i in range(1, 10):
+                lineup_rows.append(
+                    {
+                        "game_pk": game_pk,
+                        "opponent_team": team,
+                        "batting_order": i,
+                        "batter_side": "L" if i % 2 == 0 else "R",
+                        "woba": 0.3 + i * 0.005,
+                        "strikeout_rate": 0.2 + i * 0.01,
+                        "ops": 0.7 + i * 0.02,
+                    }
+                )
+        lineup_df = pd.DataFrame(lineup_rows)
+        lineup_df.to_sql("game_starting_lineups", conn, index=False)
     return db_path
 
 
@@ -86,6 +103,8 @@ def test_feature_pipeline(tmp_path: Path) -> None:
         assert "fastball_then_breaking_rate_mean_3" in df.columns
         assert "unique_pitch_types_mean_3" in df.columns
         assert "team_k_rate_mean_3" in df.columns
+        assert "opp_lineup_woba_mean_3" in df.columns
+        assert "opp_lineup_pct_left_mean_3" in df.columns
         assert "strikeouts_mean_20" in df.columns
         assert "fip_mean_100" in df.columns
         halflife = StrikeoutModelConfig.EWM_HALFLIFE
