@@ -12,6 +12,7 @@ from src.features import (
 from src.features.engineer_features import add_rolling_features
 from src.config import StrikeoutModelConfig
 
+
 def setup_test_db(tmp_path: Path, cross_season: bool = False) -> Path:
     db_path = tmp_path / "test.db"
     with sqlite3.connect(db_path) as conn:
@@ -42,6 +43,14 @@ def setup_test_db(tmp_path: Path, cross_season: bool = False) -> Path:
                 "zone_pct": [0.5, 0.55, 0.6],
                 "hard_hit_rate": [0.3, 0.25, 0.2],
                 "unique_pitch_types": [3, 4, 3],
+                "zone_pct": [0.5, 0.55, 0.6],
+                "chase_rate": [0.2, 0.25, 0.3],
+                "avg_launch_speed": [89, 90, 91],
+                "max_launch_speed": [99, 100, 101],
+                "avg_launch_angle": [10, 12, 15],
+                "max_launch_angle": [25, 30, 35],
+                "hard_hit_rate": [0.4, 0.45, 0.5],
+                "barrel_rate": [0.1, 0.12, 0.15],
             }
         )
         matchup_df = pitcher_df.copy()
@@ -102,6 +111,8 @@ def test_feature_pipeline(tmp_path: Path) -> None:
         assert "hard_hit_rate_mean_3" in df.columns
         assert "lineup_avg_ops_mean_3" in df.columns
         assert "team_k_rate_mean_3" in df.columns
+        assert "opp_lineup_woba_mean_3" in df.columns
+        assert "opp_lineup_pct_left_mean_3" in df.columns
         assert "strikeouts_mean_20" in df.columns
         assert "fip_mean_100" in df.columns
         halflife = StrikeoutModelConfig.EWM_HALFLIFE
@@ -124,6 +135,7 @@ def test_feature_pipeline(tmp_path: Path) -> None:
         # ensure merge suffixes were resolved
         assert "game_date" in df.columns
         assert not any(c.endswith("_x") or c.endswith("_y") for c in df.columns)
+        assert "slot1_lineup_ops_mean_3" in df.columns
 
 
 def test_old_window_columns_removed(tmp_path: Path) -> None:
@@ -133,6 +145,7 @@ def test_old_window_columns_removed(tmp_path: Path) -> None:
     engineer_pitcher_features(db_path=db_path)
     engineer_opponent_features(db_path=db_path)
     engineer_contextual_features(db_path=db_path)
+    engineer_lineup_trends(db_path=db_path)
 
     # Manually add a column using an unsupported window size
     with sqlite3.connect(db_path) as conn:
@@ -147,6 +160,7 @@ def test_old_window_columns_removed(tmp_path: Path) -> None:
     with sqlite3.connect(db_path) as conn:
         df = pd.read_sql_query("SELECT * FROM model_features", conn)
         assert all("_mean_77" not in c for c in df.columns)
+
 
 def test_group_specific_rolling() -> None:
     df = pd.DataFrame(
@@ -169,7 +183,10 @@ def test_group_specific_rolling() -> None:
         ewm_halflife=StrikeoutModelConfig.EWM_HALFLIFE,
     )
     # First row for pitcher 20 should not include pitcher 10 data
-    assert pd.isna(result.loc[2, "strikeouts_mean_3"]) or result.loc[2, "strikeouts_mean_3"] == 0
+    assert (
+        pd.isna(result.loc[2, "strikeouts_mean_3"])
+        or result.loc[2, "strikeouts_mean_3"] == 0
+    )
     assert f"strikeouts_ewm_{StrikeoutModelConfig.EWM_HALFLIFE}" in result.columns
 
 
@@ -218,7 +235,6 @@ def test_rest_days_across_seasons(tmp_path: Path) -> None:
         # Cross-season gap should be calculated correctly
         assert df.loc[1, "rest_days"] == 186
         assert df.loc[2, "rest_days"] == 7
-
 
 def test_engineer_lineup_trends(tmp_path: Path) -> None:
     db_path = setup_test_db(tmp_path)
