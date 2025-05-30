@@ -102,10 +102,10 @@ class DataConfig:
 
 class StrikeoutModelConfig:
     RANDOM_STATE = 3
-    # Dramatically smaller windows to keep feature counts manageable
-    # Expanded windows to provide more temporal context
+    # Default rolling window sizes (in games)
+    # Adjust if additional smoothing is required
     WINDOW_SIZES = [3, 5, 10, 20, 50, 100]
-    # Halflife used for exponentially weighted moving averages
+    # Halflife (games) used for exponentially weighted moving averages
     EWM_HALFLIFE = 7
     # Limit which numeric columns get rolling stats to avoid huge tables
     PITCHER_ROLLING_COLS = [
@@ -123,6 +123,8 @@ class StrikeoutModelConfig:
         "cutter_pct",
         "sinker_pct",
         "splitter_pct",
+        "zone_pct",
+        "chase_rate",
         "slider_whiff_rate",
         "curve_whiff_rate",
         "changeup_whiff_rate",
@@ -153,6 +155,23 @@ class StrikeoutModelConfig:
         "bat_woba",
         "team_ops_vs_LHP",
         "team_ops_vs_RHP",
+        "bat_plate_appearances",
+        "bat_at_bats",
+        "bat_pitches",
+        "bat_swings",
+        "bat_whiffs",
+        "bat_called_strike_rate",
+        "bat_strikeouts",
+        "bat_strikeout_rate",
+        "bat_strikeout_rate_behind",
+        "bat_strikeout_rate_ahead",
+        "bat_hits",
+        "bat_singles",
+        "bat_doubles",
+        "bat_triples",
+        "bat_home_runs",
+        "bat_walks",
+        "bat_hbp",
     ]
     # Numeric columns that may be used without rolling (known before the game)
     ALLOWED_BASE_NUMERIC_COLS = [
