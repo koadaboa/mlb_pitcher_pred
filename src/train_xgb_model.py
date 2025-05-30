@@ -27,6 +27,7 @@ def train_xgb(
     target: str = StrikeoutModelConfig.TARGET_VARIABLE,
 ) -> Tuple[XGBRegressor, Dict[str, float]]:
     features, _ = select_features(train_df, target)
+    logger.info("Using %d features", len(features))
     X_train = train_df[features]
     y_train = train_df[target]
     X_test = test_df[features]
