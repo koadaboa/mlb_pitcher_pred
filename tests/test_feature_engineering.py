@@ -11,6 +11,7 @@ from src.features import (
 from src.features.engineer_features import add_rolling_features
 from src.config import StrikeoutModelConfig
 
+
 def setup_test_db(tmp_path: Path, cross_season: bool = False) -> Path:
     db_path = tmp_path / "test.db"
     with sqlite3.connect(db_path) as conn:
@@ -55,6 +56,7 @@ def setup_test_db(tmp_path: Path, cross_season: bool = False) -> Path:
                 "game_pk": [1, 2, 3],
                 "pitcher_id": [10, 10, 10],
                 "opponent_team": ["A", "B", "C"],
+                "stand": ["R", "L", "L"],
                 "plate_appearances": [4, 4, 4],
                 "strikeouts": [1, 2, 1],
                 "ops": [0.7, 0.75, 0.72],
@@ -132,6 +134,7 @@ def test_old_window_columns_removed(tmp_path: Path) -> None:
         df = pd.read_sql_query("SELECT * FROM model_features", conn)
         assert all("_mean_77" not in c for c in df.columns)
 
+
 def test_group_specific_rolling() -> None:
     df = pd.DataFrame(
         {
@@ -153,7 +156,10 @@ def test_group_specific_rolling() -> None:
         ewm_halflife=StrikeoutModelConfig.EWM_HALFLIFE,
     )
     # First row for pitcher 20 should not include pitcher 10 data
-    assert pd.isna(result.loc[2, "strikeouts_mean_3"]) or result.loc[2, "strikeouts_mean_3"] == 0
+    assert (
+        pd.isna(result.loc[2, "strikeouts_mean_3"])
+        or result.loc[2, "strikeouts_mean_3"] == 0
+    )
     assert f"strikeouts_ewm_{StrikeoutModelConfig.EWM_HALFLIFE}" in result.columns
 
 
@@ -168,6 +174,18 @@ def test_log_features_added(tmp_path: Path) -> None:
     with sqlite3.connect(db_path) as conn:
         df = pd.read_sql_query("SELECT * FROM model_features", conn)
         assert any(c.startswith("log_") for c in df.columns)
+
+
+def test_split_metrics_rolled(tmp_path: Path) -> None:
+    db_path = setup_test_db(tmp_path)
+
+    engineer_pitcher_features(db_path=db_path)
+    engineer_opponent_features(db_path=db_path)
+
+    with sqlite3.connect(db_path) as conn:
+        df = pd.read_sql_query("SELECT * FROM rolling_pitcher_vs_team", conn)
+        assert "team_hand_bat_ops_vs_RHP_mean_3" in df.columns
+        assert "team_hand_bat_k_rate_vs_LHP_mean_3" in df.columns
 
 
 def test_base_context_fields_kept(tmp_path: Path) -> None:

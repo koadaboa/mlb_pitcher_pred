@@ -61,8 +61,9 @@ TEAM_TO_BALLPARK = {
 }
 
 
-def _haversine_distance(coord1: tuple[float, float] | None,
-                         coord2: tuple[float, float] | None) -> float:
+def _haversine_distance(
+    coord1: tuple[float, float] | None, coord2: tuple[float, float] | None
+) -> float:
     """Return great-circle distance in miles between two lat/lon coordinates."""
     if not coord1 or not coord2:
         return np.nan
@@ -141,18 +142,26 @@ def _add_group_rolling(
         shifted = grouped.shift(1)
         parts = []
         for window in windows:
-            roll = shifted.groupby([local_df[c] for c in group_cols]).rolling(window, min_periods=1)
-            mean = roll.mean().reset_index(level=list(range(len(group_cols))), drop=True)
+            roll = shifted.groupby([local_df[c] for c in group_cols]).rolling(
+                window, min_periods=1
+            )
+            mean = roll.mean().reset_index(
+                level=list(range(len(group_cols))), drop=True
+            )
             stats = pd.DataFrame(
                 {
                     f"{prefix}{col}_mean_{window}": mean,
-                    f"{prefix}{col}_std_{window}": roll.std().reset_index(level=list(range(len(group_cols))), drop=True),
+                    f"{prefix}{col}_std_{window}": roll.std().reset_index(
+                        level=list(range(len(group_cols))), drop=True
+                    ),
                 }
             )
             stats[f"{prefix}{col}_momentum_{window}"] = shifted - mean
             parts.append(stats)
         if ewm_halflife is not None:
-            ewm = grouped.apply(lambda x: x.shift(1).ewm(halflife=ewm_halflife, min_periods=1).mean())
+            ewm = grouped.apply(
+                lambda x: x.shift(1).ewm(halflife=ewm_halflife, min_periods=1).mean()
+            )
             ewm = ewm.reset_index(level=list(range(len(group_cols))), drop=True)
             ewm_stats = pd.DataFrame({f"{prefix}{col}_ewm_{int(ewm_halflife)}": ewm})
             ewm_stats[f"{prefix}{col}_momentum_ewm_{int(ewm_halflife)}"] = shifted - ewm
@@ -214,15 +223,40 @@ def engineer_opponent_features(
         """
         hand_df = pd.read_sql_query(hand_query, conn)
         if not hand_df.empty:
-            hand_df["team_k_rate"] = hand_df["strikeouts"] / hand_df["plate_appearances"]
+            hand_df["team_k_rate"] = (
+                hand_df["strikeouts"] / hand_df["plate_appearances"]
+            )
             ops_pivot = (
-                hand_df.pivot(index=["game_pk", "opponent_team"], columns="pitcher_hand", values="team_ops")
+                hand_df.pivot(
+                    index=["game_pk", "opponent_team"],
+                    columns="pitcher_hand",
+                    values="team_ops",
+                )
                 .rename(columns={"L": "team_ops_vs_LHP", "R": "team_ops_vs_RHP"})
                 .reset_index()
             )
-            hand_df = hand_df[["game_pk", "opponent_team", "pitcher_hand", "team_k_rate"]]
-            df = df.merge(hand_df, on=["game_pk", "opponent_team", "pitcher_hand"], how="left")
+            hand_df = hand_df[
+                ["game_pk", "opponent_team", "pitcher_hand", "team_k_rate"]
+            ]
+            df = df.merge(
+                hand_df, on=["game_pk", "opponent_team", "pitcher_hand"], how="left"
+            )
             df = df.merge(ops_pivot, on=["game_pk", "opponent_team"], how="left")
+
+        if "pitcher_hand" in df.columns and "bat_ops" in df.columns:
+            df["bat_ops_vs_LHP"] = np.where(
+                df["pitcher_hand"] == "L", df["bat_ops"], np.nan
+            )
+            df["bat_ops_vs_RHP"] = np.where(
+                df["pitcher_hand"] == "R", df["bat_ops"], np.nan
+            )
+        if "pitcher_hand" in df.columns and "bat_strikeout_rate" in df.columns:
+            df["bat_k_rate_vs_LHP"] = np.where(
+                df["pitcher_hand"] == "L", df["bat_strikeout_rate"], np.nan
+            )
+            df["bat_k_rate_vs_RHP"] = np.where(
+                df["pitcher_hand"] == "R", df["bat_strikeout_rate"], np.nan
+            )
 
         if df.empty:
             logger.warning("No data found in %s", source_table)
@@ -243,17 +277,28 @@ def engineer_opponent_features(
             numeric_cols=StrikeoutModelConfig.CONTEXT_ROLLING_COLS,
             ewm_halflife=StrikeoutModelConfig.EWM_HALFLIFE,
         )
-        if "team_k_rate" in df.columns:
+        hand_cols = [
+            c
+            for c in [
+                "team_k_rate",
+                "bat_ops_vs_LHP",
+                "bat_ops_vs_RHP",
+                "bat_k_rate_vs_LHP",
+                "bat_k_rate_vs_RHP",
+            ]
+            if c in df.columns
+        ]
+        if hand_cols:
             df = _add_group_rolling(
                 df,
                 ["opponent_team", "pitcher_hand"],
                 "game_date",
                 prefix="team_hand_",
                 n_jobs=n_jobs,
-                numeric_cols=["team_k_rate"],
+                numeric_cols=hand_cols,
                 ewm_halflife=StrikeoutModelConfig.EWM_HALFLIFE,
             )
-            df = df.drop(columns=["team_k_rate"])
+            df = df.drop(columns=hand_cols)
         if rebuild or not table_exists(conn, target_table):
             df.to_sql(target_table, conn, if_exists="replace", index=False)
         else:
