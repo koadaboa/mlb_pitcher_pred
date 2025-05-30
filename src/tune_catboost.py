@@ -95,6 +95,7 @@ def tune_catboost(
     df = load_dataset(db_path)
     train_df, _ = split_by_year(df)
     numeric_features, _ = select_features(train_df, StrikeoutModelConfig.TARGET_VARIABLE)
+    logger.info("Using %d numeric features", len(numeric_features))
     cat_cols = [
         c
         for c in train_df.columns
@@ -105,6 +106,7 @@ def tune_catboost(
         )
     ]
     features = numeric_features + cat_cols
+    logger.info("Using %d total features", len(features))
     _prepare_categoricals(train_df, cat_cols)
     X = train_df[features]
     y = train_df[StrikeoutModelConfig.TARGET_VARIABLE]
