@@ -183,62 +183,110 @@ async def get_game_pks(client, date_str): # <<< Added 'client' back
 
 
 def parse_api_data(api_response, game_pk):
-    # TODO: Thoroughly verify all JSON paths below
+    """Parse a single game feed response from the MLB Stats API.
+
+    The MLB API occasionally omits portions of the ``gameData`` or ``liveData``
+    trees.  To avoid ``KeyError``/``TypeError`` exceptions we validate the
+    presence and type of each nested structure before use.
+    """
     try:
-        game_data = api_response.get('gameData', {}); live_data = api_response.get('liveData', {})
-        game_info = game_data.get('game', {}); venue_info = game_data.get('venue', {})
-        boxscore = live_data.get('boxscore', {}); officials = boxscore.get('officials', [])
-        teams_box = boxscore.get('teams', {}); weather = game_data.get('weather', {})
-        datetime_info = game_data.get('datetime', {}); teams_info = game_data.get('teams', {})
-        status = game_data.get('status', {})
-        if status.get('abstractGameState') not in ['Final', 'Game Over']: logger.warning(f"Game {game_pk} not final. Skipping."); return None
+        if not isinstance(api_response, dict):
+            logger.error(f"Unexpected API response type for gamePk {game_pk}: {type(api_response)}")
+            return None
+
+        game_data = api_response.get("gameData") or {}
+        live_data = api_response.get("liveData") or {}
+
+        if not isinstance(game_data, dict) or not isinstance(live_data, dict):
+            logger.error(f"Malformed gameData/liveData for gamePk {game_pk}")
+            return None
+
+        game_info = game_data.get("game") or {}
+        venue_info = game_data.get("venue") or {}
+        boxscore = live_data.get("boxscore") or {}
+        officials = boxscore.get("officials") or []
+        teams_box = boxscore.get("teams") or {}
+        weather = game_data.get("weather") or {}
+        datetime_info = game_data.get("datetime") or {}
+        teams_info = game_data.get("teams") or {}
+        status = game_data.get("status") or {}
+
+        if status.get("abstractGameState") not in ["Final", "Game Over"]:
+            logger.warning(f"Game {game_pk} not final. Skipping.")
+            return None
 
         # AL/NL League Check
-        away_league_id = teams_info.get('away', {}).get('league', {}).get('id')
-        home_league_id = teams_info.get('home', {}).get('league', {}).get('id')
+        away_league_id = teams_info.get("away", {}).get("league", {}).get("id")
+        home_league_id = teams_info.get("home", {}).get("league", {}).get("id")
         if not (away_league_id in MLB_LEAGUE_IDS and home_league_id in MLB_LEAGUE_IDS):
             logger.info(f"Skipping game {game_pk}: Non AL/NL matchup (Leagues: {away_league_id}, {home_league_id}).")
             return None
 
-        data = {'game_pk': game_pk}
-        cal_event_id = game_info.get('calendarEventID', ''); date_parts = cal_event_id.split('-')
-        if len(date_parts) >= 3 and all(p.isdigit() for p in date_parts[-3:]): data['game_date'] = "-".join(date_parts[-3:])
-        else: data['game_date'] = game_info.get('gameDate')
-        data['away_team'] = teams_info.get('away', {}).get('abbreviation'); data['home_team'] = teams_info.get('home', {}).get('abbreviation')
-        away_pitchers_list = teams_box.get('away', {}).get('pitchers', []); home_pitchers_list = teams_box.get('home', {}).get('pitchers', [])
-        data['away_pitcher_ids'] = json.dumps(away_pitchers_list if isinstance(away_pitchers_list, list) else []); data['home_pitcher_ids'] = json.dumps(home_pitchers_list if isinstance(home_pitchers_list, list) else [])
+        data = {"game_pk": game_pk}
+        cal_event_id = game_info.get("calendarEventID", "")
+        date_parts = cal_event_id.split("-")
+        if len(date_parts) >= 3 and all(p.isdigit() for p in date_parts[-3:]):
+            data["game_date"] = "-".join(date_parts[-3:])
+        else:
+            data["game_date"] = game_info.get("gameDate")
+
+        data["away_team"] = teams_info.get("away", {}).get("abbreviation")
+        data["home_team"] = teams_info.get("home", {}).get("abbreviation")
+
+        away_pitchers_list = teams_box.get("away", {}).get("pitchers", [])
+        home_pitchers_list = teams_box.get("home", {}).get("pitchers", [])
+        away_pitchers_list = away_pitchers_list if isinstance(away_pitchers_list, list) else []
+        home_pitchers_list = home_pitchers_list if isinstance(home_pitchers_list, list) else []
+        data["away_pitcher_ids"] = json.dumps(away_pitchers_list)
+        data["home_pitcher_ids"] = json.dumps(home_pitchers_list)
 
         # Add gameNumber, doubleHeader
-        data['game_number'] = game_info.get('gameNumber')
-        data['double_header'] = game_info.get('doubleHeader')
+        data["game_number"] = game_info.get("gameNumber")
+        data["double_header"] = game_info.get("doubleHeader")
 
-        data['hp_umpire'], data['1b_umpire'], data['2b_umpire'], data['3b_umpire'] = None, None, None, None
+        data["hp_umpire"], data["1b_umpire"], data["2b_umpire"], data["3b_umpire"] = None, None, None, None
         if isinstance(officials, list):
             for official in officials:
                 if isinstance(official, dict):
-                    otype = official.get('officialType'); name = official.get('official', {}).get('fullName')
-                    if otype == 'Home Plate': data['hp_umpire'] = name
-                    elif otype == 'First Base': data['1b_umpire'] = name
-                    elif otype == 'Second Base': data['2b_umpire'] = name
-                    elif otype == 'Third Base': data['3b_umpire'] = name
+                    otype = official.get("officialType")
+                    name = official.get("official", {}).get("fullName")
+                    if otype == "Home Plate":
+                        data["hp_umpire"] = name
+                    elif otype == "First Base":
+                        data["1b_umpire"] = name
+                    elif otype == "Second Base":
+                        data["2b_umpire"] = name
+                    elif otype == "Third Base":
+                        data["3b_umpire"] = name
 
         # Add temp, dayNight, elevation
-        data['weather'] = weather.get('condition')
-        data['wind'] = weather.get('wind')
-        data['temp'] = weather.get('temp')
-        data['dayNight'] = datetime_info.get('dayNight')
-        data['elevation'] = venue_info.get('location', {}).get('elevation')
+        data["weather"] = weather.get("condition")
+        data["wind"] = weather.get("wind")
+        data["temp"] = weather.get("temp")
+        data["dayNight"] = datetime_info.get("dayNight")
+        data["elevation"] = venue_info.get("location", {}).get("elevation")
 
-        fp_dt_str = datetime_info.get('firstPitch') or datetime_info.get('time')
+        fp_dt_str = datetime_info.get("firstPitch") or datetime_info.get("time")
         if fp_dt_str:
-             try: fp_dt = pd.to_datetime(fp_dt_str); data['first_pitch'] = fp_dt.strftime('%I:%M %p')
-             except Exception: data['first_pitch'] = fp_dt_str
-        else: data['first_pitch'] = None
-        data['scraped_timestamp'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            try:
+                fp_dt = pd.to_datetime(fp_dt_str)
+                data["first_pitch"] = fp_dt.strftime("%I:%M %p")
+            except Exception:
+                data["first_pitch"] = fp_dt_str
+        else:
+            data["first_pitch"] = None
 
-        if not data.get('away_team') or not data.get('home_team') or not data.get('game_date'): logger.error(f"Missing essential data parsing gamePk {game_pk}. Skipping."); return None
-        logger.debug(f"Parsed API data for gamePk {game_pk}"); return data
-    except Exception as e: logger.error(f"Error parsing API response for gamePk {game_pk}: {e}", exc_info=True); return None
+        data["scraped_timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        if not data.get("away_team") or not data.get("home_team") or not data.get("game_date"):
+            logger.error(f"Missing essential data parsing gamePk {game_pk}. Skipping.")
+            return None
+
+        logger.debug(f"Parsed API data for gamePk {game_pk}")
+        return data
+    except Exception as e:
+        logger.error(f"Error parsing API response for gamePk {game_pk}: {e}", exc_info=True)
+        return None
 
 def save_debug_json(api_response, date_str, game_pk):
     ensure_dir(DEBUG_API_DIR)
