@@ -172,6 +172,11 @@ class StrikeoutModelConfig:
         "lineup_pct_switch",
         "lineup_top_order_count",
     ]
+    LINEUP_ROLLING_COLS = [
+        "strikeouts",
+        "plate_appearances",
+        "ops",
+    ]
     # Numeric columns that may be used without rolling (known before the game)
     ALLOWED_BASE_NUMERIC_COLS = [
         "temp",
