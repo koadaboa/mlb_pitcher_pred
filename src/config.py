@@ -143,6 +143,8 @@ class StrikeoutModelConfig:
         "bat_whiff_rate",
         "bat_ops",
         "bat_woba",
+        "team_ops_vs_LHP",
+        "team_ops_vs_RHP",
     ]
     # Numeric columns that may be used without rolling (known before the game)
     ALLOWED_BASE_NUMERIC_COLS = [
