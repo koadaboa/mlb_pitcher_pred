@@ -38,6 +38,11 @@ def setup_test_db(tmp_path: Path, cross_season: bool = False) -> Path:
             }
         )
         matchup_df = pitcher_df.copy()
+        matchup_df["bat_avg"] = [0.25, 0.26, 0.27]
+        matchup_df["bat_obp"] = [0.32, 0.33, 0.34]
+        matchup_df["bat_slugging"] = [0.40, 0.41, 0.42]
+        matchup_df["bat_ops"] = [0.72, 0.74, 0.76]
+        matchup_df["bat_woba"] = [0.31, 0.32, 0.33]
         pitcher_df.to_sql("game_level_starting_pitchers", conn, index=False)
         matchup_df.to_sql("game_level_matchup_details", conn, index=False)
 
@@ -73,6 +78,11 @@ def test_feature_pipeline(tmp_path: Path) -> None:
         assert any(col == "fip_mean_3" for col in df.columns)
         assert "slider_pct_mean_3" in df.columns
         assert "team_k_rate_mean_3" in df.columns
+        assert "opp_bat_avg_mean_3" in df.columns
+        assert "opp_bat_obp_mean_3" in df.columns
+        assert "opp_bat_slugging_mean_3" in df.columns
+        assert "opp_bat_ops_mean_3" in df.columns
+        assert "opp_bat_woba_mean_3" in df.columns
         assert all("_mean_5" not in c for c in df.columns)
         # ensure raw game stats are dropped
         assert "pitches" not in df.columns
