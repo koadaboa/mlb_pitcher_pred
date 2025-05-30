@@ -24,6 +24,7 @@ BATCH_SIZE = 5000
 
 # --- Helper functions ---
 
+
 def filter_starting_pitchers(conn) -> pd.DataFrame:
     """Return game/pitcher combos likely representing true starters."""
     query = """
@@ -43,7 +44,6 @@ def load_batter_game(conn, game_pk: int, pitcher: int) -> pd.DataFrame:
     """Load all batter rows for a pitcher in one game."""
     q = "SELECT * FROM statcast_batters WHERE game_pk = ? AND pitcher = ?"
     return pd.read_sql_query(q, conn, params=(game_pk, pitcher))
-
 
 
 def compute_batter_rows(df: pd.DataFrame) -> list[Dict]:
@@ -86,24 +86,26 @@ def compute_batter_rows(df: pd.DataFrame) -> list[Dict]:
 
         behind_mask = last_pitch["strikes"] > last_pitch["balls"]
         ahead_mask = last_pitch["balls"] > last_pitch["strikes"]
-        strikeout_rate_behind = (
-            strikeouts if behind_mask.sum() else np.nan
-        )
+        strikeout_rate_behind = strikeouts if behind_mask.sum() else np.nan
         if behind_mask.sum():
             strikeout_rate_behind = (
-                last_pitch[behind_mask]["events"].isin(["strikeout", "strikeout_double_play"]).mean()
+                last_pitch[behind_mask]["events"]
+                .isin(["strikeout", "strikeout_double_play"])
+                .mean()
             )
-        strikeout_rate_ahead = (
-            strikeouts if ahead_mask.sum() else np.nan
-        )
+        strikeout_rate_ahead = strikeouts if ahead_mask.sum() else np.nan
         if ahead_mask.sum():
             strikeout_rate_ahead = (
-                last_pitch[ahead_mask]["events"].isin(["strikeout", "strikeout_double_play"]).mean()
+                last_pitch[ahead_mask]["events"]
+                .isin(["strikeout", "strikeout_double_play"])
+                .mean()
             )
 
         pitches = len(bdf)
         swings = bdf["description"].str.contains("swing", case=False, na=False)
-        whiffs = bdf["description"].str.contains("swinging_strike", case=False, na=False)
+        whiffs = bdf["description"].str.contains(
+            "swinging_strike", case=False, na=False
+        )
         swings_total = swings.sum()
         whiffs_total = whiffs.sum()
 
@@ -111,6 +113,7 @@ def compute_batter_rows(df: pd.DataFrame) -> list[Dict]:
             "game_pk": first["game_pk"],
             "batter_id": batter_id,
             "pitcher_id": first["pitcher"],
+            "stand": bdf.iloc[0]["stand"],
             "pitching_team": pitching_team,
             "opponent_team": opponent_team,
             "plate_appearances": plate_appearances,
@@ -121,7 +124,9 @@ def compute_batter_rows(df: pd.DataFrame) -> list[Dict]:
             "whiff_rate": whiffs_total / swings_total if swings_total else np.nan,
             "called_strike_rate": bdf["description"].eq("called_strike").mean(),
             "strikeouts": strikeouts,
-            "strikeout_rate": strikeouts / plate_appearances if plate_appearances else np.nan,
+            "strikeout_rate": (
+                strikeouts / plate_appearances if plate_appearances else np.nan
+            ),
             "strikeout_rate_behind": strikeout_rate_behind,
             "strikeout_rate_ahead": strikeout_rate_ahead,
             "hits": hits,
@@ -135,11 +140,17 @@ def compute_batter_rows(df: pd.DataFrame) -> list[Dict]:
 
         # --- Rate stats ---
         row["avg"] = hits / at_bats if at_bats else np.nan
-        row["obp"] = (hits + walks + hbp) / plate_appearances if plate_appearances else np.nan
+        row["obp"] = (
+            (hits + walks + hbp) / plate_appearances if plate_appearances else np.nan
+        )
         row["slugging"] = (
-            singles + 2 * doubles + 3 * triples + 4 * home_runs
-        ) / at_bats if at_bats else np.nan
-        row["ops"] = row["obp"] + row["slugging"] if plate_appearances and at_bats else np.nan
+            (singles + 2 * doubles + 3 * triples + 4 * home_runs) / at_bats
+            if at_bats
+            else np.nan
+        )
+        row["ops"] = (
+            row["obp"] + row["slugging"] if plate_appearances and at_bats else np.nan
+        )
 
         if "woba_value" in bdf.columns and "woba_denom" in bdf.columns:
             woba_denom = bdf["woba_denom"].sum()
@@ -150,7 +161,9 @@ def compute_batter_rows(df: pd.DataFrame) -> list[Dict]:
     return rows
 
 
-def compute_game_features(game_pk: int, pitcher: int, db_path: Path) -> Optional[list[Dict]]:
+def compute_game_features(
+    game_pk: int, pitcher: int, db_path: Path
+) -> Optional[list[Dict]]:
     with DBConnection(db_path) as conn:
         df = load_batter_game(conn, game_pk, pitcher)
     if df.empty:

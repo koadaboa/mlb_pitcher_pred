@@ -49,11 +49,19 @@ def aggregate_from_batters(df: pd.DataFrame) -> pd.DataFrame:
             "bat_swings": swings,
             "bat_whiffs": whiffs,
             "bat_whiff_rate": whiffs / swings if swings else np.nan,
-            "bat_called_strike_rate": called_strike_total / pitches if pitches else np.nan,
+            "bat_called_strike_rate": (
+                called_strike_total / pitches if pitches else np.nan
+            ),
             "bat_strikeouts": strikeouts,
-            "bat_strikeout_rate": strikeouts / plate_appearances if plate_appearances else np.nan,
-            "bat_strikeout_rate_behind": weighted_mean(g["strikeout_rate_behind"], g["plate_appearances"]),
-            "bat_strikeout_rate_ahead": weighted_mean(g["strikeout_rate_ahead"], g["plate_appearances"]),
+            "bat_strikeout_rate": (
+                strikeouts / plate_appearances if plate_appearances else np.nan
+            ),
+            "bat_strikeout_rate_behind": weighted_mean(
+                g["strikeout_rate_behind"], g["plate_appearances"]
+            ),
+            "bat_strikeout_rate_ahead": weighted_mean(
+                g["strikeout_rate_ahead"], g["plate_appearances"]
+            ),
             "bat_hits": hits,
             "bat_singles": singles,
             "bat_doubles": doubles,
@@ -64,16 +72,44 @@ def aggregate_from_batters(df: pd.DataFrame) -> pd.DataFrame:
         }
 
         row["bat_avg"] = hits / at_bats if at_bats else np.nan
-        row["bat_obp"] = (hits + walks + hbp) / plate_appearances if plate_appearances else np.nan
+        row["bat_obp"] = (
+            (hits + walks + hbp) / plate_appearances if plate_appearances else np.nan
+        )
         row["bat_slugging"] = (
-            singles + 2 * doubles + 3 * triples + 4 * home_runs
-        ) / at_bats if at_bats else np.nan
+            (singles + 2 * doubles + 3 * triples + 4 * home_runs) / at_bats
+            if at_bats
+            else np.nan
+        )
         row["bat_ops"] = (
             row["bat_obp"] + row["bat_slugging"]
             if pd.notna(row["bat_obp"]) and pd.notna(row["bat_slugging"])
             else np.nan
         )
         row["bat_woba"] = weighted_mean(g["woba"], g["plate_appearances"])
+
+        # compute left/right batter splits
+        for hand, prefix in [("L", "L"), ("R", "R")]:
+            sub = g[g["stand"] == hand]
+            pa = sub["plate_appearances"].sum()
+            so = sub["strikeouts"].sum()
+            hits_h = sub["hits"].sum()
+            singles_h = sub["singles"].sum()
+            doubles_h = sub["doubles"].sum()
+            triples_h = sub["triples"].sum()
+            hr_h = sub["home_runs"].sum()
+            walks_h = sub["walks"].sum()
+            hbp_h = sub["hbp"].sum()
+            at_bats_h = sub["at_bats"].sum()
+            obp_h = (hits_h + walks_h + hbp_h) / pa if pa else np.nan
+            slg_h = (
+                (singles_h + 2 * doubles_h + 3 * triples_h + 4 * hr_h) / at_bats_h
+                if at_bats_h
+                else np.nan
+            )
+            ops_h = obp_h + slg_h if pd.notna(obp_h) and pd.notna(slg_h) else np.nan
+            row[f"bat_{prefix}_plate_appearances"] = pa
+            row[f"bat_{prefix}_strikeout_rate"] = so / pa if pa else np.nan
+            row[f"bat_{prefix}_ops"] = ops_h
 
         rows.append(row)
 
@@ -82,12 +118,31 @@ def aggregate_from_batters(df: pd.DataFrame) -> pd.DataFrame:
 
 def aggregate_team_batting(db_path: Path = DBConfig.PATH) -> pd.DataFrame:
     with DBConnection(db_path) as conn:
-        batter_df = pd.read_sql_query("SELECT * FROM game_level_batters_vs_starters", conn)
+        batter_df = pd.read_sql_query(
+            "SELECT * FROM game_level_batters_vs_starters", conn
+        )
+        starter_df = pd.read_sql_query(
+            "SELECT game_pk, pitcher_hand FROM game_level_starting_pitchers",
+            conn,
+        )
     if batter_df.empty:
         logger.warning("No rows found in game_level_batters_vs_starters")
         team_df = pd.DataFrame()
     else:
         team_df = aggregate_from_batters(batter_df)
+        team_df = team_df.merge(starter_df, on="game_pk", how="left")
+        team_df["bat_ops_vs_LHP"] = np.where(
+            team_df["pitcher_hand"] == "L", team_df["bat_ops"], np.nan
+        )
+        team_df["bat_ops_vs_RHP"] = np.where(
+            team_df["pitcher_hand"] == "R", team_df["bat_ops"], np.nan
+        )
+        team_df["bat_k_rate_vs_LHP"] = np.where(
+            team_df["pitcher_hand"] == "L", team_df["bat_strikeout_rate"], np.nan
+        )
+        team_df["bat_k_rate_vs_RHP"] = np.where(
+            team_df["pitcher_hand"] == "R", team_df["bat_strikeout_rate"], np.nan
+        )
     with DBConnection(db_path) as conn:
         team_df.to_sql(
             "game_level_team_batting",

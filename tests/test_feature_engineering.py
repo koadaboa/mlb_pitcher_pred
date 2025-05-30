@@ -67,6 +67,7 @@ def setup_test_db(tmp_path: Path, cross_season: bool = False) -> Path:
                 "game_pk": [1, 2, 3],
                 "pitcher_id": [10, 10, 10],
                 "opponent_team": ["A", "B", "C"],
+                "stand": ["R", "L", "L"],
                 "plate_appearances": [4, 4, 4],
                 "strikeouts": [1, 2, 1],
                 "ops": [0.7, 0.75, 0.72],
@@ -202,6 +203,18 @@ def test_log_features_added(tmp_path: Path) -> None:
     with sqlite3.connect(db_path) as conn:
         df = pd.read_sql_query("SELECT * FROM model_features", conn)
         assert any(c.startswith("log_") for c in df.columns)
+
+
+def test_split_metrics_rolled(tmp_path: Path) -> None:
+    db_path = setup_test_db(tmp_path)
+
+    engineer_pitcher_features(db_path=db_path)
+    engineer_opponent_features(db_path=db_path)
+
+    with sqlite3.connect(db_path) as conn:
+        df = pd.read_sql_query("SELECT * FROM rolling_pitcher_vs_team", conn)
+        assert "team_hand_bat_ops_vs_RHP_mean_3" in df.columns
+        assert "team_hand_bat_k_rate_vs_LHP_mean_3" in df.columns
 
 
 def test_base_context_fields_kept(tmp_path: Path) -> None:
