@@ -130,6 +130,9 @@ class StrikeoutModelConfig:
         "avg_release_speed",
         "max_release_speed",
         "avg_spin_rate",
+        "offspeed_to_fastball_ratio",
+        "fastball_then_breaking_rate",
+        "unique_pitch_types",
     ]
     CONTEXT_ROLLING_COLS = [
         "strikeouts",
@@ -141,8 +144,13 @@ class StrikeoutModelConfig:
         "park_factor",
         "team_k_rate",
         "bat_whiff_rate",
+        "bat_avg",
+        "bat_obp",
+        "bat_slugging",
         "bat_ops",
         "bat_woba",
+        "team_ops_vs_LHP",
+        "team_ops_vs_RHP",
     ]
     # Numeric columns that may be used without rolling (known before the game)
     ALLOWED_BASE_NUMERIC_COLS = [

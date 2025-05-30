@@ -35,9 +35,17 @@ def setup_test_db(tmp_path: Path, cross_season: bool = False) -> Path:
                 "pitches": [80, 85, 90],
                 "fip": [4.0, 3.5, 3.0],
                 "slider_pct": [0.2, 0.25, 0.3],
+                "offspeed_to_fastball_ratio": [0.5, 0.6, 0.55],
+                "fastball_then_breaking_rate": [0.3, 0.4, 0.35],
+                "unique_pitch_types": [3, 4, 3],
             }
         )
         matchup_df = pitcher_df.copy()
+        matchup_df["bat_avg"] = [0.25, 0.26, 0.27]
+        matchup_df["bat_obp"] = [0.32, 0.33, 0.34]
+        matchup_df["bat_slugging"] = [0.40, 0.41, 0.42]
+        matchup_df["bat_ops"] = [0.72, 0.74, 0.76]
+        matchup_df["bat_woba"] = [0.31, 0.32, 0.33]
         pitcher_df.to_sql("game_level_starting_pitchers", conn, index=False)
         matchup_df.to_sql("game_level_matchup_details", conn, index=False)
 
@@ -48,6 +56,7 @@ def setup_test_db(tmp_path: Path, cross_season: bool = False) -> Path:
                 "opponent_team": ["A", "B", "C"],
                 "plate_appearances": [4, 4, 4],
                 "strikeouts": [1, 2, 1],
+                "ops": [0.7, 0.75, 0.72],
             }
         )
         batter_df.to_sql("game_level_batters_vs_starters", conn, index=False)
@@ -72,6 +81,9 @@ def test_feature_pipeline(tmp_path: Path) -> None:
         assert any(col == "strikeouts_mean_3" for col in df.columns)
         assert any(col == "fip_mean_3" for col in df.columns)
         assert "slider_pct_mean_3" in df.columns
+        assert "offspeed_to_fastball_ratio_mean_3" in df.columns
+        assert "fastball_then_breaking_rate_mean_3" in df.columns
+        assert "unique_pitch_types_mean_3" in df.columns
         assert "team_k_rate_mean_3" in df.columns
         assert "strikeouts_mean_20" in df.columns
         assert "fip_mean_100" in df.columns
