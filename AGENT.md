@@ -6,7 +6,8 @@ This repository contains a machine learning pipeline for predicting MLB starting
 ## 📁 Important Files
 - `src/create_starting_pitcher_table.py`: Aggregates pitcher-level stats per game.
 - `src/create_batter_vs_starter_table.py`: Aggregates batter performance against the starter.
-- `src/create_pitcher_vs_team_stats.py`: Merges team-level performance metrics with pitcher data.
+- `src/create_pitcher_vs_team_stats.py`: Joins per-game pitcher stats with
+  aggregated opponent batting metrics to produce `game_level_matchup_stats`.
 - `src/features.py`: Feature engineering logic (rolling averages, ratios, etc.)
 - `src/train_model.py`: Training pipeline using LightGBM, with evaluation metrics.
 - `data/`: Contains raw and processed SQLite databases.
