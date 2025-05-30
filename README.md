@@ -110,7 +110,7 @@ included for each game.
 
    * Predict target: strikeouts (`K`) in a game
    * Model: LightGBM using a Poisson objective with hyperparameter tuning (`src/tune_lightgbm.py`)
-   * Alternative model: XGBoost (`src/train_xgb_model.py`)
+   * Alternative model: XGBoost (`src/train_xgb_model.py`) with tree-based feature selection
    * Additional model: CatBoost (`src/train_catboost.py`)
    * Evaluation metrics: MAE, RMSE, R^2
 
