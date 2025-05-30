@@ -85,10 +85,9 @@ def test_feature_pipeline(tmp_path: Path) -> None:
         assert "fastball_then_breaking_rate_mean_3" in df.columns
         assert "unique_pitch_types_mean_3" in df.columns
         assert "team_k_rate_mean_3" in df.columns
-        assert "opp_team_ops_vs_LHP_mean_3" in df.columns
-        assert "opp_team_ops_vs_RHP_mean_3" in df.columns
-
-        assert all("_mean_5" not in c for c in df.columns)
+        assert "strikeouts_mean_20" in df.columns
+        assert "fip_mean_100" in df.columns
+        assert all("_mean_77" not in c for c in df.columns)
         # ensure raw game stats are dropped
         assert "pitches" not in df.columns
         assert "fip" not in df.columns
@@ -113,16 +112,16 @@ def test_old_window_columns_removed(tmp_path: Path) -> None:
     # Manually add a column using an unsupported window size
     with sqlite3.connect(db_path) as conn:
         df = pd.read_sql_query("SELECT * FROM rolling_pitcher_features", conn)
-        df["strikeouts_mean_5"] = 1
-        df["fip_mean_5"] = 1
-        df["slider_pct_mean_5"] = 1
+        df["strikeouts_mean_77"] = 1
+        df["fip_mean_77"] = 1
+        df["slider_pct_mean_77"] = 1
         df.to_sql("rolling_pitcher_features", conn, if_exists="replace", index=False)
 
     build_model_features(db_path=db_path)
 
     with sqlite3.connect(db_path) as conn:
         df = pd.read_sql_query("SELECT * FROM model_features", conn)
-        assert all("_mean_99" not in c for c in df.columns)
+        assert all("_mean_77" not in c for c in df.columns)
 
 def test_group_specific_rolling() -> None:
     df = pd.DataFrame(

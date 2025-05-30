@@ -75,6 +75,7 @@ def _add_group_rolling(
     windows: List[int] | None = None,
     n_jobs: int | None = None,
     numeric_cols: Sequence[str] | None = None,
+    ewm_halflife: float | None = None,
 ) -> pd.DataFrame:
     """Compute rolling stats for specified groups.
 
@@ -93,6 +94,10 @@ def _add_group_rolling(
     numeric_cols : Sequence[str], optional
         Restrict calculations to these numeric columns. If ``None`` (default),
         all numeric columns except identifiers are used.
+    ewm_halflife : float, optional
+        If provided, additionally compute exponentially weighted means using the
+        specified ``halflife``. The resulting columns are suffixed with
+        ``ewm_<halflife>``.
     """
     if windows is None:
         windows = StrikeoutModelConfig.WINDOW_SIZES
@@ -129,6 +134,12 @@ def _add_group_rolling(
             )
             stats[f"{prefix}{col}_momentum_{window}"] = shifted - mean
             parts.append(stats)
+        if ewm_halflife is not None:
+            ewm = grouped.apply(lambda x: x.shift(1).ewm(halflife=ewm_halflife, min_periods=1).mean())
+            ewm = ewm.reset_index(level=list(range(len(group_cols))), drop=True)
+            ewm_stats = pd.DataFrame({f"{prefix}{col}_ewm_{int(ewm_halflife)}": ewm})
+            ewm_stats[f"{prefix}{col}_momentum_ewm_{int(ewm_halflife)}"] = shifted - ewm
+            parts.append(ewm_stats)
         return pd.concat(parts, axis=1)
 
     frames = [df]

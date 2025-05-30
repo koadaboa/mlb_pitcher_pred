@@ -104,7 +104,7 @@ class StrikeoutModelConfig:
     RANDOM_STATE = 3
     # Dramatically smaller windows to keep feature counts manageable
     # Expanded windows to provide more temporal context
-    WINDOW_SIZES = [3, 5, 10, 50]
+    WINDOW_SIZES = [3, 5, 10, 20, 50, 100]
     # Limit which numeric columns get rolling stats to avoid huge tables
     PITCHER_ROLLING_COLS = [
         "strikeouts",
