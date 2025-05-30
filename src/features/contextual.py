@@ -18,6 +18,7 @@ from src.config import (
     StrikeoutModelConfig,
     LogConfig,
     BALLPARK_FACTORS,
+    BALLPARK_COORDS,
 )
 
 logger = setup_logger(
@@ -58,6 +59,22 @@ TEAM_TO_BALLPARK = {
     "TOR": "Rogers Centre",
     "WSH": "Nationals Park",
 }
+
+
+def _haversine_distance(coord1: tuple[float, float] | None,
+                         coord2: tuple[float, float] | None) -> float:
+    """Return great-circle distance in miles between two lat/lon coordinates."""
+    if not coord1 or not coord2:
+        return np.nan
+
+    lat1, lon1 = np.radians(coord1)
+    lat2, lon2 = np.radians(coord2)
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    a = np.sin(dlat / 2) ** 2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon / 2) ** 2
+    c = 2 * np.arcsin(np.sqrt(a))
+    earth_radius_miles = 3958.8
+    return float(earth_radius_miles * c)
 
 
 def _parse_wind_speed(value: str | None) -> float:
@@ -292,6 +309,21 @@ def engineer_contextual_features(
             df["elevation"] = pd.to_numeric(df["elevation"], errors="coerce")
         if "humidity" in df.columns:
             df["humidity"] = pd.to_numeric(df["humidity"], errors="coerce")
+
+        df["day_of_week"] = df["game_date"].dt.dayofweek
+
+        def _compute_distance(row: pd.Series) -> float:
+            if "pitching_team" in row and row["pitching_team"] != row["home_team"]:
+                away = row["pitching_team"]
+            else:
+                away = row.get("opponent_team")
+            home_stadium = TEAM_TO_BALLPARK.get(row["home_team"])
+            away_stadium = TEAM_TO_BALLPARK.get(away)
+            home_coord = BALLPARK_COORDS.get(home_stadium)
+            away_coord = BALLPARK_COORDS.get(away_stadium)
+            return _haversine_distance(away_coord, home_coord)
+
+        df["travel_distance"] = df.apply(_compute_distance, axis=1)
 
         df["stadium"] = df["home_team"].map(TEAM_TO_BALLPARK)
         df["park_factor"] = df["stadium"].map(BALLPARK_FACTORS)

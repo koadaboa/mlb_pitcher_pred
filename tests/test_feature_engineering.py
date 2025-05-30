@@ -99,6 +99,8 @@ def test_feature_pipeline(tmp_path: Path) -> None:
         # encoded categorical columns should be numeric
         assert "home_team_enc" in df.columns
         assert pd.api.types.is_numeric_dtype(df["home_team_enc"])
+        assert "day_of_week" in df.columns
+        assert "travel_distance" in df.columns
 
 
 def test_old_window_columns_removed(tmp_path: Path) -> None:
@@ -172,6 +174,8 @@ def test_base_context_fields_kept(tmp_path: Path) -> None:
         df = pd.read_sql_query("SELECT * FROM model_features", conn)
         assert "park_factor" in df.columns
         assert "log_park_factor" in df.columns
+        assert "day_of_week" in df.columns
+        assert "travel_distance" in df.columns
 
 
 def test_rest_days_across_seasons(tmp_path: Path) -> None:
