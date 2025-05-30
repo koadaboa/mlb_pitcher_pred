@@ -57,6 +57,7 @@ def train_lgbm(
         importance_threshold=StrikeoutModelConfig.IMPORTANCE_THRESHOLD,
         importance_method="lightgbm",
     )
+    logger.info("Using %d features", len(features))
     X_train = train_df[features]
     y_train = train_df[target]
     X_test = test_df[features]
@@ -108,6 +109,7 @@ def cross_validate_lgbm(
         importance_threshold=StrikeoutModelConfig.IMPORTANCE_THRESHOLD,
         importance_method="lightgbm",
     )
+    logger.info("Using %d features", len(features))
 
     X = df.sort_values("game_date")[features]
     y = df.sort_values("game_date")[target]

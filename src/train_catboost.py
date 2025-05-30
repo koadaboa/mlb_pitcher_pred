@@ -43,7 +43,14 @@ def train_catboost(
     test_df: pd.DataFrame,
     target: str = StrikeoutModelConfig.TARGET_VARIABLE,
 ) -> Tuple[CatBoostRegressor, Dict[str, float]]:
-    numeric_features, _ = select_features(train_df, target)
+    numeric_features, _ = select_features(
+        train_df,
+        target,
+        prune_importance=True,
+        importance_threshold=StrikeoutModelConfig.IMPORTANCE_THRESHOLD,
+        importance_method="lightgbm",
+    )
+    logger.info("Using %d numeric features", len(numeric_features))
     cat_cols = [
         c
         for c in train_df.columns
@@ -54,6 +61,7 @@ def train_catboost(
         )
     ]
     features = numeric_features + cat_cols
+    logger.info("Using %d total features", len(features))
 
     _prepare_categoricals(train_df, cat_cols)
     _prepare_categoricals(test_df, cat_cols)

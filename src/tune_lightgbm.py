@@ -97,6 +97,7 @@ def tune_lgbm(
     df = load_dataset(db_path)
     train_df, _ = split_by_year(df)
     features, _ = select_features(train_df, StrikeoutModelConfig.TARGET_VARIABLE)
+    logger.info("Using %d features", len(features))
     X = train_df[features]
     y = train_df[StrikeoutModelConfig.TARGET_VARIABLE]
 
