@@ -170,6 +170,7 @@ class StrikeoutModelConfig:
 
     # --- LightGBM Hyperparameter Defaults ---
     LGBM_BASE_PARAMS = {
+        'objective': 'poisson',
         'learning_rate': 0.03786686371695319,
         'num_leaves': 82,
         'max_depth': 3,
