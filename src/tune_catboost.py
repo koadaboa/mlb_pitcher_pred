@@ -94,7 +94,15 @@ def tune_catboost(
 ) -> Dict[str, float]:
     df = load_dataset(db_path)
     train_df, _ = split_by_year(df)
-    numeric_features, _ = select_features(train_df, StrikeoutModelConfig.TARGET_VARIABLE)
+
+    numeric_features, _ = select_features(
+        train_df,
+        StrikeoutModelConfig.TARGET_VARIABLE,
+        prune_importance=True,
+        importance_threshold=StrikeoutModelConfig.IMPORTANCE_THRESHOLD,
+        importance_method="lightgbm",
+    )
+
     logger.info("Using %d numeric features", len(numeric_features))
     cat_cols = [
         c
