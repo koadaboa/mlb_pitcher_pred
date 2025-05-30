@@ -153,6 +153,13 @@ class StrikeoutModelConfig:
         "bat_woba",
         "team_ops_vs_LHP",
         "team_ops_vs_RHP",
+        "lineup_woba",
+        "lineup_k_rate",
+        "lineup_ops",
+        "lineup_pct_left",
+        "lineup_pct_right",
+        "lineup_pct_switch",
+        "lineup_top_order_count",
     ]
     # Numeric columns that may be used without rolling (known before the game)
     ALLOWED_BASE_NUMERIC_COLS = [

@@ -224,6 +224,35 @@ def engineer_opponent_features(
             df = df.merge(hand_df, on=["game_pk", "opponent_team", "pitcher_hand"], how="left")
             df = df.merge(ops_pivot, on=["game_pk", "opponent_team"], how="left")
 
+        lineup_query = "SELECT game_pk, opponent_team, batting_order, batter_side, woba, strikeout_rate, ops FROM game_starting_lineups"
+        lineup_df = pd.read_sql_query(lineup_query, conn)
+        if not lineup_df.empty:
+            lineup_df["weight"] = 10 - lineup_df["batting_order"]
+
+            def _weighted_mean(series: pd.Series, weights: pd.Series) -> float:
+                mask = series.notna() & weights.notna()
+                if not mask.any():
+                    return np.nan
+                return float(np.average(series[mask], weights=weights[mask]))
+
+            agg = (
+                lineup_df
+                .groupby(["game_pk", "opponent_team"])
+                .apply(
+                    lambda g: pd.Series({
+                        "lineup_woba": _weighted_mean(g["woba"], g["weight"]),
+                        "lineup_k_rate": _weighted_mean(g["strikeout_rate"], g["weight"]),
+                        "lineup_ops": _weighted_mean(g["ops"], g["weight"]),
+                        "lineup_pct_left": g.loc[g["batter_side"] == "L", "weight"].sum() / g["weight"].sum(),
+                        "lineup_pct_right": g.loc[g["batter_side"] == "R", "weight"].sum() / g["weight"].sum(),
+                        "lineup_pct_switch": g.loc[g["batter_side"] == "S", "weight"].sum() / g["weight"].sum(),
+                        "lineup_top_order_count": (g["batting_order"] <= 3).sum(),
+                    })
+                )
+                .reset_index()
+            )
+            df = df.merge(agg, on=["game_pk", "opponent_team"], how="left")
+
         if df.empty:
             logger.warning("No data found in %s", source_table)
             return df
