@@ -177,7 +177,8 @@ def engineer_opponent_features(
                    b.opponent_team,
                    s.pitcher_hand,
                    SUM(b.strikeouts) AS strikeouts,
-                   SUM(b.plate_appearances) AS plate_appearances
+                   SUM(b.plate_appearances) AS plate_appearances,
+                   SUM(b.ops * b.plate_appearances) / SUM(b.plate_appearances) AS team_ops
             FROM game_level_batters_vs_starters b
             JOIN game_level_starting_pitchers s
               ON b.game_pk = s.game_pk AND b.pitcher_id = s.pitcher_id
@@ -186,8 +187,14 @@ def engineer_opponent_features(
         hand_df = pd.read_sql_query(hand_query, conn)
         if not hand_df.empty:
             hand_df["team_k_rate"] = hand_df["strikeouts"] / hand_df["plate_appearances"]
+            ops_pivot = (
+                hand_df.pivot(index=["game_pk", "opponent_team"], columns="pitcher_hand", values="team_ops")
+                .rename(columns={"L": "team_ops_vs_LHP", "R": "team_ops_vs_RHP"})
+                .reset_index()
+            )
             hand_df = hand_df[["game_pk", "opponent_team", "pitcher_hand", "team_k_rate"]]
             df = df.merge(hand_df, on=["game_pk", "opponent_team", "pitcher_hand"], how="left")
+            df = df.merge(ops_pivot, on=["game_pk", "opponent_team"], how="left")
 
         if df.empty:
             logger.warning("No data found in %s", source_table)
