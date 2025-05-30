@@ -40,6 +40,8 @@ def setup_test_db(tmp_path: Path, cross_season: bool = False) -> Path:
                 "slider_pct": [0.2, 0.25, 0.3],
                 "offspeed_to_fastball_ratio": [0.5, 0.6, 0.55],
                 "fastball_then_breaking_rate": [0.3, 0.4, 0.35],
+                "zone_pct": [0.5, 0.55, 0.6],
+                "hard_hit_rate": [0.3, 0.25, 0.2],
                 "unique_pitch_types": [3, 4, 3],
                 "zone_pct": [0.5, 0.55, 0.6],
                 "chase_rate": [0.2, 0.25, 0.3],
@@ -74,16 +76,11 @@ def setup_test_db(tmp_path: Path, cross_season: bool = False) -> Path:
 
         lineup_df = pd.DataFrame(
             {
-                "game_pk": [1, 1, 1, 2, 2, 2, 3, 3, 3],
-                "game_date": pd.to_datetime([dates[0]] * 3 + [dates[1]] * 3 + [dates[2]] * 3),
-                "opponent_team": ["A"] * 3 + ["B"] * 3 + ["C"] * 3,
-                "batting_order": [1, 2, 3] * 3,
-                "plate_appearances": [4] * 9,
-                "strikeouts": [1, 0, 1, 2, 1, 2, 1, 1, 1],
-                "ops": [0.8, 0.75, 0.7, 0.85, 0.8, 0.78, 0.82, 0.79, 0.76],
+                "game_pk": [1, 2, 3],
+                "pitcher_id": [10, 10, 10],
+                "lineup_avg_ops": [0.72, 0.73, 0.74],
             }
         )
-
         lineup_df.to_sql("game_starting_lineups", conn, index=False)
     return db_path
 
@@ -110,6 +107,9 @@ def test_feature_pipeline(tmp_path: Path) -> None:
         assert "offspeed_to_fastball_ratio_mean_3" in df.columns
         assert "fastball_then_breaking_rate_mean_3" in df.columns
         assert "unique_pitch_types_mean_3" in df.columns
+        assert "zone_pct_mean_3" in df.columns
+        assert "hard_hit_rate_mean_3" in df.columns
+        assert "lineup_avg_ops_mean_3" in df.columns
         assert "team_k_rate_mean_3" in df.columns
         assert "opp_lineup_woba_mean_3" in df.columns
         assert "opp_lineup_pct_left_mean_3" in df.columns
@@ -236,19 +236,11 @@ def test_rest_days_across_seasons(tmp_path: Path) -> None:
         assert df.loc[1, "rest_days"] == 186
         assert df.loc[2, "rest_days"] == 7
 
-
-def test_new_pitcher_metrics_in_rolling(tmp_path: Path) -> None:
+def test_engineer_lineup_trends(tmp_path: Path) -> None:
     db_path = setup_test_db(tmp_path)
 
-    engineer_pitcher_features(db_path=db_path)
+    engineer_lineup_trends(db_path=db_path)
 
     with sqlite3.connect(db_path) as conn:
-        df = pd.read_sql_query("SELECT * FROM rolling_pitcher_features", conn)
-        assert "zone_pct_mean_3" in df.columns
-        assert "chase_rate_mean_3" in df.columns
-        assert "avg_launch_speed_mean_3" in df.columns
-        assert "max_launch_speed_mean_3" in df.columns
-        assert "avg_launch_angle_mean_3" in df.columns
-        assert "max_launch_angle_mean_3" in df.columns
-        assert "hard_hit_rate_mean_3" in df.columns
-        assert "barrel_rate_mean_3" in df.columns
+        df = pd.read_sql_query("SELECT * FROM lineup_trends", conn)
+        assert "lineup_avg_ops_mean_3" in df.columns

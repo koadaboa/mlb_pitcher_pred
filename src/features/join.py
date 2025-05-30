@@ -34,7 +34,7 @@ def build_model_features(
     pitcher_table: str = "rolling_pitcher_features",
     opp_table: str = "rolling_pitcher_vs_team",
     context_table: str = "contextual_features",
-    lineup_table: str = "rolling_lineup_features",
+    lineup_table: str = "lineup_trends",
     target_table: str = "model_features",
     year: int | None = None,
     rebuild: bool = False,
@@ -78,7 +78,7 @@ def build_model_features(
 
         df = pitcher_df.merge(opp_df, on=["game_pk", "pitcher_id"], how="left")
         df = df.merge(ctx_df, on=["game_pk", "pitcher_id"], how="left")
-        df = df.merge(lineup_df, on=["game_pk", "opponent_team"], how="left")
+        df = df.merge(lineup_df, on=["game_pk", "pitcher_id"], how="left")
 
         # Deduplicate any columns that were suffixed during the merges
         dup_cols = [c for c in df.columns if c.endswith("_x") or c.endswith("_y")]
