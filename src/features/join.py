@@ -75,6 +75,22 @@ def build_model_features(
         df = pitcher_df.merge(opp_df, on=["game_pk", "pitcher_id"], how="left")
         df = df.merge(ctx_df, on=["game_pk", "pitcher_id"], how="left")
 
+        # Deduplicate any columns that were suffixed during the merges
+        dup_cols = [c for c in df.columns if c.endswith("_x") or c.endswith("_y")]
+        for col in dup_cols:
+            base = col[:-2]
+            alt = base + ("_y" if col.endswith("_x") else "_x")
+            if base not in df.columns:
+                if alt in df.columns:
+                    if df[col].equals(df[alt]):
+                        df = df.drop(columns=[alt])
+                    else:
+                        df[col] = df[col].combine_first(df[alt])
+                        df = df.drop(columns=[alt])
+                df = df.rename(columns={col: base})
+            else:
+                df = df.drop(columns=[col])
+
         drop_ump_cols = [
             c
             for c in df.columns
