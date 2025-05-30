@@ -48,6 +48,7 @@ def add_rolling_features(
     date_col: str,
     windows: List[int] | None = None,
     numeric_cols: Sequence[str] | None = None,
+    ewm_halflife: float | None = None,
 ) -> pd.DataFrame:
     """Add rolling statistics and momentum features to ``df``.
 
@@ -64,6 +65,9 @@ def add_rolling_features(
     numeric_cols : Sequence[str], optional
         Limit calculations to these numeric columns. If ``None`` (default), use
         all numeric columns except identifiers.
+    ewm_halflife : float, optional
+        If given, additionally compute exponentially weighted means using this
+        ``halflife`` and add ``_ewm_<halflife>`` columns.
     """
     if windows is None:
         windows = StrikeoutModelConfig.WINDOW_SIZES
@@ -98,6 +102,12 @@ def add_rolling_features(
             # Momentum compares last game's value to the previous average
             stats[f"{col}_momentum_{window}"] = shifted - mean
             frames.append(stats)
+        if ewm_halflife is not None:
+            ewm = grouped.apply(lambda x: x.shift(1).ewm(halflife=ewm_halflife, min_periods=1).mean())
+            ewm = ewm.reset_index(level=0, drop=True)
+            ewm_stats = pd.DataFrame({f"{col}_ewm_{int(ewm_halflife)}": ewm})
+            ewm_stats[f"{col}_momentum_ewm_{int(ewm_halflife)}"] = shifted - ewm
+            frames.append(ewm_stats)
 
     df = pd.concat(frames, axis=1)
     return df
