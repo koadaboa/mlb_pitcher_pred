@@ -11,6 +11,7 @@ from src.features import (
 from src.features.engineer_features import add_rolling_features
 from src.config import StrikeoutModelConfig
 
+
 def setup_test_db(tmp_path: Path, cross_season: bool = False) -> Path:
     db_path = tmp_path / "test.db"
     with sqlite3.connect(db_path) as conn:
@@ -39,6 +40,14 @@ def setup_test_db(tmp_path: Path, cross_season: bool = False) -> Path:
                 "offspeed_to_fastball_ratio": [0.5, 0.6, 0.55],
                 "fastball_then_breaking_rate": [0.3, 0.4, 0.35],
                 "unique_pitch_types": [3, 4, 3],
+                "zone_pct": [0.5, 0.55, 0.6],
+                "chase_rate": [0.2, 0.25, 0.3],
+                "avg_launch_speed": [89, 90, 91],
+                "max_launch_speed": [99, 100, 101],
+                "avg_launch_angle": [10, 12, 15],
+                "max_launch_angle": [25, 30, 35],
+                "hard_hit_rate": [0.4, 0.45, 0.5],
+                "barrel_rate": [0.1, 0.12, 0.15],
             }
         )
         matchup_df = pitcher_df.copy()
@@ -151,6 +160,7 @@ def test_old_window_columns_removed(tmp_path: Path) -> None:
         df = pd.read_sql_query("SELECT * FROM model_features", conn)
         assert all("_mean_77" not in c for c in df.columns)
 
+
 def test_group_specific_rolling() -> None:
     df = pd.DataFrame(
         {
@@ -172,7 +182,10 @@ def test_group_specific_rolling() -> None:
         ewm_halflife=StrikeoutModelConfig.EWM_HALFLIFE,
     )
     # First row for pitcher 20 should not include pitcher 10 data
-    assert pd.isna(result.loc[2, "strikeouts_mean_3"]) or result.loc[2, "strikeouts_mean_3"] == 0
+    assert (
+        pd.isna(result.loc[2, "strikeouts_mean_3"])
+        or result.loc[2, "strikeouts_mean_3"] == 0
+    )
     assert f"strikeouts_ewm_{StrikeoutModelConfig.EWM_HALFLIFE}" in result.columns
 
 
@@ -219,3 +232,20 @@ def test_rest_days_across_seasons(tmp_path: Path) -> None:
         # Cross-season gap should be calculated correctly
         assert df.loc[1, "rest_days"] == 186
         assert df.loc[2, "rest_days"] == 7
+
+
+def test_new_pitcher_metrics_in_rolling(tmp_path: Path) -> None:
+    db_path = setup_test_db(tmp_path)
+
+    engineer_pitcher_features(db_path=db_path)
+
+    with sqlite3.connect(db_path) as conn:
+        df = pd.read_sql_query("SELECT * FROM rolling_pitcher_features", conn)
+        assert "zone_pct_mean_3" in df.columns
+        assert "chase_rate_mean_3" in df.columns
+        assert "avg_launch_speed_mean_3" in df.columns
+        assert "max_launch_speed_mean_3" in df.columns
+        assert "avg_launch_angle_mean_3" in df.columns
+        assert "max_launch_angle_mean_3" in df.columns
+        assert "hard_hit_rate_mean_3" in df.columns
+        assert "barrel_rate_mean_3" in df.columns

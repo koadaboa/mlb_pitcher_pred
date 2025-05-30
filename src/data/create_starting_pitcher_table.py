@@ -30,6 +30,7 @@ MAX_WORKERS = int(os.getenv("MAX_WORKERS", os.cpu_count() or 1))
 # Submit this many tasks to the pool at a time
 BATCH_SIZE = 5000
 
+
 def filter_starting_pitchers(conn) -> pd.DataFrame:
     """Return game_pk/pitcher combos likely representing true starters."""
     query = """
@@ -50,6 +51,7 @@ def load_pitcher_game(conn, game_pk: int, pitcher: int) -> pd.DataFrame:
     q = "SELECT * FROM statcast_pitchers WHERE game_pk = ? AND pitcher = ?"
     return pd.read_sql_query(q, conn, params=(game_pk, pitcher))
 
+
 def compute_game_features(game_pk: int, pitcher: int, db_path: Path) -> Optional[Dict]:
     """Load one pitcher/game from SQLite and compute features."""
     with DBConnection(db_path) as conn:
@@ -57,6 +59,7 @@ def compute_game_features(game_pk: int, pitcher: int, db_path: Path) -> Optional
     if df.empty:
         return None
     return compute_features(df)
+
 
 def compute_features(df: pd.DataFrame) -> Dict:
     df = df.sort_values(["at_bat_number", "pitch_number"])
@@ -93,6 +96,47 @@ def compute_features(df: pd.DataFrame) -> Dict:
     sinker_mask = df["pitch_type"].isin({"SI", "FT"})
     splitter_mask = df["pitch_type"].isin({"FS", "SF"})
 
+    # Determine strike zone using Statcast zone or plate_x/plate_z
+    if "zone" in df.columns:
+        in_zone = df["zone"].between(1, 9)
+    elif {"plate_x", "plate_z"}.issubset(df.columns):
+        in_zone = df["plate_x"].between(-0.83, 0.83) & df["plate_z"].between(1.5, 3.5)
+    else:
+        in_zone = pd.Series([np.nan] * len(df))
+
+    zone_pct = in_zone.mean() if not in_zone.isna().all() else np.nan
+
+    swings_all = df["description"].str.contains("swing", case=False, na=False)
+    chase_rate = (
+        swings_all[~in_zone].mean()
+        if (~in_zone).sum()
+        else np.nan if not in_zone.isna().all() else np.nan
+    )
+
+    # Contact quality metrics on balls in play
+    in_play_mask = df["type"].eq("X") if "type" in df.columns else pd.Series(False)
+    bip = df[in_play_mask]
+    avg_launch_speed = (
+        bip["launch_speed"].mean() if "launch_speed" in bip.columns else np.nan
+    )
+    max_launch_speed = (
+        bip["launch_speed"].max() if "launch_speed" in bip.columns else np.nan
+    )
+    avg_launch_angle = (
+        bip["launch_angle"].mean() if "launch_angle" in bip.columns else np.nan
+    )
+    max_launch_angle = (
+        bip["launch_angle"].max() if "launch_angle" in bip.columns else np.nan
+    )
+    hard_hit_rate = (
+        (bip["launch_speed"] >= 95).mean()
+        if "launch_speed" in bip.columns and len(bip)
+        else np.nan
+    )
+    barrel_rate = (
+        bip["barrel"].mean() if "barrel" in bip.columns and len(bip) else np.nan
+    )
+
     types = df["pitch_type"].values
     next_types = np.roll(types, -1)
     fastball_then_break = fastball_mask & np.isin(next_types, list(BREAKING_TYPES))
@@ -124,6 +168,14 @@ def compute_features(df: pd.DataFrame) -> Dict:
         "max_release_speed": df["release_speed"].max(),
         "avg_spin_rate": df["release_spin_rate"].mean(),
         "unique_pitch_types": df["pitch_type"].nunique(),
+        "zone_pct": zone_pct,
+        "chase_rate": chase_rate,
+        "avg_launch_speed": avg_launch_speed,
+        "max_launch_speed": max_launch_speed,
+        "avg_launch_angle": avg_launch_angle,
+        "max_launch_angle": max_launch_angle,
+        "hard_hit_rate": hard_hit_rate,
+        "barrel_rate": barrel_rate,
         # FIP formula without constant: (13*HR + 3*(BB+HBP) - 2*K) / IP
         "fip": (
             (
@@ -151,9 +203,7 @@ def compute_features(df: pd.DataFrame) -> Dict:
         "splitter": splitter_mask,
     }.items():
         features[f"{name}_pct"] = mask.mean()
-        features[f"{name}_whiff_rate"] = (
-            swinging[mask].mean() if mask.sum() else np.nan
-        )
+        features[f"{name}_whiff_rate"] = swinging[mask].mean() if mask.sum() else np.nan
 
     # Fastball whiff rate
     features["fastball_whiff_rate"] = (
