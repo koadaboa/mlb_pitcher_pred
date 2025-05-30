@@ -154,6 +154,11 @@ class StrikeoutModelConfig:
         "team_ops_vs_LHP",
         "team_ops_vs_RHP",
     ]
+    LINEUP_ROLLING_COLS = [
+        "strikeouts",
+        "plate_appearances",
+        "ops",
+    ]
     # Numeric columns that may be used without rolling (known before the game)
     ALLOWED_BASE_NUMERIC_COLS = [
         "temp",
