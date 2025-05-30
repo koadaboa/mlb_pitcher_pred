@@ -144,6 +144,9 @@ class StrikeoutModelConfig:
         "park_factor",
         "team_k_rate",
         "bat_whiff_rate",
+        "bat_avg",
+        "bat_obp",
+        "bat_slugging",
         "bat_ops",
         "bat_woba",
     ]
