@@ -1,6 +1,8 @@
 import sqlite3
 from pathlib import Path
 import pandas as pd
+import runpy
+import sys
 
 from src.features import (
     engineer_pitcher_features,
@@ -257,3 +259,30 @@ def test_engineer_lineup_trends(tmp_path: Path) -> None:
     with sqlite3.connect(db_path) as conn:
         df = pd.read_sql_query("SELECT * FROM lineup_trends", conn)
         assert "lineup_avg_ops_mean_3" in df.columns
+
+
+def test_run_feature_engineering_script(tmp_path: Path) -> None:
+    """Ensure the CLI pipeline creates lineup and model feature tables."""
+    db_path = setup_test_db(tmp_path)
+
+    argv = ["run_feature_engineering", "--db-path", str(db_path)]
+    orig_argv = sys.argv[:]
+    sys.argv = argv
+    try:
+        runpy.run_module("src.scripts.run_feature_engineering", run_name="__main__")
+    finally:
+        sys.argv = orig_argv
+
+    with sqlite3.connect(db_path) as conn:
+        cur = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='lineup_trends'"
+        )
+        assert cur.fetchone() is not None
+        cur = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='model_features'"
+        )
+        assert cur.fetchone() is not None
+        lineup_cols = [row[1] for row in conn.execute("PRAGMA table_info(lineup_trends)")]
+        assert "lineup_avg_ops_mean_3" in lineup_cols
+        model_cols = [row[1] for row in conn.execute("PRAGMA table_info(model_features)")]
+        assert "lineup_avg_ops_mean_3" in model_cols
