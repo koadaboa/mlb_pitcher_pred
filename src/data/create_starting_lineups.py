@@ -6,7 +6,7 @@ from typing import List, Dict, Optional
 import httpx
 import pandas as pd
 
-from src.utils import DBConnection, setup_logger
+from src.utils import DBConnection, setup_logger, table_exists
 from src.config import DBConfig, LogConfig
 
 logger = setup_logger(
@@ -63,25 +63,67 @@ def parse_lineups(game_pk: int, data: dict) -> List[Dict]:
     return rows
 
 
-def build_starting_lineups(db_path: Path = DBConfig.PATH) -> pd.DataFrame:
-    """Query the MLB API for starting lineups of all games in ``mlb_boxscores``."""
+def build_starting_lineups(
+    db_path: Path = DBConfig.PATH,
+    rebuild: bool = False,
+) -> pd.DataFrame:
+    """Query the MLB API for starting lineups of all games in ``mlb_boxscores``.
+
+    Parameters
+    ----------
+    rebuild : bool, default False
+        If ``True`` drop the existing ``game_starting_lineups`` table and rebuild
+        it from scratch.
+    """
+
     with DBConnection(db_path) as conn:
         games = pd.read_sql_query("SELECT game_pk FROM mlb_boxscores", conn)
+        if not rebuild and table_exists(conn, "game_starting_lineups"):
+            existing = pd.read_sql_query(
+                "SELECT DISTINCT game_pk FROM game_starting_lineups", conn
+            )
+            processed = set(existing["game_pk"].astype(int))
+        else:
+            processed = set()
+
     rows: List[Dict] = []
     for game_pk in games["game_pk"].unique():
+        if int(game_pk) in processed:
+            continue
         data = fetch_boxscore(int(game_pk))
         if not data:
             continue
         rows.extend(parse_lineups(int(game_pk), data))
+
+    if not rows:
+        logger.info("No new starting lineups to process")
+        return pd.DataFrame()
+
     df = pd.DataFrame(rows)
     with DBConnection(db_path) as conn:
-        df.to_sql("game_starting_lineups", conn, index=False, if_exists="replace")
+        if rebuild or not table_exists(conn, "game_starting_lineups"):
+            df.to_sql("game_starting_lineups", conn, index=False, if_exists="replace")
+        else:
+            df.to_sql("game_starting_lineups", conn, index=False, if_exists="append")
     return df
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Fetch MLB starting lineups")
+    parser.add_argument(
+        "--db-path", type=Path, default=DBConfig.PATH, help="Path to SQLite DB"
+    )
+    parser.add_argument(
+        "--rebuild",
+        action="store_true",
+        help="Drop existing lineup table and refetch all games",
+    )
+    args = parser.parse_args(argv)
+
     try:
-        df = build_starting_lineups()
+        df = build_starting_lineups(db_path=args.db_path, rebuild=args.rebuild)
         logger.info("Wrote %d starting lineup rows", len(df))
     except Exception as exc:
         logger.exception("Failed to build starting lineups: %s", exc)
