@@ -365,3 +365,62 @@ def engineer_contextual_features(
             df.to_sql(target_table, conn, if_exists="append", index=False)
         logger.info("Saved contextual features to %s", target_table)
         return df
+
+
+def engineer_lineup_trends(
+    db_path: str | None = None,
+    source_table: str = "game_starting_lineups",
+    target_table: str = "lineup_trends",
+    n_jobs: int | None = None,
+    year: int | None = None,
+    rebuild: bool = False,
+) -> pd.DataFrame:
+    """Compute rolling lineup statistics grouped by pitcher."""
+
+    db_path = db_path or DBConfig.PATH
+    logger.info("Loading lineup data from %s", source_table)
+    with DBConnection(db_path) as conn:
+        if rebuild and table_exists(conn, target_table):
+            conn.execute(f"DROP TABLE IF EXISTS {target_table}")
+            latest = None
+        else:
+            latest = get_latest_date(conn, target_table, "game_date")
+
+        query = f"SELECT * FROM {source_table}"
+        if year:
+            query += f" WHERE strftime('%Y', game_date) = '{year}'"
+        df = pd.read_sql_query(query, conn)
+
+    if df.empty:
+        logger.warning("No data found in %s", source_table)
+        return df
+
+    df["game_date"] = pd.to_datetime(df["game_date"])
+    if latest is not None:
+        df = df[df["game_date"] > latest]
+    if df.empty:
+        logger.info("No new rows to process for %s", target_table)
+        return df
+
+    numeric_cols = [
+        c
+        for c in df.select_dtypes(include=np.number).columns
+        if c not in {"game_pk", "pitcher_id"}
+    ]
+    df = _add_group_rolling(
+        df,
+        ["pitcher_id"],
+        "game_date",
+        prefix="lineup_",
+        n_jobs=n_jobs,
+        numeric_cols=numeric_cols,
+        ewm_halflife=StrikeoutModelConfig.EWM_HALFLIFE,
+    )
+
+    with DBConnection(db_path) as conn:
+        if rebuild or not table_exists(conn, target_table):
+            df.to_sql(target_table, conn, if_exists="replace", index=False)
+        else:
+            df.to_sql(target_table, conn, if_exists="append", index=False)
+    logger.info("Saved lineup trends to %s", target_table)
+    return df
