@@ -26,7 +26,12 @@ def train_xgb(
     test_df: pd.DataFrame,
     target: str = StrikeoutModelConfig.TARGET_VARIABLE,
 ) -> Tuple[XGBRegressor, Dict[str, float]]:
-    features, _ = select_features(train_df, target)
+    features, _ = select_features(
+        train_df,
+        target,
+        prune_importance=True,
+        importance_threshold=StrikeoutModelConfig.IMPORTANCE_THRESHOLD,
+    )
     logger.info("Using %d features", len(features))
     X_train = train_df[features]
     y_train = train_df[target]
