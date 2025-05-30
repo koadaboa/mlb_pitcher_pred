@@ -9,6 +9,7 @@ from src.features import (
     build_model_features,
 )
 from src.features.engineer_features import add_rolling_features
+from src.config import StrikeoutModelConfig
 
 def setup_test_db(tmp_path: Path, cross_season: bool = False) -> Path:
     db_path = tmp_path / "test.db"
@@ -87,6 +88,9 @@ def test_feature_pipeline(tmp_path: Path) -> None:
         assert "team_k_rate_mean_3" in df.columns
         assert "strikeouts_mean_20" in df.columns
         assert "fip_mean_100" in df.columns
+        halflife = StrikeoutModelConfig.EWM_HALFLIFE
+        assert f"strikeouts_ewm_{halflife}" in df.columns
+        assert f"strikeouts_momentum_ewm_{halflife}" in df.columns
         assert all("_mean_77" not in c for c in df.columns)
         # ensure raw game stats are dropped
         assert "pitches" not in df.columns
@@ -143,9 +147,11 @@ def test_group_specific_rolling() -> None:
         date_col="game_date",
         windows=[3],
         numeric_cols=["strikeouts"],
+        ewm_halflife=StrikeoutModelConfig.EWM_HALFLIFE,
     )
     # First row for pitcher 20 should not include pitcher 10 data
     assert pd.isna(result.loc[2, "strikeouts_mean_3"]) or result.loc[2, "strikeouts_mean_3"] == 0
+    assert f"strikeouts_ewm_{StrikeoutModelConfig.EWM_HALFLIFE}" in result.columns
 
 
 def test_log_features_added(tmp_path: Path) -> None:

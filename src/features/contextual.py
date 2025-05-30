@@ -112,9 +112,9 @@ def _add_group_rolling(
         Restrict calculations to these numeric columns. If ``None`` (default),
         all numeric columns except identifiers are used.
     ewm_halflife : float, optional
-        If provided, additionally compute exponentially weighted means using the
-        specified ``halflife``. The resulting columns are suffixed with
-        ``ewm_<halflife>``.
+        If provided, compute exponentially weighted moving averages using the
+        specified ``halflife``. Columns are suffixed with ``ewm_<halflife>`` and
+        ``momentum_ewm_<halflife>``.
     """
     if windows is None:
         windows = StrikeoutModelConfig.WINDOW_SIZES
@@ -241,6 +241,7 @@ def engineer_opponent_features(
             prefix="opp_",
             n_jobs=n_jobs,
             numeric_cols=StrikeoutModelConfig.CONTEXT_ROLLING_COLS,
+            ewm_halflife=StrikeoutModelConfig.EWM_HALFLIFE,
         )
         if "team_k_rate" in df.columns:
             df = _add_group_rolling(
@@ -250,6 +251,7 @@ def engineer_opponent_features(
                 prefix="team_hand_",
                 n_jobs=n_jobs,
                 numeric_cols=["team_k_rate"],
+                ewm_halflife=StrikeoutModelConfig.EWM_HALFLIFE,
             )
             df = df.drop(columns=["team_k_rate"])
         if rebuild or not table_exists(conn, target_table):
@@ -335,6 +337,7 @@ def engineer_contextual_features(
             prefix="ump_",
             n_jobs=n_jobs,
             numeric_cols=StrikeoutModelConfig.CONTEXT_ROLLING_COLS,
+            ewm_halflife=StrikeoutModelConfig.EWM_HALFLIFE,
         )
         if "weather" in df.columns:
             df = _add_group_rolling(
@@ -344,6 +347,7 @@ def engineer_contextual_features(
                 prefix="wx_",
                 n_jobs=n_jobs,
                 numeric_cols=StrikeoutModelConfig.CONTEXT_ROLLING_COLS,
+                ewm_halflife=StrikeoutModelConfig.EWM_HALFLIFE,
             )
         df = _add_group_rolling(
             df,
@@ -352,6 +356,7 @@ def engineer_contextual_features(
             prefix="venue_",
             n_jobs=n_jobs,
             numeric_cols=StrikeoutModelConfig.CONTEXT_ROLLING_COLS,
+            ewm_halflife=StrikeoutModelConfig.EWM_HALFLIFE,
         )
 
         if rebuild or not table_exists(conn, target_table):

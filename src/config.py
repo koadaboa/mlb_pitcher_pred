@@ -105,6 +105,8 @@ class StrikeoutModelConfig:
     # Dramatically smaller windows to keep feature counts manageable
     # Expanded windows to provide more temporal context
     WINDOW_SIZES = [3, 5, 10, 20, 50, 100]
+    # Halflife used for exponentially weighted moving averages
+    EWM_HALFLIFE = 7
     # Limit which numeric columns get rolling stats to avoid huge tables
     PITCHER_ROLLING_COLS = [
         "strikeouts",
