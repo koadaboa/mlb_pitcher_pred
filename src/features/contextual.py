@@ -437,6 +437,12 @@ def engineer_lineup_trends(
             query += f" WHERE strftime('%Y', game_date) = '{year}'"
         df = pd.read_sql_query(query, conn)
 
+        if "game_date" not in df.columns:
+            date_df = pd.read_sql_query("SELECT game_pk, pitcher_id, game_date FROM game_level_starting_pitchers", conn)
+            merge_cols=["game_pk"]
+            if "pitcher_id" in df.columns:
+                merge_cols.append("pitcher_id")
+            df = df.merge(date_df, on=merge_cols, how="left")
     if df.empty:
         logger.warning("No data found in %s", source_table)
         return df
