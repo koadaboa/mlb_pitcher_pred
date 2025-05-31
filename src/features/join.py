@@ -72,6 +72,14 @@ def build_model_features(
             base_query.format(lineup_table) + filter_clause, conn
         )
 
+        # ``game_date`` should be identical across tables for the same ``game_pk``
+        # and ``pitcher_id``. Drop duplicate instances from the right-hand
+        # DataFrames before merging to avoid pandas adding suffixes that can clash
+        # on subsequent merges.
+        for frame in (opp_df, ctx_df, lineup_df):
+            if "game_date" in frame.columns:
+                frame.drop(columns=["game_date"], inplace=True)
+
         if pitcher_df.empty:
             logger.warning("No data found in %s", pitcher_table)
             return pitcher_df
