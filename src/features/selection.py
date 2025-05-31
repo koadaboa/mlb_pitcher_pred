@@ -8,8 +8,6 @@ pruned using tree-based model importances.
 from __future__ import annotations
 
 from typing import Iterable, List, Optional, Tuple
-
-import re
 from lightgbm import LGBMRegressor
 from sklearn.ensemble import ExtraTreesRegressor
 
@@ -95,15 +93,13 @@ def select_features(
         exclude_set.update(exclude_cols)
     exclude_set.add(target_variable)
 
-    pattern = re.compile(r"_(?:mean|std|momentum(?:_ewm)?|ewm)_\d+$")
-    allowed_numeric = set(StrikeoutModelConfig.ALLOWED_BASE_NUMERIC_COLS)
-
+    # Consider every numeric column that isn't explicitly excluded. Previous
+    # versions limited this to rolled features or those in
+    # ``ALLOWED_BASE_NUMERIC_COLS``.
     numeric_cols = [
         c
         for c in df.columns
-        if c not in exclude_set
-        and pd.api.types.is_numeric_dtype(df[c])
-        and (pattern.search(c) or c in allowed_numeric)
+        if c not in exclude_set and pd.api.types.is_numeric_dtype(df[c])
     ]
     selected = numeric_cols
 

@@ -41,3 +41,17 @@ def test_select_features_pruning() -> None:
         importance_threshold=0.1,
     )
     assert features == ["x1_mean_3"]
+
+
+def test_select_features_includes_base_numeric() -> None:
+    """Numeric columns that aren't rolled should still be selected."""
+    df = pd.DataFrame(
+        {
+            "game_pk": [1, 2, 3],
+            "pitches": [80, 90, 100],
+            "pitches_mean_3": [80, 85, 90],
+            "strikeouts": [1, 2, 3],
+        }
+    )
+    features, _ = select_features(df, "strikeouts")
+    assert set(features) == {"pitches", "pitches_mean_3"}
