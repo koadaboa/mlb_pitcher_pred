@@ -91,6 +91,8 @@ def build_model_features(
         # Deduplicate any columns that were suffixed during the merges
         dup_cols = [c for c in df.columns if c.endswith("_x") or c.endswith("_y")]
         for col in dup_cols:
+            if col not in df.columns:
+                continue
             base = col[:-2]
             alt = base + ("_y" if col.endswith("_x") else "_x")
             if base not in df.columns:
@@ -102,7 +104,7 @@ def build_model_features(
                         df = df.drop(columns=[alt])
                 df = df.rename(columns={col: base})
             else:
-                df = df.drop(columns=[col])
+                df = df.drop(columns=[col], errors="ignore")
 
         drop_ump_cols = [
             c
