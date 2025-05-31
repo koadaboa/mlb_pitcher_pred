@@ -72,6 +72,14 @@ def build_model_features(
             base_query.format(lineup_table) + filter_clause, conn
         )
 
+        # ``game_date`` should be identical across tables for the same ``game_pk``
+        # and ``pitcher_id``. Drop duplicate instances from the right-hand
+        # DataFrames before merging to avoid pandas adding suffixes that can clash
+        # on subsequent merges.
+        for frame in (opp_df, ctx_df, lineup_df):
+            if "game_date" in frame.columns:
+                frame.drop(columns=["game_date"], inplace=True)
+
         if pitcher_df.empty:
             logger.warning("No data found in %s", pitcher_table)
             return pitcher_df
@@ -83,6 +91,8 @@ def build_model_features(
         # Deduplicate any columns that were suffixed during the merges
         dup_cols = [c for c in df.columns if c.endswith("_x") or c.endswith("_y")]
         for col in dup_cols:
+            if col not in df.columns:
+                continue
             base = col[:-2]
             alt = base + ("_y" if col.endswith("_x") else "_x")
             if base not in df.columns:
@@ -94,7 +104,7 @@ def build_model_features(
                         df = df.drop(columns=[alt])
                 df = df.rename(columns={col: base})
             else:
-                df = df.drop(columns=[col])
+                df = df.drop(columns=[col], errors="ignore")
 
         drop_ump_cols = [
             c
