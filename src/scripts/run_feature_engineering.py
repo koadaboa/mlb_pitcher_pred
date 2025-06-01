@@ -8,7 +8,7 @@ from src.features import (
     engineer_opponent_features,
     engineer_contextual_features,
     engineer_lineup_trends,
-    engineer_catcher_defense,
+    engineer_batter_pitcher_history,
     build_model_features,
 )
 
@@ -47,6 +47,11 @@ def main(argv: list[str] | None = None) -> None:
     engineer_contextual_features(
         db_path=args.db_path,
         n_jobs=args.n_jobs,
+        year=args.year,
+        rebuild=args.rebuild,
+    )
+    engineer_batter_pitcher_history(
+        db_path=args.db_path,
         year=args.year,
         rebuild=args.rebuild,
     )

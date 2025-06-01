@@ -9,7 +9,7 @@ from src.features import (
     engineer_opponent_features,
     engineer_contextual_features,
     engineer_lineup_trends,
-    engineer_catcher_defense,
+    engineer_batter_pitcher_history,
     build_model_features,
 )
 from src.features.engineer_features import add_rolling_features
@@ -74,11 +74,14 @@ def setup_test_db(tmp_path: Path, cross_season: bool = False) -> Path:
             {
                 "game_pk": [1, 2, 3],
                 "pitcher_id": [10, 10, 10],
+                "batter_id": ["101", "102", "103"],
                 "opponent_team": ["A", "B", "C"],
                 "stand": ["R", "L", "L"],
                 "plate_appearances": [4, 4, 4],
                 "strikeouts": [1, 2, 1],
                 "ops": [0.7, 0.75, 0.72],
+                "swings": [10, 12, 11],
+                "whiffs": [3, 4, 3],
             }
         )
         batter_df.to_sql("game_level_batters_vs_starters", conn, index=False)
@@ -86,8 +89,8 @@ def setup_test_db(tmp_path: Path, cross_season: bool = False) -> Path:
         lineup_df = pd.DataFrame(
             {
                 "game_pk": [1, 2, 3],
-                "pitcher_id": [10, 10, 10],
-                "catcher_id": [200, 200, 200],
+                "team": ["A", "B", "C"],
+                "batter_id": ["101", "102", "103"],
                 "lineup_avg_ops": [0.72, 0.73, 0.74],
             }
         )
@@ -113,7 +116,8 @@ def test_feature_pipeline(tmp_path: Path) -> None:
     engineer_opponent_features(db_path=db_path)
     engineer_contextual_features(db_path=db_path)
     engineer_lineup_trends(db_path=db_path)
-    engineer_catcher_defense(db_path=db_path)
+    engineer_batter_pitcher_history(db_path=db_path)
+    engineer_batter_pitcher_history(db_path=db_path)
     build_model_features(db_path=db_path)
 
     with sqlite3.connect(db_path) as conn:
@@ -166,7 +170,7 @@ def test_feature_pipeline(tmp_path: Path) -> None:
         assert "game_date" in df.columns
         assert not any(c.endswith("_x") or c.endswith("_y") for c in df.columns)
         assert "slot1_lineup_ops_mean_3" in df.columns
-        assert "catcher_called_strike_rate_mean_3" in df.columns
+        assert "opp_batter_batter_so_rate_mean_3" in df.columns
 
 
 def test_old_window_columns_removed(tmp_path: Path) -> None:
@@ -228,7 +232,7 @@ def test_log_features_added(tmp_path: Path) -> None:
     engineer_opponent_features(db_path=db_path)
     engineer_contextual_features(db_path=db_path)
     engineer_lineup_trends(db_path=db_path)
-    engineer_catcher_defense(db_path=db_path)
+    engineer_batter_pitcher_history(db_path=db_path)
     build_model_features(db_path=db_path)
 
     with sqlite3.connect(db_path) as conn:
@@ -256,7 +260,7 @@ def test_base_context_fields_kept(tmp_path: Path) -> None:
     engineer_opponent_features(db_path=db_path)
     engineer_contextual_features(db_path=db_path)
     engineer_lineup_trends(db_path=db_path)
-    engineer_catcher_defense(db_path=db_path)
+    engineer_batter_pitcher_history(db_path=db_path)
     build_model_features(db_path=db_path)
 
     with sqlite3.connect(db_path) as conn:
@@ -336,7 +340,7 @@ def test_extra_cat_cols_excluded(tmp_path: Path) -> None:
         df.to_sql("contextual_features", conn, if_exists="replace", index=False)
 
     engineer_lineup_trends(db_path=db_path)
-    engineer_catcher_defense(db_path=db_path)
+    engineer_batter_pitcher_history(db_path=db_path)
     build_model_features(db_path=db_path)
 
     with sqlite3.connect(db_path) as conn:
