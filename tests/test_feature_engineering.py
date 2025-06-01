@@ -53,6 +53,11 @@ def setup_test_db(tmp_path: Path, cross_season: bool = False) -> Path:
                 "max_launch_angle": [25, 30, 35],
                 "hard_hit_rate": [0.4, 0.45, 0.5],
                 "barrel_rate": [0.1, 0.12, 0.15],
+                "pfx_x": [0.1, 0.2, 0.15],
+                "pfx_z": [-0.5, -0.6, -0.4],
+                "release_extension": [6.0, 6.1, 6.2],
+                "plate_x": [-0.2, -0.3, -0.1],
+                "plate_z": [2.5, 2.6, 2.7],
             }
         )
         matchup_df = pitcher_df.copy()
@@ -112,6 +117,7 @@ def test_feature_pipeline(tmp_path: Path) -> None:
         assert "unique_pitch_types_mean_3" in df.columns
         assert "zone_pct_mean_3" in df.columns
         assert "hard_hit_rate_mean_3" in df.columns
+        assert "pfx_x_mean_3" in df.columns
         assert "lineup_avg_ops_mean_3" in df.columns
         assert "team_k_rate_mean_3" in df.columns
         assert "opp_lineup_woba_mean_3" in df.columns
