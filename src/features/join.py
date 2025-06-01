@@ -42,6 +42,8 @@ def build_model_features(
     opp_table: str = "rolling_pitcher_vs_team",
     context_table: str = "contextual_features",
     lineup_table: str = "lineup_trends",
+    batter_history_table: str = "rolling_batter_pitcher_history",
+    lineup_ids_table: str = "game_starting_lineups",
     target_table: str = "model_features",
     year: int | None = None,
     rebuild: bool = False,
@@ -80,12 +82,18 @@ def build_model_features(
         lineup_df = pd.read_sql_query(
             base_query.format(lineup_table) + filter_clause, conn
         )
+        bp_df = pd.read_sql_query(
+            base_query.format(batter_history_table) + filter_clause, conn
+        )
+        lineup_ids = pd.read_sql_query(
+            base_query.format(lineup_ids_table), conn
+        )
 
         # ``game_date`` should be identical across tables for the same ``game_pk``
         # and ``pitcher_id``. Drop duplicate instances from the right-hand
         # DataFrames before merging to avoid pandas adding suffixes that can clash
         # on subsequent merges.
-        for frame in (opp_df, ctx_df, lineup_df):
+        for frame in (opp_df, ctx_df, lineup_df, bp_df, lineup_ids):
             if "game_date" in frame.columns:
                 frame.drop(columns=["game_date"], inplace=True)
 
@@ -96,6 +104,32 @@ def build_model_features(
         df = pitcher_df.merge(opp_df, on=["game_pk", "pitcher_id"], how="left")
         df = df.merge(ctx_df, on=["game_pk", "pitcher_id"], how="left")
         df = df.merge(lineup_df, on=["game_pk", "pitcher_id"], how="left")
+
+        if not bp_df.empty and not lineup_ids.empty:
+            if "team" in lineup_ids.columns and "opponent_team" not in lineup_ids.columns:
+                lineup_ids = lineup_ids.rename(columns={"team": "opponent_team"})
+            lineup_ids = lineup_ids.merge(
+                pitcher_df[["game_pk", "pitcher_id", "opponent_team"]],
+                on=["game_pk", "opponent_team"],
+                how="inner",
+            )
+            pair_merge = lineup_ids.merge(
+                bp_df, on=["game_pk", "pitcher_id", "batter_id"], how="left"
+            )
+            numeric_cols = [
+                c
+                for c in bp_df.columns
+                if pd.api.types.is_numeric_dtype(bp_df[c])
+                and c not in {"game_pk", "pitcher_id", "batter_id"}
+            ]
+            if numeric_cols:
+                agg_df = (
+                    pair_merge.groupby(["game_pk", "pitcher_id"])[numeric_cols]
+                    .mean()
+                    .add_prefix("opp_batter_")
+                    .reset_index()
+                )
+                df = df.merge(agg_df, on=["game_pk", "pitcher_id"], how="left")
 
         # Drop identifier columns that could leak future information before
         # any transformations are applied.

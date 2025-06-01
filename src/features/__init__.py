@@ -1,6 +1,7 @@
 """Feature engineering entry points."""
 
 from .engineer_features import engineer_pitcher_features
+from .batter_pitcher_history import engineer_batter_pitcher_history
 from .contextual import (
     engineer_opponent_features,
     engineer_contextual_features,
@@ -14,6 +15,7 @@ __all__ = [
     "engineer_opponent_features",
     "engineer_contextual_features",
     "engineer_lineup_trends",
+    "engineer_batter_pitcher_history",
     "build_model_features",
     "mean_target_encode",
 ]

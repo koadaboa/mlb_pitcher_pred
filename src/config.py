@@ -142,6 +142,9 @@ class StrikeoutModelConfig:
         "offspeed_to_fastball_ratio",
         "fastball_then_breaking_rate",
         "unique_pitch_types",
+        "batter_so_rate",
+        "batter_ops",
+        "batter_whiff_rate",
     ]
     CONTEXT_ROLLING_COLS = [
         "strikeouts",
