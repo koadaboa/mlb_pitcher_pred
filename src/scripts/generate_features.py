@@ -385,6 +385,33 @@ def generate_features(
     )
     # <<< END TEAM HISTORY LOAD ---
 
+    # --- Load Batter History for Lineup Features ---
+    batter_stats_table = "game_level_batters"
+    try:
+        with DBConnection() as conn:
+            batter_cols_avail = pd.read_sql_query(
+                f"SELECT * FROM {batter_stats_table} LIMIT 1", conn
+            ).columns.tolist()
+    except Exception as e:
+        logger.warning(f"Cannot read columns from {batter_stats_table}: {e}")
+        batter_cols_avail = []
+
+    batter_metrics_to_use = [m for m in BATTER_METRICS_FOR_ROLLING if m in batter_cols_avail]
+    batter_base_cols = ["batter", "game_date", "game_pk", "team"]
+    batter_cols_to_load = list(set(batter_base_cols) | set(batter_metrics_to_use))
+    batter_cols_to_load_str = ", ".join([f'"{c}"' for c in batter_cols_to_load if c in batter_cols_avail])
+    batter_hist_df = (
+        load_data_from_db(
+            f"SELECT {batter_cols_to_load_str} FROM {batter_stats_table} WHERE DATE(game_date) <= '{max_hist_date_str}'",
+            db_path,
+        )
+        if batter_cols_to_load_str
+        else pd.DataFrame()
+    )
+
+    lineup_table = "daily_lineups"
+    lineup_df = load_data_from_db(f"SELECT * FROM {lineup_table}", db_path, optimize=False)
+
     # --- Load Historical Umpire Data (No Change Here) ---
     umpire_table = "historical_umpire_data"
     umpire_cols_to_load = [
@@ -416,6 +443,9 @@ def generate_features(
             f"Team history empty (loaded from {team_stats_table}). Opponent features will be limited."
         )
 
+    if batter_hist_df.empty:
+        logger.warning(f"Batter history empty (loaded from {batter_stats_table}). Lineup features will be limited.")
+
     # Convert dates AFTER loading all data
     logger.info("Converting date columns...")
     pitcher_hist_df["game_date"] = pd.to_datetime(pitcher_hist_df["game_date"])
@@ -424,6 +454,17 @@ def generate_features(
         team_hist_df["game_date"] = pd.to_datetime(team_hist_df["game_date"])
     if not umpire_hist_df.empty:
         umpire_hist_df["game_date"] = pd.to_datetime(umpire_hist_df["game_date"])
+    if not batter_hist_df.empty:
+        batter_hist_df["game_date"] = pd.to_datetime(batter_hist_df["game_date"])
+        batter_hist_df = batter_hist_df.rename(columns={"batter": "batter_id", "team": "team_abbr"})
+    if not lineup_df.empty:
+        lineup_df = lineup_df.rename(columns={"batter_id": "batter_id"})
+        lineup_df = pd.merge(
+            lineup_df,
+            pitcher_hist_df[["game_pk", "game_date"]].drop_duplicates(),
+            on="game_pk",
+            how="left",
+        )
 
     # Add 'is_home' derived column to pitcher_hist_df (STARTER BASED)
     if "team" in pitcher_hist_df.columns and "home_team" in pitcher_hist_df.columns:
@@ -966,6 +1007,16 @@ def generate_features(
             else pd.DataFrame()
         )
 
+        latest_batter_rolling = (
+            all_rolling_features.get("batter", pd.DataFrame())
+        )
+        if not latest_batter_rolling.empty:
+            latest_batter_rolling = latest_batter_rolling[
+                latest_batter_rolling["game_date"] <= prediction_date_str
+            ].sort_values("game_date").drop_duplicates(
+                subset=["batter_id"], keep="last"
+            )
+
         # Add keys back for merging
         if not latest_pitcher_rolling.empty:
             latest_pitcher_rolling["pitcher_id"] = pitcher_hist_df.loc[
@@ -1145,6 +1196,32 @@ def generate_features(
                 )
         else:
             logger.warning("Umpire rename map or latest umpire rolling data missing.")
+
+        # Lineup Features for prediction date
+        lineup_pred_df = pd.DataFrame()
+        if not lineup_df.empty and not latest_batter_rolling.empty:
+            pred_lineups = lineup_df[lineup_df["game_pk"].isin(final_features_df["game_pk"])]
+            pred_lineups = pred_lineups.copy()
+            pred_lineups["game_date"] = prediction_date_str
+            lineup_pred_df = aggregate_lineup_metrics(
+                lineup_df=pred_lineups,
+                batter_rolling_df=latest_batter_rolling,
+                windows=ROLLING_WINDOWS,
+            )
+        if not lineup_pred_df.empty:
+            final_features_df = pd.merge(
+                final_features_df,
+                lineup_pred_df,
+                left_on=["game_pk", "opponent_team"],
+                right_on=["game_pk", "team_abbr"],
+                how="left",
+            ).drop(columns=["team_abbr"], errors="ignore")
+        else:
+            for w in ROLLING_WINDOWS:
+                for m in BATTER_METRICS_FOR_ROLLING:
+                    col = f"lineup_{m.replace('_bat','')}_mean_roll{w}g"
+                    if col not in final_features_df.columns:
+                        final_features_df[col] = np.nan
 
         # Format date back to string for saving
         final_features_df["game_date"] = final_features_df["game_date"].dt.strftime(
