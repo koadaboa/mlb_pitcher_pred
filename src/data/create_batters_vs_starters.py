@@ -109,6 +109,55 @@ def compute_batter_rows(df: pd.DataFrame) -> list[Dict]:
         swings_total = swings.sum()
         whiffs_total = whiffs.sum()
 
+        two_strike_rate = np.nan
+        if "strikes" in last_pitch.columns:
+            mask_two = last_pitch["strikes"] == 2
+            if mask_two.any():
+                two_strike_rate = last_pitch.loc[mask_two, "events"].isin([
+                    "strikeout",
+                    "strikeout_double_play",
+                ]).mean()
+
+        high_lev_rate = np.nan
+        if "leverage_index" in last_pitch.columns:
+            lev_mask = last_pitch["leverage_index"] >= 1.5
+            if lev_mask.any():
+                high_lev_rate = last_pitch.loc[lev_mask, "events"].isin([
+                    "strikeout",
+                    "strikeout_double_play",
+                ]).mean()
+        elif {"home_score", "away_score", "inning"}.issubset(last_pitch.columns):
+            run_diff = (
+                last_pitch["home_score"] - last_pitch["away_score"]
+                if first["inning_topbot"] == "Top"
+                else last_pitch["away_score"] - last_pitch["home_score"]
+            )
+            lev_mask = (last_pitch["inning"] >= 7) & (run_diff.abs() <= 1)
+            if lev_mask.any():
+                high_lev_rate = last_pitch.loc[lev_mask, "events"].isin([
+                    "strikeout",
+                    "strikeout_double_play",
+                ]).mean()
+
+        woba_runners = np.nan
+        if {
+            "on_1b",
+            "on_2b",
+            "on_3b",
+            "woba_value",
+            "woba_denom",
+        }.issubset(bdf.columns):
+            first_ab = (
+                bdf.sort_values("pitch_number").groupby("at_bat_number").first()
+            )
+            on_base = first_ab[["on_1b", "on_2b", "on_3b"]].notna().any(axis=1)
+            woba_val = bdf.groupby("at_bat_number")["woba_value"].sum()
+            woba_den = bdf.groupby("at_bat_number")["woba_denom"].sum()
+            denom = woba_den[on_base].sum()
+            woba_runners = (
+                woba_val[on_base].sum() / denom if denom else np.nan
+            )
+
         row = {
             "game_pk": first["game_pk"],
             "batter_id": batter_id,
@@ -136,6 +185,9 @@ def compute_batter_rows(df: pd.DataFrame) -> list[Dict]:
             "home_runs": home_runs,
             "walks": walks,
             "hbp": hbp,
+            "two_strike_k_rate": two_strike_rate,
+            "high_leverage_k_rate": high_lev_rate,
+            "woba_runners_on": woba_runners,
         }
 
         # --- Rate stats ---
