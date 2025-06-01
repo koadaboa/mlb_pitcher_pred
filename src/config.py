@@ -69,6 +69,7 @@ class StrikeoutModelConfig:
         'home_team',        # Home team abbreviation/ID (if needed separately)
         'home_plate_umpire',           # Umpire name (if created and merged)
         'ballpark'          # Ballpark name (if created and merged)
+        ,'catcher_id'       # Starting catcher ID
         # Add any other categorical columns you intend to encode
     ]
 

@@ -8,7 +8,7 @@ This project builds a machine learning pipeline to predict the number of strikeo
 
 The project follows these main steps:
 
-1.  **Data Fetching:** Retrieves raw data (Statcast, schedules, team stats, umpire assignments) using `pybaseball` and web scraping (ESPN).
+1.  **Data Fetching:** Retrieves raw data (Statcast, schedules, team stats, umpire assignments) using `pybaseball`, scrapes starting lineups from the MLB Stats API, and also scrapes umpires from ESPN.
 2.  **Data Aggregation:** Processes pitch-level Statcast data into game-level summaries for pitchers and batters.
 3.  **Feature Engineering:** Calculates numerous features based on historical performance, including rolling averages for pitchers, opponents, ballparks, and umpires, pitcher rest days, and additional context metrics such as pitches per inning, high‑leverage usage, and two‑strike/three‑ball rates.
 4.  **Model Training:** Trains a LightGBM model (using Poisson regression) on the historical features, incorporating feature selection and hyperparameter tuning (Optuna).
@@ -71,7 +71,7 @@ mlb_pred/
 4.  **Configure:**
     * Edit `src/config.py` to set the correct database path (`DB_PATH`), potentially update API keys or placeholders, and review feature lists/parameters.
     * Ensure necessary drivers (like ChromeDriver for Selenium) are installed and accessible if running scraping scripts locally.
-5.  **Database:** The pipeline uses an SQLite database (`mlb_data.db` by default, as defined in `config.py`). The initial data fetching step will create and populate this database.
+5.  **Database:** The pipeline uses an SQLite database (`mlb_data.db` by default, as defined in `config.py`). The initial data fetching step will create and populate this database, including a `daily_lineups` table with each game's starting lineup.
 
 ## Usage
 
