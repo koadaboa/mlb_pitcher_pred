@@ -43,6 +43,11 @@ try:
         merge_ballpark_features_prediction,
     )
     from src.features.umpire_features import calculate_umpire_rolling_features
+    from src.features.catcher_features import (
+        calculate_catcher_rolling_features,
+        merge_catcher_features_historical,
+        merge_catcher_features_prediction,
+    )
 
     MODULE_IMPORTS_OK = True
 except ImportError as e:
@@ -87,6 +92,7 @@ OPPONENT_METRICS_FOR_ROLLING = [
     "barrel_percent",
     # Add _vs_LHP/_vs_RHP if available in game_level_team_stats
 ]
+CATCHER_METRICS_FOR_ROLLING = ["framing_runs"]
 BALLPARK_METRICS_FOR_ROLLING = ["k_percent"]  # Based on pitcher (starter) k_percent
 UMPIRE_METRICS_FOR_ROLLING = ["k_percent"]  # Based on pitcher (starter) k_percent
 
@@ -395,6 +401,10 @@ def generate_features(
         logger.warning(f"Historical umpire data table '{umpire_table}' is empty.")
     # <<< END UMPIRE HISTORY LOAD ---
 
+    # --- Load Catcher Framing Data and Game Catchers ---
+    catcher_framing_df = load_data_from_db("SELECT * FROM catcher_framing", db_path, optimize=False)
+    game_catchers_df = load_data_from_db("SELECT * FROM game_catchers", db_path, optimize=False)
+
     # --- Data Validation and Prep ---
     if pitcher_hist_df.empty:
         logger.error(
@@ -409,6 +419,7 @@ def generate_features(
     # Convert dates AFTER loading all data
     logger.info("Converting date columns...")
     pitcher_hist_df["game_date"] = pd.to_datetime(pitcher_hist_df["game_date"])
+    pitcher_hist_df["season"] = pitcher_hist_df["game_date"].dt.year
     if not team_hist_df.empty:
         team_hist_df["game_date"] = pd.to_datetime(team_hist_df["game_date"])
     if not umpire_hist_df.empty:
@@ -439,6 +450,29 @@ def generate_features(
             "Missing 'home_team' in starter history, cannot map ballparks accurately."
         )
         pitcher_hist_df["ballpark"] = "Unknown Park"
+
+    # Merge catcher IDs from game_catchers table
+    if not game_catchers_df.empty:
+        pitcher_hist_df = pd.merge(
+            pitcher_hist_df,
+            game_catchers_df,
+            on=["game_pk", "pitcher_id"],
+            how="left",
+        )
+        logger.info("Merged catcher_id onto pitcher history.")
+    else:
+        pitcher_hist_df["catcher_id"] = np.nan
+
+    # Merge season-level framing runs
+    if not catcher_framing_df.empty:
+        pitcher_hist_df = pd.merge(
+            pitcher_hist_df,
+            catcher_framing_df,
+            on=["catcher_id", "season"],
+            how="left",
+        )
+    else:
+        pitcher_hist_df["framing_runs"] = np.nan
 
     # Ensure necessary columns for features exist before proceeding
     required_for_features = [
@@ -616,6 +650,22 @@ def generate_features(
     all_rolling_features["umpire"] = umpire_rolling_df
     all_rename_maps["umpire"] = ump_rename_map
 
+    # Catcher Rolling Features
+    catcher_metrics_avail = [m for m in CATCHER_METRICS_FOR_ROLLING if m in pitcher_hist_df.columns]
+    if not catcher_metrics_avail:
+        logger.warning("No catcher metrics found for rolling calculations.")
+    catcher_rolling_df, catcher_rename_map = calculate_catcher_rolling_features(
+        catcher_hist_df=pitcher_hist_df,
+        group_col="catcher_id",
+        date_col="game_date",
+        metrics=catcher_metrics_avail,
+        windows=ROLLING_WINDOWS,
+        min_periods=MIN_ROLLING_PERIODS,
+        calculate_multi_window_rolling=calculate_multi_window_rolling,
+    )
+    all_rolling_features["catcher"] = catcher_rolling_df
+    all_rename_maps["catcher"] = catcher_rename_map
+
     logger.info(
         f"Feature calculation finished in {(datetime.now() - calc_start_time).total_seconds():.2f}s."
     )
@@ -721,6 +771,18 @@ def generate_features(
                 bpark_rename_map=all_rename_maps["ballpark"],
             )  # merge_ballpark_features_historical needs 'ballpark' column
 
+        # Merge Catcher features
+        if (
+            "catcher" in all_rolling_features
+            and "catcher" in all_rename_maps
+            and not all_rolling_features["catcher"].empty
+        ):
+            final_features_df = merge_catcher_features_historical(
+                final_features_df=final_features_df,
+                catcher_rolling_df=all_rolling_features["catcher"],
+                catcher_rename_map=all_rename_maps["catcher"],
+            )
+
         # Merge Umpire features (derived from starter pitcher stats & umpire hist)
         if (
             "umpire" in all_rolling_features
@@ -822,6 +884,11 @@ def generate_features(
             .drop_duplicates(subset=["ballpark"], keep="last")
             .index
         )
+        latest_catcher_indices = (
+            pitcher_hist_df.sort_values("game_date")
+            .drop_duplicates(subset=["catcher_id"], keep="last")
+            .index
+        )
         # Umpire indices now derived from starter history + umpire mapping
         latest_umpire_indices = pd.Index([])
         temp_ump_df = (
@@ -886,6 +953,11 @@ def generate_features(
             if "ballpark" in all_rolling_features
             else pd.DataFrame()
         )
+        latest_catcher_rolling = (
+            all_rolling_features.get("catcher", pd.DataFrame()).loc[latest_catcher_indices]
+            if ("catcher" in all_rolling_features and not latest_catcher_indices.empty)
+            else pd.DataFrame()
+        )
         latest_umpire_rolling = (
             all_rolling_features.get("umpire", pd.DataFrame()).loc[
                 latest_umpire_indices
@@ -906,6 +978,10 @@ def generate_features(
         if not latest_ballpark_rolling.empty:
             latest_ballpark_rolling["ballpark"] = pitcher_hist_df.loc[
                 latest_ballpark_rolling.index, "ballpark"
+            ]
+        if not latest_catcher_rolling.empty:
+            latest_catcher_rolling["catcher_id"] = pitcher_hist_df.loc[
+                latest_catcher_rolling.index, "catcher_id"
             ]
         if (
             not latest_umpire_rolling.empty
@@ -950,6 +1026,18 @@ def generate_features(
             on="pitcher_id",
             how="left",
         )
+        if not game_catchers_df.empty:
+            last_catchers = pitcher_hist_df.sort_values("game_date").drop_duplicates(
+                subset=["pitcher_id"], keep="last"
+            )[["pitcher_id", "catcher_id"]]
+            final_features_df = pd.merge(
+                final_features_df,
+                last_catchers,
+                on="pitcher_id",
+                how="left",
+            )
+        else:
+            final_features_df["catcher_id"] = np.nan
         final_features_df["last_game_date"] = pd.to_datetime(
             final_features_df["last_game_date"]
         )
@@ -1025,6 +1113,14 @@ def generate_features(
                 bpark_rename_map=all_rename_maps["ballpark"],
             )
 
+        # Catcher Features
+        if "catcher" in all_rename_maps and not latest_catcher_rolling.empty:
+            final_features_df = merge_catcher_features_prediction(
+                final_features_df=final_features_df,
+                latest_catcher_rolling=latest_catcher_rolling,
+                catcher_rename_map=all_rename_maps["catcher"],
+            )
+
         # Umpire Features (from starter history)
         if "umpire" in all_rename_maps and not latest_umpire_rolling.empty:
             ump_rename_map = all_rename_maps["umpire"]
@@ -1070,6 +1166,7 @@ def generate_features(
         "opponent_team",
         "is_home",
         "ballpark",
+        "catcher_id",
         "p_throws",
         "p_days_rest",
         "home_plate_umpire",
@@ -1086,6 +1183,7 @@ def generate_features(
     expected_opp_roll_cols_base = list(all_rename_maps.get("opponent", {}).values())
     expected_bp_roll_cols = list(all_rename_maps.get("ballpark", {}).values())
     expected_ump_roll_cols = list(all_rename_maps.get("umpire", {}).values())
+    expected_catcher_roll_cols = list(all_rename_maps.get("catcher", {}).values())
 
     # Adjust opponent cols based on prediction mode logic (no change needed here)
     if mode == "PREDICTION":
@@ -1116,6 +1214,7 @@ def generate_features(
             + expected_opp_roll_cols
             + expected_bp_roll_cols
             + expected_ump_roll_cols
+            + expected_catcher_roll_cols
         )
     )
 
@@ -1139,6 +1238,7 @@ def generate_features(
         expected_opp_roll_cols,
         expected_bp_roll_cols,
         expected_ump_roll_cols,
+        expected_catcher_roll_cols,
     ]:
         for col in col_list:
             if col in expected_cols:

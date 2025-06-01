@@ -443,6 +443,74 @@ class DataFetcher:
         self.checkpoint_manager.save_overall_checkpoint()
         return True
 
+    def load_catcher_framing_csv(self, csv_path=None):
+        """Load catcher framing metrics from a CSV into the database."""
+        if csv_path is None:
+            csv_path = project_root / "data" / "catcher_framing.csv"
+        csv_path = Path(csv_path)
+        if not csv_path.exists():
+            logger.error(f"Catcher framing CSV not found: {csv_path}")
+            return False
+        try:
+            df = pd.read_csv(csv_path)
+        except Exception as e:
+            logger.error(f"Failed reading catcher framing CSV: {e}")
+            return False
+        required_cols = {"catcher_id", "season", "framing_runs"}
+        if not required_cols.issubset(df.columns):
+            logger.error(
+                f"Catcher framing CSV missing columns: {required_cols - set(df.columns)}"
+            )
+            return False
+        df["catcher_id"] = pd.to_numeric(df["catcher_id"], errors="coerce").astype("Int64")
+        df["season"] = pd.to_numeric(df["season"], errors="coerce").astype("Int64")
+        df["framing_runs"] = pd.to_numeric(df["framing_runs"], errors="coerce")
+        df = df.dropna(subset=["catcher_id", "season"])
+        success = store_data_to_sql(df, "catcher_framing", self.db_path, if_exists="replace")
+        if success:
+            logger.info(f"Stored {len(df)} catcher framing rows to 'catcher_framing'.")
+        return success
+
+    def extract_game_catchers_from_statcast(self):
+        """Determine starting catcher IDs from statcast pitch logs."""
+        cols_needed = [
+            "game_pk",
+            "pitcher",
+            "inning",
+            "at_bat_number",
+            "pitch_number",
+            "fielder_2",
+        ]
+        try:
+            with DBConnection(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("PRAGMA table_info(statcast_pitchers)")
+                available_cols = [r[1] for r in cursor.fetchall()]
+                missing = [c for c in cols_needed if c not in available_cols]
+                if missing:
+                    logger.error(f"statcast_pitchers missing columns required for catcher extraction: {missing}")
+                    return False
+                query = (
+                    "SELECT game_pk, pitcher, fielder_2, inning, at_bat_number, pitch_number "
+                    "FROM statcast_pitchers WHERE inning = 1 AND at_bat_number = 1 AND pitch_number = 1"
+                )
+                df = pd.read_sql_query(query, conn)
+        except Exception as e:
+            logger.error(f"Failed reading statcast_pitchers for catcher extraction: {e}")
+            return False
+        if df.empty:
+            logger.warning("No pitch data found for catcher extraction.")
+            return False
+        df["game_pk"] = pd.to_numeric(df["game_pk"], errors="coerce")
+        df["pitcher_id"] = pd.to_numeric(df["pitcher"], errors="coerce")
+        df["catcher_id"] = pd.to_numeric(df["fielder_2"], errors="coerce")
+        df = df.dropna(subset=["game_pk", "pitcher_id", "catcher_id"])
+        df = df[["game_pk", "pitcher_id", "catcher_id"]].drop_duplicates()
+        success = store_data_to_sql(df, "game_catchers", self.db_path, if_exists="replace")
+        if success:
+            logger.info(f"Stored {len(df)} rows to 'game_catchers'.")
+        return success
+
     # --- run Method (Identical - calls modified fetch methods) ---
     def run(self):
         # (Keep identical to previous version)
@@ -491,6 +559,14 @@ class DataFetcher:
                 logger.info("[Historical Step 4/4] Fetching Batter Statcast Data...")
                 if not self.fetch_batter_data_efficient(): pipeline_success = False
 
+                # Optional: load catcher framing CSV to DB
+                if self.args.load_catcher_framing:
+                    self.load_catcher_framing_csv()
+
+                # Optional: extract game catchers from pitch logs
+                if self.args.extract_game_catchers:
+                    self.extract_game_catchers_from_statcast()
+
         except Exception as e: logger.error(f"Unhandled exception in pipeline: {e}"); logger.error(traceback.format_exc()); pipeline_success = False
         finally: total_time = time.time() - start_time;
         logger.info("Final checkpoint save."); self.checkpoint_manager.save_overall_checkpoint()
@@ -538,6 +614,8 @@ def parse_args():
     parser.add_argument("--parallel", action="store_true", help="Use parallel fetch for pitcher Statcast.")
     parser.add_argument("--mlb-api", action="store_true", help="ONLY scrape probable pitchers for the SINGLE date specified by --date.")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging.")
+    parser.add_argument("--load-catcher-framing", action="store_true", help="Load catcher framing CSV into the database.")
+    parser.add_argument("--extract-game-catchers", action="store_true", help="Extract starting catcher IDs from statcast data.")
     return parser.parse_args()
 
 if __name__ == "__main__":
