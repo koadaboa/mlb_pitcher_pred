@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 
-from src.utils import DBConnection, setup_logger
+from src.utils import DBConnection, setup_logger, safe_merge
 from src.config import DBConfig, LogConfig
 
 logger = setup_logger(
@@ -130,7 +130,7 @@ def aggregate_team_batting(db_path: Path = DBConfig.PATH) -> pd.DataFrame:
         team_df = pd.DataFrame()
     else:
         team_df = aggregate_from_batters(batter_df)
-        team_df = team_df.merge(starter_df, on="game_pk", how="left")
+        team_df = safe_merge(team_df, starter_df, on="game_pk", how="left")
         team_df["bat_ops_vs_LHP"] = np.where(
             team_df["pitcher_hand"] == "L", team_df["bat_ops"], np.nan
         )

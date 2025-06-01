@@ -122,3 +122,39 @@ def get_latest_date(
     return None
 
 
+def deduplicate_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Remove pandas merge suffixes and resolve duplicate columns."""
+    dup_cols = [c for c in df.columns if c.endswith("_x") or c.endswith("_y")]
+    for col in dup_cols:
+        if col not in df.columns:
+            continue
+        base = col[:-2]
+        alt = base + ("_y" if col.endswith("_x") else "_x")
+        if base not in df.columns:
+            if alt in df.columns:
+                if df[col].equals(df[alt]):
+                    df = df.drop(columns=[alt])
+                else:
+                    df[col] = df[col].combine_first(df[alt])
+                    df = df.drop(columns=[alt])
+            df = df.rename(columns={col: base})
+        else:
+            df = df.drop(columns=[col], errors="ignore")
+    return df
+
+
+def safe_merge(
+    left: pd.DataFrame,
+    right: pd.DataFrame,
+    *args,
+    **kwargs,
+) -> pd.DataFrame:
+    """Merge two ``DataFrame`` objects and remove any duplicate columns."""
+
+    left = deduplicate_columns(left)
+    right = deduplicate_columns(right)
+    merged = left.merge(right, *args, **kwargs)
+    merged = deduplicate_columns(merged)
+    return merged
+
+

@@ -3,8 +3,13 @@ from __future__ import annotations
 import pandas as pd
 from pathlib import Path
 
-from src.utils import DBConnection, setup_logger
-from src.utils import table_exists, get_latest_date
+from src.utils import (
+    DBConnection,
+    setup_logger,
+    table_exists,
+    get_latest_date,
+    safe_merge,
+)
 from src.config import DBConfig, LogConfig, StrikeoutModelConfig
 from .encoding import mean_target_encode
 from .selection import BASE_EXCLUDE_COLS
@@ -107,21 +112,25 @@ def build_model_features(
             logger.warning("No data found in %s", pitcher_table)
             return pitcher_df
 
-        df = pitcher_df.merge(opp_df, on=["game_pk", "pitcher_id"], how="left")
-        df = df.merge(ctx_df, on=["game_pk", "pitcher_id"], how="left")
-        df = df.merge(lineup_df, on=["game_pk", "pitcher_id"], how="left")
-        df = df.merge(catcher_df, on=["game_pk", "pitcher_id"], how="left")
+        df = safe_merge(pitcher_df, opp_df, on=["game_pk", "pitcher_id"], how="left")
+        df = safe_merge(df, ctx_df, on=["game_pk", "pitcher_id"], how="left")
+        df = safe_merge(df, lineup_df, on=["game_pk", "pitcher_id"], how="left")
+        df = safe_merge(df, catcher_df, on=["game_pk", "pitcher_id"], how="left")
 
         if not bp_df.empty and not lineup_ids.empty:
             if "team" in lineup_ids.columns and "opponent_team" not in lineup_ids.columns:
                 lineup_ids = lineup_ids.rename(columns={"team": "opponent_team"})
-            lineup_ids = lineup_ids.merge(
+            lineup_ids = safe_merge(
+                lineup_ids,
                 pitcher_df[["game_pk", "pitcher_id", "opponent_team"]],
                 on=["game_pk", "opponent_team"],
                 how="inner",
             )
-            pair_merge = lineup_ids.merge(
-                bp_df, on=["game_pk", "pitcher_id", "batter_id"], how="left"
+            pair_merge = safe_merge(
+                lineup_ids,
+                bp_df,
+                on=["game_pk", "pitcher_id", "batter_id"],
+                how="left",
             )
             numeric_cols = [
                 c
@@ -136,7 +145,7 @@ def build_model_features(
                     .add_prefix("opp_batter_")
                     .reset_index()
                 )
-                df = df.merge(agg_df, on=["game_pk", "pitcher_id"], how="left")
+                df = safe_merge(df, agg_df, on=["game_pk", "pitcher_id"], how="left")
 
         # Drop identifier columns that could leak future information before
         # any transformations are applied.

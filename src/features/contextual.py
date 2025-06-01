@@ -12,6 +12,7 @@ from src.utils import (
     setup_logger,
     table_exists,
     get_latest_date,
+    safe_merge,
 )
 from src.config import (
     DBConfig,
@@ -238,10 +239,18 @@ def engineer_opponent_features(
             hand_df = hand_df[
                 ["game_pk", "opponent_team", "pitcher_hand", "team_k_rate"]
             ]
-            df = df.merge(
-                hand_df, on=["game_pk", "opponent_team", "pitcher_hand"], how="left"
+            df = safe_merge(
+                df,
+                hand_df,
+                on=["game_pk", "opponent_team", "pitcher_hand"],
+                how="left",
             )
-            df = df.merge(ops_pivot, on=["game_pk", "opponent_team"], how="left")
+            df = safe_merge(
+                df,
+                ops_pivot,
+                on=["game_pk", "opponent_team"],
+                how="left",
+            )
 
 
         if "pitcher_hand" in df.columns and "bat_ops" in df.columns:
@@ -442,7 +451,7 @@ def engineer_lineup_trends(
             merge_cols=["game_pk"]
             if "pitcher_id" in df.columns:
                 merge_cols.append("pitcher_id")
-            df = df.merge(date_df, on=merge_cols, how="left")
+            df = safe_merge(df, date_df, on=merge_cols, how="left")
     if df.empty:
         logger.warning("No data found in %s", source_table)
         return df
@@ -536,12 +545,18 @@ def engineer_catcher_defense(
                     .first()
                     .rename(columns={"fielder_2": "catcher_id"})
                 )
-                lineup_df = lineup_df.merge(catcher_map, on=["game_pk", "team"], how="left")
+                lineup_df = safe_merge(
+                    lineup_df,
+                    catcher_map,
+                    on=["game_pk", "team"],
+                    how="left",
+                )
         date_df = pd.read_sql_query(
             "SELECT game_pk, pitching_team, pitcher_id, game_date FROM game_level_starting_pitchers",
             conn,
         )
-        lineup_df = lineup_df.merge(
+        lineup_df = safe_merge(
+            lineup_df,
             date_df,
             left_on=["game_pk", "team"],
             right_on=["game_pk", "pitching_team"],
@@ -559,7 +574,8 @@ def engineer_catcher_defense(
 
     metrics_df["game_date"] = pd.to_datetime(metrics_df["game_date"])
     lineup_df["game_date"] = pd.to_datetime(lineup_df["game_date"])
-    df = lineup_df.merge(
+    df = safe_merge(
+        lineup_df,
         metrics_df,
         on=["game_pk", "catcher_id"],
         how="left",
