@@ -104,6 +104,12 @@ Run the scripts in the following order. Use command-line arguments where applica
     ```
     *(This will fetch data, generate features for the prediction date, and use the latest trained model)*
 
+6.  **Analyze Residuals:**
+    ```bash
+    python src/scripts/analyze_residuals.py
+    ```
+    *(Loads the latest model, evaluates the test set, and saves residual plots to `plots/`)*
+
 ## Configuration
 
 Key configurations are managed in `src/config.py`:
