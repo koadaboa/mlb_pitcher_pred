@@ -120,6 +120,9 @@ class StrikeoutModelConfig:
         "first_pitch_strike_rate",
         "fastball_pct",
         "fastball_whiff_rate",
+        "two_strike_k_rate",
+        "high_leverage_k_rate",
+        "woba_runners_on",
         "slider_pct",
         "curve_pct",
         "changeup_pct",
@@ -145,6 +148,7 @@ class StrikeoutModelConfig:
         "batter_so_rate",
         "batter_ops",
         "batter_whiff_rate",
+
     ]
     CONTEXT_ROLLING_COLS = [
         "strikeouts",
@@ -174,6 +178,9 @@ class StrikeoutModelConfig:
         "wind_speed",
         "elevation",
         "rest_days",
+        "pitches_last_7d",
+        "on_il",
+        "days_since_il",
         "humidity",
         "park_factor",
         "team_k_rate",

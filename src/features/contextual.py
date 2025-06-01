@@ -476,3 +476,80 @@ def engineer_lineup_trends(
             df.to_sql(target_table, conn, if_exists="append", index=False)
     logger.info("Saved lineup trends to %s", target_table)
     return df
+
+
+def engineer_catcher_defense(
+    db_path: str | None = None,
+    lineup_table: str = "game_starting_lineups",
+    metrics_table: str = "catcher_defense_metrics",
+    target_table: str = "rolling_catcher_defense",
+    n_jobs: int | None = None,
+    year: int | None = None,
+    rebuild: bool = False,
+) -> pd.DataFrame:
+    """Merge catcher defense metrics and compute rolling stats by catcher."""
+
+    db_path = db_path or DBConfig.PATH
+    logger.info("Loading catcher data from %s", metrics_table)
+    with DBConnection(db_path) as conn:
+        if rebuild and table_exists(conn, target_table):
+            conn.execute(f"DROP TABLE IF EXISTS {target_table}")
+            latest = None
+        else:
+            latest = get_latest_date(conn, target_table, "game_date")
+
+        lineup_df = pd.read_sql_query(
+            f"SELECT game_pk, team, catcher_id FROM {lineup_table}", conn
+        )
+        date_df = pd.read_sql_query(
+            "SELECT game_pk, pitching_team, pitcher_id, game_date FROM game_level_starting_pitchers",
+            conn,
+        )
+        lineup_df = lineup_df.merge(
+            date_df,
+            left_on=["game_pk", "team"],
+            right_on=["game_pk", "pitching_team"],
+            how="left",
+        )
+
+        metrics_query = f"SELECT * FROM {metrics_table}"
+        if year:
+            metrics_query += f" WHERE strftime('%Y', game_date) = '{year}'"
+        metrics_df = pd.read_sql_query(metrics_query, conn)
+
+    if metrics_df.empty or lineup_df.empty:
+        logger.warning("No catcher data found")
+        return pd.DataFrame()
+
+    metrics_df["game_date"] = pd.to_datetime(metrics_df["game_date"])
+    df = lineup_df.merge(
+        metrics_df, on=["game_pk", "catcher_id"], how="left"
+    )
+    if latest is not None:
+        df = df[df["game_date"] > latest]
+    if df.empty:
+        logger.info("No new rows to process for %s", target_table)
+        return df
+
+    numeric_cols = [
+        c
+        for c in metrics_df.select_dtypes(include=np.number).columns
+        if c not in {"game_pk", "catcher_id"}
+    ]
+    df = _add_group_rolling(
+        df,
+        ["catcher_id"],
+        "game_date",
+        prefix="catcher_",
+        n_jobs=n_jobs,
+        numeric_cols=numeric_cols,
+        ewm_halflife=StrikeoutModelConfig.EWM_HALFLIFE,
+    )
+
+    with DBConnection(db_path) as conn:
+        if rebuild or not table_exists(conn, target_table):
+            df.to_sql(target_table, conn, if_exists="replace", index=False)
+        else:
+            df.to_sql(target_table, conn, if_exists="append", index=False)
+    logger.info("Saved catcher defense trends to %s", target_table)
+    return df

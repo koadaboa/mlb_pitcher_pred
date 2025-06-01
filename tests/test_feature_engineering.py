@@ -54,6 +54,11 @@ def setup_test_db(tmp_path: Path, cross_season: bool = False) -> Path:
                 "max_launch_angle": [25, 30, 35],
                 "hard_hit_rate": [0.4, 0.45, 0.5],
                 "barrel_rate": [0.1, 0.12, 0.15],
+                "pfx_x": [0.1, 0.2, 0.15],
+                "pfx_z": [-0.5, -0.6, -0.4],
+                "release_extension": [6.0, 6.1, 6.2],
+                "plate_x": [-0.2, -0.3, -0.1],
+                "plate_z": [2.5, 2.6, 2.7],
             }
         )
         matchup_df = pitcher_df.copy()
@@ -90,6 +95,17 @@ def setup_test_db(tmp_path: Path, cross_season: bool = False) -> Path:
             }
         )
         lineup_df.to_sql("game_starting_lineups", conn, index=False)
+
+        catcher_df = pd.DataFrame(
+            {
+                "game_pk": [1, 2, 3],
+                "catcher_id": [200, 200, 200],
+                "game_date": pd.to_datetime(dates),
+                "called_strike_rate": [0.5, 0.55, 0.6],
+                "framing_runs": [1.0, 1.2, 1.4],
+            }
+        )
+        catcher_df.to_sql("catcher_defense_metrics", conn, index=False)
     return db_path
 
 
@@ -116,9 +132,13 @@ def test_feature_pipeline(tmp_path: Path) -> None:
         assert "slider_pct_mean_3" in df.columns
         assert "offspeed_to_fastball_ratio_mean_3" in df.columns
         assert "fastball_then_breaking_rate_mean_3" in df.columns
+        assert "two_strike_k_rate_mean_3" in df.columns
+        assert "high_leverage_k_rate_mean_3" in df.columns
+        assert "woba_runners_on_mean_3" in df.columns
         assert "unique_pitch_types_mean_3" in df.columns
         assert "zone_pct_mean_3" in df.columns
         assert "hard_hit_rate_mean_3" in df.columns
+        assert "pfx_x_mean_3" in df.columns
         assert "lineup_avg_ops_mean_3" in df.columns
         assert "team_k_rate_mean_3" in df.columns
         assert "opp_lineup_woba_mean_3" in df.columns
@@ -142,6 +162,10 @@ def test_feature_pipeline(tmp_path: Path) -> None:
         assert pd.api.types.is_numeric_dtype(df["home_team_enc"])
         assert "day_of_week" in df.columns
         assert "travel_distance" in df.columns
+        assert "on_il" in df.columns
+        assert "days_since_il" in df.columns
+        assert "pitches_last_7d" in df.columns
+        assert pd.api.types.is_numeric_dtype(df["on_il"])
         # ensure merge suffixes were resolved
         assert "game_date" in df.columns
         assert not any(c.endswith("_x") or c.endswith("_y") for c in df.columns)
@@ -296,6 +320,7 @@ def test_run_feature_engineering_script(tmp_path: Path) -> None:
         assert "lineup_avg_ops_mean_3" in lineup_cols
         model_cols = [row[1] for row in conn.execute("PRAGMA table_info(model_features)")]
         assert "lineup_avg_ops_mean_3" in model_cols
+        assert "catcher_called_strike_rate_mean_3" in model_cols
 
 
 def test_extra_cat_cols_excluded(tmp_path: Path) -> None:

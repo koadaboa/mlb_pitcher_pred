@@ -42,7 +42,7 @@ Includes metadata for each game such as:
 Starting lineups pulled from the MLB boxscore endpoint.
 
 ```text
-['game_pk', 'team', 'batter_id', 'batting_order', 'stand']
+['game_pk', 'team', 'batter_id', 'batting_order', 'stand', 'catcher_id']
 ```
 
 
@@ -235,6 +235,12 @@ train_lgbm(train_df, test_df)
 ## Next Steps
 
 * Train baseline model and evaluate performance
+
+```bash
+python -m src.scripts.train_baseline_model --db-path path/to/pitcher_stats.db
+```
+
+This computes a 5-fold time-series CV RMSE and evaluates on the test set.
 * Add model monitoring & alerting for production use
 
 ## How to Contribute

@@ -51,6 +51,7 @@ logger = setup_logger('mlb_api_module', log_file= log_dir / 'mlb_api.log', level
 # --- Constants ---
 MLB_STATS_API_BASE = "https://statsapi.mlb.com/api/v1"
 MLB_SCHEDULE_ENDPOINT = MLB_STATS_API_BASE + "/schedule"
+MLB_TRANSACTIONS_ENDPOINT = MLB_STATS_API_BASE + "/transactions"
 # Define fields for the schedule endpoint to get necessary info
 # Includes gamePk, status, teams(abbr, name, id, league), probablePitcher(id, fullName)
 SCHEDULE_API_FIELDS = "dates,date,games,gamePk,status,abstractGameState,teams,team,id,name,abbreviation,league,probablePitcher,id,fullName"
@@ -239,6 +240,78 @@ def scrape_probable_pitchers(target_date_str):
 
     logger.info(f"Processed {len(results)} games with probable pitchers from API for {target_date_str}")
     return results
+
+
+@retry_decorator
+def _fetch_transactions(start_date: str, end_date: str) -> dict | None:
+    params = {"sportId": 1, "startDate": start_date, "endDate": end_date}
+    with httpx.Client(headers=API_HEADERS, timeout=REQUEST_TIMEOUT) as client:
+        response = client.get(MLB_TRANSACTIONS_ENDPOINT, params=params)
+    if response.status_code == 404:
+        logger.warning("Transactions API 404 between %s and %s", start_date, end_date)
+        return None
+    elif response.status_code >= 400:
+        logger.error("API error %s fetching transactions", response.status_code)
+        response.raise_for_status()
+    return response.json()
+
+
+def update_player_injury_log(start_date: str, end_date: str, db_path: Path = DB_PATH) -> pd.DataFrame:
+    """Fetch IL transactions and append rows to ``player_injury_log`` table."""
+    try:
+        data = _fetch_transactions(start_date, end_date) or {}
+    except Exception as exc:
+        logger.error("Failed to fetch transactions: %s", exc)
+        return pd.DataFrame()
+
+    transactions = data.get("transactions", [])
+    rows = []
+    for t in transactions:
+        desc = str(t.get("description", "")).lower()
+        if "injured list" not in desc:
+            continue
+        pid = t.get("playerId")
+        date = t.get("transactionDate")
+        if not pid or not date:
+            continue
+        if "placed" in desc or "transferred" in desc:
+            action = "start"
+        elif "reinstated" in desc or "activated" in desc:
+            action = "end"
+        else:
+            continue
+        rows.append({"player_id": pid, "date": date, "action": action})
+
+    if not rows:
+        logger.info("No IL transactions found between %s and %s", start_date, end_date)
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows)
+    df["date"] = pd.to_datetime(df["date"])
+
+    logs = []
+    for pid, grp in df.sort_values("date").groupby("player_id"):
+        current_start = None
+        for _, row in grp.iterrows():
+            if row["action"] == "start":
+                current_start = row["date"]
+            elif row["action"] == "end" and current_start is not None:
+                logs.append({"player_id": pid, "start_date": current_start.date(), "end_date": row["date"].date()})
+                current_start = None
+        if current_start is not None:
+            logs.append({"player_id": pid, "start_date": current_start.date(), "end_date": None})
+
+    log_df = pd.DataFrame(logs)
+
+    with DBConnection(db_path) as conn:
+        if log_df.empty:
+            return log_df
+        if not table_exists(conn, "player_injury_log"):
+            log_df.to_sql("player_injury_log", conn, index=False, if_exists="replace")
+        else:
+            log_df.to_sql("player_injury_log", conn, index=False, if_exists="append")
+    logger.info("Added %d injury log rows", len(log_df))
+    return log_df
 
 # --- Example Usage Block Modified ---
 if __name__ == "__main__":

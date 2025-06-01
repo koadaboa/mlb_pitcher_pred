@@ -61,6 +61,12 @@ def main(argv: list[str] | None = None) -> None:
         year=args.year,
         rebuild=args.rebuild,
     )
+    engineer_catcher_defense(
+        db_path=args.db_path,
+        n_jobs=args.n_jobs,
+        year=args.year,
+        rebuild=args.rebuild,
+    )
     build_model_features(db_path=args.db_path, year=args.year, rebuild=args.rebuild)
 
 

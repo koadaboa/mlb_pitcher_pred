@@ -44,6 +44,7 @@ def build_model_features(
     lineup_table: str = "lineup_trends",
     batter_history_table: str = "rolling_batter_pitcher_history",
     lineup_ids_table: str = "game_starting_lineups",
+
     target_table: str = "model_features",
     year: int | None = None,
     rebuild: bool = False,
@@ -94,6 +95,7 @@ def build_model_features(
         # DataFrames before merging to avoid pandas adding suffixes that can clash
         # on subsequent merges.
         for frame in (opp_df, ctx_df, lineup_df, bp_df, lineup_ids):
+
             if "game_date" in frame.columns:
                 frame.drop(columns=["game_date"], inplace=True)
 
@@ -104,6 +106,7 @@ def build_model_features(
         df = pitcher_df.merge(opp_df, on=["game_pk", "pitcher_id"], how="left")
         df = df.merge(ctx_df, on=["game_pk", "pitcher_id"], how="left")
         df = df.merge(lineup_df, on=["game_pk", "pitcher_id"], how="left")
+        df = df.merge(catcher_df, on=["game_pk", "pitcher_id"], how="left")
 
         if not bp_df.empty and not lineup_ids.empty:
             if "team" in lineup_ids.columns and "opponent_team" not in lineup_ids.columns:
