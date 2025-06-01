@@ -4,7 +4,7 @@ import pandas as pd
 from pathlib import Path
 import logging
 
-from src.utils import DBConnection, setup_logger
+from src.utils import DBConnection, setup_logger, safe_merge
 from src.config import DBConfig, LogConfig
 
 STARTERS_TABLE = "game_level_starting_pitchers"
@@ -33,7 +33,7 @@ def build_matchup_stats(db_path: Path = DBConfig.PATH) -> pd.DataFrame:
         if not set(merge_cols).issubset(team_bat.columns):
             merge_cols = ["game_pk", "pitching_team", "opponent_team"]
 
-        merged = starters.merge(team_bat, on=merge_cols, how="left")
+        merged = safe_merge(starters, team_bat, on=merge_cols, how="left")
         merged.to_sql(OUTPUT_TABLE, conn, if_exists="replace", index=False)
         logger.info("Wrote %d rows to %s", len(merged), OUTPUT_TABLE)
         return merged

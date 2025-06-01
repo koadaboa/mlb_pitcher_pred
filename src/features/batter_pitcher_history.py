@@ -3,7 +3,13 @@ from __future__ import annotations
 import pandas as pd
 from pathlib import Path
 
-from src.utils import DBConnection, setup_logger, table_exists, get_latest_date
+from src.utils import (
+    DBConnection,
+    setup_logger,
+    table_exists,
+    get_latest_date,
+    safe_merge,
+)
 from src.config import DBConfig, LogConfig, StrikeoutModelConfig
 from .engineer_features import add_rolling_features
 
@@ -41,7 +47,7 @@ def engineer_batter_pitcher_history(
             date_df = pd.read_sql_query(
                 f"SELECT game_pk, game_date FROM {date_table}", conn
             )
-            df = df.merge(date_df, on="game_pk", how="left")
+            df = safe_merge(df, date_df, on="game_pk", how="left")
 
     if df.empty:
         logger.warning("No data found in %s", source_table)

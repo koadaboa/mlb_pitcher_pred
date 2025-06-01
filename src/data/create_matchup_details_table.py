@@ -4,7 +4,7 @@ import pandas as pd
 from pathlib import Path
 import logging
 
-from src.utils import DBConnection, setup_logger
+from src.utils import DBConnection, setup_logger, safe_merge
 from src.config import DBConfig, LogConfig
 
 STARTERS_TABLE = "game_level_starting_pitchers"
@@ -38,11 +38,12 @@ def build_matchup_table(db_path: Path = DBConfig.PATH) -> pd.DataFrame:
         cols_in_team = set(team_bat.columns)
         if not set(merge_cols).issubset(cols_in_team):
             merge_cols = ["game_pk", "pitching_team", "opponent_team"]
-        merged = starters.merge(team_bat, on=merge_cols, how="left")
+        merged = safe_merge(starters, team_bat, on=merge_cols, how="left")
 
         # Add boxscore information (joined on game_pk) and preserve existing
         # columns (including game_date) without automatic suffixing.
-        merged = merged.merge(
+        merged = safe_merge(
+            merged,
             boxscores,
             on="game_pk",
             how="left",
