@@ -96,6 +96,10 @@ def parse_args():
     parser.add_argument("--top-n-features", type=int, default=None, help="Save list of top N features.")
     parser.add_argument("--prod-artifact", action="store_true", help="Save artifacts with 'prod_' prefix.")
     parser.add_argument("--verbose-fit", action="store_true", help="Enable verbose fitting output.")
+    parser.add_argument("--vif-threshold", type=float, default=None,
+                        help=f"VIF pruning threshold (default: {StrikeoutModelConfig.VIF_THRESHOLD})")
+    parser.add_argument("--shap-threshold", type=float, default=None,
+                        help=f"SHAP mean abs threshold (default: {StrikeoutModelConfig.SHAP_THRESHOLD})")
     return parser.parse_args()
 
 # --- Main Training Function (REFACTORED for Multi-Stage Selection) ---
@@ -174,7 +178,9 @@ def train_model(args):
                 target_variable=target,
                 exclude_cols=list(exclude_set | (set(all_cols) - set(initial_features))), # Exclude non-initial features
                 prune_vif=True,
-                vif_threshold=StrikeoutModelConfig.VIF_THRESHOLD,
+                vif_threshold=(args.vif_threshold
+                               if args.vif_threshold is not None
+                               else StrikeoutModelConfig.VIF_THRESHOLD),
                 prune_shap=False # SHAP is done later
             )
             if not features_for_optuna: logger.error("No features left after VIF!"); sys.exit(1)
@@ -232,7 +238,9 @@ def train_model(args):
                 prune_vif=False, # VIF already done (or skipped)
                 prune_shap=True,
                 shap_model=prelim_model_trained, # Pass the trained model
-                shap_threshold=StrikeoutModelConfig.SHAP_THRESHOLD,
+                shap_threshold=(args.shap_threshold
+                                if args.shap_threshold is not None
+                                else StrikeoutModelConfig.SHAP_THRESHOLD),
                 shap_sample_frac=StrikeoutModelConfig.SHAP_SAMPLE_FRAC
             )
             if not final_training_features: logger.error("No features left after SHAP!"); sys.exit(1)

@@ -94,7 +94,8 @@ Run the scripts in the following order. Use command-line arguments where applica
 
 4.  **Train Model:**
     ```bash
-    python src/models/train_lgb_model.py --training_end_date YYYY-MM-DD
+    python src/models/train_lgb_model.py --training_end_date YYYY-MM-DD \
+        --vif-threshold 10 --shap-threshold 0.001
     ```
     *(This will train on data up to the specified end date)*
 
