@@ -18,6 +18,11 @@ def calculate_pitcher_rolling_features(
     """
     Calculates rolling features specifically for pitchers.
 
+    Rolling calculations are shifted by one game so that the
+    statistics for a given appearance do not include results from
+    that same game. This prevents data leakage when training models
+    using these features.
+
     Args:
         df: DataFrame containing pitcher game-level data.
         group_col: The column to group by (e.g., 'pitcher_id').
@@ -47,7 +52,8 @@ def calculate_pitcher_rolling_features(
         date_col=date_col,
         metrics=available_metrics,
         windows=windows,
-        min_periods=min_periods
+        min_periods=min_periods,
+        shift_periods=1,  # exclude current game from rolling stats
     )
 
     # Rename columns with 'p_' prefix
