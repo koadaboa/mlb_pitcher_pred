@@ -42,6 +42,7 @@ def build_model_features(
     opp_table: str = "rolling_pitcher_vs_team",
     context_table: str = "contextual_features",
     lineup_table: str = "lineup_trends",
+    catcher_table: str = "rolling_catcher_defense",
     target_table: str = "model_features",
     year: int | None = None,
     rebuild: bool = False,
@@ -80,12 +81,15 @@ def build_model_features(
         lineup_df = pd.read_sql_query(
             base_query.format(lineup_table) + filter_clause, conn
         )
+        catcher_df = pd.read_sql_query(
+            base_query.format(catcher_table) + filter_clause, conn
+        )
 
         # ``game_date`` should be identical across tables for the same ``game_pk``
         # and ``pitcher_id``. Drop duplicate instances from the right-hand
         # DataFrames before merging to avoid pandas adding suffixes that can clash
         # on subsequent merges.
-        for frame in (opp_df, ctx_df, lineup_df):
+        for frame in (opp_df, ctx_df, lineup_df, catcher_df):
             if "game_date" in frame.columns:
                 frame.drop(columns=["game_date"], inplace=True)
 
@@ -96,6 +100,7 @@ def build_model_features(
         df = pitcher_df.merge(opp_df, on=["game_pk", "pitcher_id"], how="left")
         df = df.merge(ctx_df, on=["game_pk", "pitcher_id"], how="left")
         df = df.merge(lineup_df, on=["game_pk", "pitcher_id"], how="left")
+        df = df.merge(catcher_df, on=["game_pk", "pitcher_id"], how="left")
 
         # Drop identifier columns that could leak future information before
         # any transformations are applied.
