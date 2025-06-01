@@ -60,6 +60,7 @@ def objective_lgbm_timeseries_poisson(trial, X_data, y_data):
         'reg_lambda': trial.suggest_float('reg_lambda', grid['reg_lambda'][0], grid['reg_lambda'][1], log=True),
     })
     fold_devs = []
+    # X_data and y_data should already be sorted by date (see data loading)
     tscv = TimeSeriesSplit(n_splits=StrikeoutModelConfig.OPTUNA_CV_SPLITS)
     logger.debug(f"Trial {trial.number}: CV with {tscv.n_splits} splits...")
     for fold, (train_idx, val_idx) in enumerate(tscv.split(X_data)):
@@ -124,6 +125,14 @@ def train_model(args):
             test_df = pd.read_sql_query(f"SELECT * FROM {test_table}", conn)
             logger.info(f"Loaded {len(test_df)} test rows from '{test_table}'")
         logger.info(f"Available columns ({len(train_df.columns)}): {train_df.columns.tolist()}")
+        # Ensure chronological order for TimeSeriesSplit
+        date_col = "game_date"  # Column used for ordering
+        if date_col in train_df.columns and date_col in test_df.columns:
+            train_df = train_df.sort_values(date_col).reset_index(drop=True)
+            test_df = test_df.sort_values(date_col).reset_index(drop=True)
+            logger.info(f"Sorted train and test data by '{date_col}'.")
+        else:
+            logger.warning(f"Column '{date_col}' not found; skipping sort.")
     except Exception as e: logger.error(f"Error loading feature data: {e}", exc_info=True); sys.exit(1)
 
 
