@@ -176,6 +176,13 @@ def compute_features(df: pd.DataFrame) -> Dict:
         "max_launch_angle": max_launch_angle,
         "hard_hit_rate": hard_hit_rate,
         "barrel_rate": barrel_rate,
+        "pfx_x": df["pfx_x"].mean() if "pfx_x" in df.columns else np.nan,
+        "pfx_z": df["pfx_z"].mean() if "pfx_z" in df.columns else np.nan,
+        "release_extension": df["release_extension"].mean()
+        if "release_extension" in df.columns
+        else np.nan,
+        "plate_x": df["plate_x"].mean() if "plate_x" in df.columns else np.nan,
+        "plate_z": df["plate_z"].mean() if "plate_z" in df.columns else np.nan,
         # FIP formula without constant: (13*HR + 3*(BB+HBP) - 2*K) / IP
         "fip": (
             (
