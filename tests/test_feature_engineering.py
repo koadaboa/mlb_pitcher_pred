@@ -122,15 +122,12 @@ def test_feature_pipeline(tmp_path: Path) -> None:
         assert f"strikeouts_ewm_{halflife}" in df.columns
         assert f"strikeouts_momentum_ewm_{halflife}" in df.columns
         assert all("_mean_77" not in c for c in df.columns)
-        # raw game stats should be retained
-        assert "pitches" in df.columns
-        assert "fip" in df.columns
-        assert "slider_pct" in df.columns
-        assert "team_k_rate" in df.columns
-        assert "park_factor" in df.columns
-        assert "log_fip" in df.columns
-        assert "log_pitches" in df.columns
-        assert "log_park_factor" in df.columns
+        # ensure raw game stats are dropped
+        assert "pitches" not in df.columns
+        assert "fip" not in df.columns
+        assert "slider_pct" not in df.columns
+        assert "team_k_rate" not in df.columns
+        assert "park_factor" not in df.columns
         assert "venue_humidity_mean_3" in df.columns
         assert "venue_park_factor_mean_3" in df.columns
         # encoded categorical columns should be numeric
