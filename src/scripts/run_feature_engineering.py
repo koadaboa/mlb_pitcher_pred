@@ -8,6 +8,7 @@ from src.features import (
     engineer_opponent_features,
     engineer_contextual_features,
     engineer_lineup_trends,
+    engineer_catcher_defense,
     build_model_features,
 )
 
@@ -50,6 +51,12 @@ def main(argv: list[str] | None = None) -> None:
         rebuild=args.rebuild,
     )
     engineer_lineup_trends(
+        db_path=args.db_path,
+        n_jobs=args.n_jobs,
+        year=args.year,
+        rebuild=args.rebuild,
+    )
+    engineer_catcher_defense(
         db_path=args.db_path,
         n_jobs=args.n_jobs,
         year=args.year,

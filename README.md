@@ -42,7 +42,7 @@ Includes metadata for each game such as:
 Starting lineups pulled from the MLB boxscore endpoint.
 
 ```text
-['game_pk', 'team', 'batter_id', 'batting_order', 'stand']
+['game_pk', 'team', 'batter_id', 'batting_order', 'stand', 'catcher_id']
 ```
 
 

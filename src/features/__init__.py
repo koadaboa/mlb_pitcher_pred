@@ -5,6 +5,7 @@ from .contextual import (
     engineer_opponent_features,
     engineer_contextual_features,
     engineer_lineup_trends,
+    engineer_catcher_defense,
 )
 from .join import build_model_features
 from .encoding import mean_target_encode
@@ -14,6 +15,7 @@ __all__ = [
     "engineer_opponent_features",
     "engineer_contextual_features",
     "engineer_lineup_trends",
+    "engineer_catcher_defense",
     "build_model_features",
     "mean_target_encode",
 ]

@@ -31,13 +31,14 @@ def fetch_boxscore(game_pk: int) -> Optional[dict]:
 
 
 def parse_lineups(game_pk: int, data: dict) -> List[Dict]:
-    """Return starting lineup rows from boxscore JSON."""
+    """Return starting lineup rows from boxscore JSON with catcher info."""
     rows: List[Dict] = []
     teams = data.get("teams", {})
     for side in ("home", "away"):
         team_data = teams.get(side, {})
         team = team_data.get("team", {}).get("abbreviation")
         players = team_data.get("players", {})
+        catcher_id: int | None = None
         for p in players.values():
             order = p.get("battingOrder")
             if not order:
@@ -46,7 +47,24 @@ def parse_lineups(game_pk: int, data: dict) -> List[Dict]:
                 order_int = int(order)
             except (TypeError, ValueError):
                 continue
-            # Only keep the first 9 lineup spots
+            if order_int > 199:
+                continue
+            position = (
+                p.get("position", {}).get("abbreviation")
+                or p.get("position", {}).get("code")
+                or p.get("gamePosition")
+            )
+            if position == "C" or position == "2":
+                catcher_id = p.get("person", {}).get("id")
+        # Now add lineup rows including the identified catcher_id
+        for p in players.values():
+            order = p.get("battingOrder")
+            if not order:
+                continue
+            try:
+                order_int = int(order)
+            except (TypeError, ValueError):
+                continue
             if order_int > 199:
                 continue
             batter_id = p.get("person", {}).get("id")
@@ -58,6 +76,7 @@ def parse_lineups(game_pk: int, data: dict) -> List[Dict]:
                     "batter_id": batter_id,
                     "batting_order": order_int,
                     "stand": stand,
+                    "catcher_id": catcher_id,
                 }
             )
     return rows
