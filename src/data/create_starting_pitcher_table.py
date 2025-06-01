@@ -176,6 +176,13 @@ def compute_features(df: pd.DataFrame) -> Dict:
         "max_launch_angle": max_launch_angle,
         "hard_hit_rate": hard_hit_rate,
         "barrel_rate": barrel_rate,
+        "pfx_x": df["pfx_x"].mean() if "pfx_x" in df.columns else np.nan,
+        "pfx_z": df["pfx_z"].mean() if "pfx_z" in df.columns else np.nan,
+        "release_extension": df["release_extension"].mean()
+        if "release_extension" in df.columns
+        else np.nan,
+        "plate_x": df["plate_x"].mean() if "plate_x" in df.columns else np.nan,
+        "plate_z": df["plate_z"].mean() if "plate_z" in df.columns else np.nan,
         # FIP formula without constant: (13*HR + 3*(BB+HBP) - 2*K) / IP
         "fip": (
             (
@@ -209,6 +216,58 @@ def compute_features(df: pd.DataFrame) -> Dict:
     features["fastball_whiff_rate"] = (
         swinging[fastball_only].mean() if fastball_only.sum() else np.nan
     )
+
+    last_pitch = df.groupby("at_bat_number").tail(1)
+    if "strikes" in last_pitch.columns:
+        mask = last_pitch["strikes"] == 2
+        if mask.any():
+            features["two_strike_k_rate"] = (
+                last_pitch.loc[mask, "events"].isin(["strikeout", "strikeout_double_play"]).mean()
+            )
+        else:
+            features["two_strike_k_rate"] = np.nan
+    else:
+        features["two_strike_k_rate"] = np.nan
+
+    high_lev_rate = np.nan
+    if "leverage_index" in last_pitch.columns:
+        lev_mask = last_pitch["leverage_index"] >= 1.5
+        if lev_mask.any():
+            high_lev_rate = last_pitch.loc[lev_mask, "events"].isin([
+                "strikeout",
+                "strikeout_double_play",
+            ]).mean()
+    elif {"home_score", "away_score", "inning"}.issubset(last_pitch.columns):
+        run_diff = (
+            last_pitch["home_score"] - last_pitch["away_score"]
+            if first_row["inning_topbot"] == "Top"
+            else last_pitch["away_score"] - last_pitch["home_score"]
+        )
+        lev_mask = (last_pitch["inning"] >= 7) & (run_diff.abs() <= 1)
+        if lev_mask.any():
+            high_lev_rate = last_pitch.loc[lev_mask, "events"].isin([
+                "strikeout",
+                "strikeout_double_play",
+            ]).mean()
+    features["high_leverage_k_rate"] = high_lev_rate
+
+    if {
+        "on_1b",
+        "on_2b",
+        "on_3b",
+        "woba_value",
+        "woba_denom",
+    }.issubset(df.columns):
+        first_ab = df.sort_values("pitch_number").groupby("at_bat_number").first()
+        on_base = first_ab[["on_1b", "on_2b", "on_3b"]].notna().any(axis=1)
+        woba_val = df.groupby("at_bat_number")["woba_value"].sum()
+        woba_den = df.groupby("at_bat_number")["woba_denom"].sum()
+        denom = woba_den[on_base].sum()
+        features["woba_runners_on"] = (
+            woba_val[on_base].sum() / denom if denom else np.nan
+        )
+    else:
+        features["woba_runners_on"] = np.nan
     return features
 
 
