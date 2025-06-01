@@ -498,9 +498,45 @@ def engineer_catcher_defense(
         else:
             latest = get_latest_date(conn, target_table, "game_date")
 
+        # "catcher_id" was added in later versions of the lineup table. Infer it
+        # from pitch-level data if the column is missing so the feature
+        # engineering script can run on older databases.
+        table_cols = [row[1] for row in conn.execute(f"PRAGMA table_info({lineup_table})")]
+        select_cols = ["game_pk", "team"]
+        if "catcher_id" in table_cols:
+            select_cols.append("catcher_id")
         lineup_df = pd.read_sql_query(
-            f"SELECT game_pk, team, catcher_id FROM {lineup_table}", conn
+            f"SELECT {', '.join(select_cols)} FROM {lineup_table}", conn
         )
+        if "catcher_id" not in lineup_df.columns:
+            logger.warning(
+                "catcher_id column missing from %s; inferring from statcast_pitchers",
+                lineup_table,
+            )
+            catcher_df = pd.read_sql_query(
+                """
+                SELECT game_pk, inning_topbot, home_team, away_team,
+                       fielder_2, pitch_number, inning
+                FROM statcast_pitchers
+                WHERE inning = 1
+                """,
+                conn,
+            )
+            if catcher_df.empty:
+                lineup_df["catcher_id"] = np.nan
+            else:
+                catcher_df["team"] = np.where(
+                    catcher_df["inning_topbot"] == "Top",
+                    catcher_df["home_team"],
+                    catcher_df["away_team"],
+                )
+                catcher_map = (
+                    catcher_df.sort_values("pitch_number")
+                    .groupby(["game_pk", "team"], as_index=False)["fielder_2"]
+                    .first()
+                    .rename(columns={"fielder_2": "catcher_id"})
+                )
+                lineup_df = lineup_df.merge(catcher_map, on=["game_pk", "team"], how="left")
         date_df = pd.read_sql_query(
             "SELECT game_pk, pitching_team, pitcher_id, game_date FROM game_level_starting_pitchers",
             conn,
