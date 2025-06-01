@@ -183,6 +183,82 @@ def scrape_probable_pitchers(target_date_str, team_mapping_df):
     logger.info(f"Scraped {len(results)} matchups for {target_date_str}")
     return results
 
+
+def scrape_daily_lineups(date_str):
+    """Scrape starting lineups from the MLB Stats API for a given date.
+
+    Parameters
+    ----------
+    date_str : str
+        Target date in ``YYYY-MM-DD`` format.
+
+    Returns
+    -------
+    pandas.DataFrame
+        DataFrame with columns ``game_pk``, ``team_abbr``, ``batter_id`` and
+        ``batting_order``. Returns an empty DataFrame if no data is found or
+        on error.
+    """
+
+    schedule_url = "https://statsapi.mlb.com/api/v1/schedule"
+    params = {"sportId": 1, "date": date_str}
+    try:
+        resp = requests.get(schedule_url, params=params, headers=HEADERS, timeout=20)
+        resp.raise_for_status()
+        schedule = resp.json()
+    except Exception as e:
+        logger.error(f"Failed retrieving schedule for {date_str}: {e}")
+        return pd.DataFrame(columns=["game_pk", "team_abbr", "batter_id", "batting_order"])
+
+    lineup_rows = []
+    for date_block in schedule.get("dates", []):
+        for game in date_block.get("games", []):
+            game_pk = game.get("gamePk")
+            if not game_pk:
+                continue
+            teams = game.get("teams", {})
+            team_abbrs = {
+                "home": teams.get("home", {}).get("team", {}).get("abbreviation"),
+                "away": teams.get("away", {}).get("team", {}).get("abbreviation"),
+            }
+
+            time.sleep(DataConfig.RATE_LIMIT_PAUSE)
+            try:
+                feed = requests.get(
+                    f"https://statsapi.mlb.com/api/v1.1/game/{game_pk}/feed/live",
+                    headers=HEADERS,
+                    timeout=20,
+                ).json()
+            except Exception as e:
+                logger.error(f"Failed retrieving live feed for {game_pk}: {e}")
+                continue
+
+            box = feed.get("liveData", {}).get("boxscore", {}).get("teams", {})
+            for side in ["home", "away"]:
+                order = box.get(side, {}).get("battingOrder", [])
+                players = box.get(side, {}).get("players", {})
+                team = team_abbrs.get(side)
+                order_num = 1
+                for pid_key in order:
+                    pdata = players.get(pid_key, {})
+                    pid = pdata.get("person", {}).get("id")
+                    if pid:
+                        lineup_rows.append(
+                            {
+                                "game_pk": game_pk,
+                                "team_abbr": team,
+                                "batter_id": int(pid),
+                                "batting_order": order_num,
+                            }
+                        )
+                    order_num += 1
+
+    if not lineup_rows:
+        logger.info(f"No lineups found for {date_str}")
+        return pd.DataFrame(columns=["game_pk", "team_abbr", "batter_id", "batting_order"])
+
+    return pd.DataFrame(lineup_rows)
+
 # --- Example Usage Block Modified ---
 if __name__ == "__main__":
     if not MODULE_IMPORTS_OK: sys.exit("Exiting: Failed module imports.")
