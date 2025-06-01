@@ -71,6 +71,8 @@ def build_model_features(
         pitcher_df = pd.read_sql_query(
             base_query.format(pitcher_table) + filter_clause, conn
         )
+        if "game_date" in pitcher_df.columns:
+            pitcher_df["game_date"] = pd.to_datetime(pitcher_df["game_date"])
         opp_df = pd.read_sql_query(base_query.format(opp_table) + filter_clause, conn)
         ctx_df = pd.read_sql_query(
             base_query.format(context_table) + filter_clause, conn
