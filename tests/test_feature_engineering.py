@@ -90,6 +90,15 @@ def setup_test_db(tmp_path: Path, cross_season: bool = False) -> Path:
             }
         )
         lineup_df.to_sql("game_starting_lineups", conn, index=False)
+
+        injury_df = pd.DataFrame(
+            {
+                "player_id": [10],
+                "start_date": ["2024-03-20"],
+                "end_date": ["2024-03-25"],
+            }
+        )
+        injury_df.to_sql("player_injury_log", conn, index=False)
     return db_path
 
 
@@ -144,6 +153,10 @@ def test_feature_pipeline(tmp_path: Path) -> None:
         assert pd.api.types.is_numeric_dtype(df["home_team_enc"])
         assert "day_of_week" in df.columns
         assert "travel_distance" in df.columns
+        assert "on_il" in df.columns
+        assert "days_since_il" in df.columns
+        assert "pitches_last_7d" in df.columns
+        assert pd.api.types.is_numeric_dtype(df["on_il"])
         # ensure merge suffixes were resolved
         assert "game_date" in df.columns
         assert not any(c.endswith("_x") or c.endswith("_y") for c in df.columns)

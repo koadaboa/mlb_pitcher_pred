@@ -14,6 +14,7 @@ from src.utils import (
     get_latest_date,
 )
 from src.config import DBConfig, StrikeoutModelConfig, LogConfig
+from .workload_features import add_recent_pitch_counts, add_injury_indicators
 
 logger = setup_logger(
     "engineer_features",
@@ -155,6 +156,16 @@ def engineer_pitcher_features(
         return df
 
     df["rest_days"] = calculate_rest_days(df, "pitcher_id", "game_date")
+
+    # Add workload features
+    with DBConnection(db_path) as conn:
+        if table_exists(conn, "player_injury_log"):
+            injury_df = pd.read_sql_query("SELECT * FROM player_injury_log", conn)
+        else:
+            injury_df = pd.DataFrame(columns=["player_id", "start_date", "end_date"])
+
+    df["pitches_last_7d"] = add_recent_pitch_counts(df, 7)
+    df = add_injury_indicators(df, injury_df)
 
     logger.info("Computing rolling features for %d rows", len(df))
     df = add_rolling_features(
