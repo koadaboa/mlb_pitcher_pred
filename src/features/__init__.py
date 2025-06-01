@@ -19,6 +19,7 @@ __all__ = [
     "engineer_contextual_features",
     "engineer_lineup_trends",
     "engineer_batter_pitcher_history",
+    "engineer_catcher_defense",
     "build_model_features",
     "mean_target_encode",
 ]
