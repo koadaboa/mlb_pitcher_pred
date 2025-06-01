@@ -443,6 +443,36 @@ class DataFetcher:
         self.checkpoint_manager.save_overall_checkpoint()
         return True
 
+    def fetch_daily_lineups_for_date(self, date_obj):
+        """Fetch starting lineups for a specific date and store them."""
+        date_str = date_obj.strftime("%Y-%m-%d")
+        logger.info(f"Fetching daily lineups for {date_str}...")
+        try:
+            df = scrape_daily_lineups(date_str)
+            if df is None or df.empty:
+                logger.info(f"No lineup data for {date_str}")
+                return True
+            success = store_data_to_sql(df, 'daily_lineups', self.db_path, if_exists='append')
+            if success:
+                logger.info(f"Stored {len(df)} lineup rows for {date_str}")
+            else:
+                logger.error(f"Failed storing lineup data for {date_str}")
+            return success
+        except Exception as e:
+            logger.error(f"Error fetching/storing lineups for {date_str}: {e}")
+            logger.error(traceback.format_exc())
+            return False
+
+    def fetch_daily_lineups_range(self, start_date, end_date):
+        """Fetch lineups for each date in a range."""
+        current = start_date
+        overall_success = True
+        while current <= end_date:
+            if not self.fetch_daily_lineups_for_date(current):
+                overall_success = False
+            current += timedelta(days=1)
+        return overall_success
+
     # --- run Method (Identical - calls modified fetch methods) ---
     def run(self):
         # (Keep identical to previous version)
@@ -453,7 +483,10 @@ class DataFetcher:
             if self.args.mlb_api:
                 logger.info("Running in MLB API Scraper Only mode...")
                 logger.info("[Scraper Step 1/1] Fetching Scraped Probable Pitcher Data...")
-                if not self.fetch_scraped_pitcher_data(): pipeline_success = False
+                if not self.fetch_scraped_pitcher_data():
+                    pipeline_success = False
+                if not self.fetch_daily_lineups_for_date(self.target_fetch_date_obj):
+                    pipeline_success = False
             elif self.single_date_historical_mode:
                 logger.info(f"Running in Single-Date Historical Fetch mode for {self.target_fetch_date_obj.strftime('%Y-%m-%d')}...")
                 logger.info("[Single Date Step 1/2] Fetching Pitcher Statcast Data...")
@@ -461,8 +494,12 @@ class DataFetcher:
                 if pitcher_mapping is not None and not pitcher_mapping.empty:
                     if not self.fetch_all_pitchers(pitcher_mapping): pipeline_success = False
                 else: logger.warning("Skipping pitcher Statcast fetch: mapping failed/empty.")
-                logger.info("[Single Date Step 2/2] Fetching Batter Statcast Data...")
-                if not self.fetch_batter_data_efficient(): pipeline_success = False
+                logger.info("[Single Date Step 2/3] Fetching Batter Statcast Data...")
+                if not self.fetch_batter_data_efficient():
+                    pipeline_success = False
+                logger.info("[Single Date Step 3/3] Fetching Daily Lineups...")
+                if not self.fetch_daily_lineups_for_date(self.target_fetch_date_obj):
+                    pipeline_success = False
             else: # Full Historical Backfill mode
                 logger.info("Running in Full Historical Backfill mode...")
                 # Step 1: Load Pitcher Mapping (No longer fetches/creates)
@@ -489,7 +526,14 @@ class DataFetcher:
 
                 # Step 4: Fetch Batter Statcast
                 logger.info("[Historical Step 4/4] Fetching Batter Statcast Data...")
-                if not self.fetch_batter_data_efficient(): pipeline_success = False
+                if not self.fetch_batter_data_efficient():
+                    pipeline_success = False
+
+                # Step 5: Fetch Daily Lineups for historical range
+                start_hist_date = date(min(self.seasons_to_fetch), 3, 1)
+                logger.info("[Historical Step 5/5] Fetching Daily Lineups...")
+                if not self.fetch_daily_lineups_range(start_hist_date, self.end_date_limit):
+                    pipeline_success = False
 
         except Exception as e: logger.error(f"Unhandled exception in pipeline: {e}"); logger.error(traceback.format_exc()); pipeline_success = False
         finally: total_time = time.time() - start_time;
