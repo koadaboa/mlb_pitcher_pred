@@ -8,6 +8,7 @@ from src.features import (
     engineer_opponent_features,
     engineer_contextual_features,
     engineer_lineup_trends,
+    engineer_catcher_defense,
     engineer_batter_pitcher_history,
     build_model_features,
 )
