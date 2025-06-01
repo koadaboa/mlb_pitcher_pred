@@ -359,6 +359,18 @@ def train_model(args):
         logger.info(f"Test RMSE : {test_rmse:.4f}, Test MAE : {test_mae:.4f}")
         logger.info(f"Test W/1 K: {test_w1:.4f}, Test W/2 K: {test_w2:.4f}")
         logger.info(f"Test Poisson Deviance: {test_pdev:.4f}")
+
+        # Log summary stats of rounded predictions vs. actuals
+        rounded_preds = np.round(test_preds).astype(int)
+        pred_min, pred_max = rounded_preds.min(), rounded_preds.max()
+        hist = np.bincount(rounded_preds)
+        actual_min, actual_max = int(y_test.min()), int(y_test.max())
+        logger.info(f"Actual K range: {actual_min}-{actual_max}")
+        logger.info(f"Rounded prediction range: {pred_min}-{pred_max}")
+        logger.info(f"Rounded prediction histogram: {hist.tolist()}")
+        outside_frac = np.mean((rounded_preds < actual_min) | (rounded_preds > actual_max))
+        if outside_frac > 0.5:
+            logger.warning(f"Rounded predictions mostly outside actual range ({outside_frac*100:.1f}% outside)")
     else: logger.info("Test set not available for evaluation.")
 
     # --- Save Artifacts (including the FINAL feature list again) ---
