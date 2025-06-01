@@ -378,6 +378,49 @@ def train_model(args):
         logger.info("------------------------------------------")
     except Exception as e: logger.error(f"Could not get/save/log feature importances: {e}")
 
+    # --- Remove zero-importance features and retrain ---
+    zero_feats = importance_df.loc[importance_df['importance'] == 0, 'feature'].tolist()
+    if zero_feats:
+        logger.info(f"Pruning {len(zero_feats)} zero-importance features: {zero_feats}")
+        final_training_features = [f for f in final_training_features if f not in zero_feats]
+
+        # Subset data to pruned feature list
+        X_final_train = X_final_train[final_training_features]
+        X_test = X_test[[c for c in final_training_features if c in X_test.columns]]
+
+        train_dataset = lgb.Dataset(X_final_train, label=y_final_train, feature_name=final_training_features)
+        if args.mode == 'production':
+            valid_sets = [train_dataset]; valid_names = ['train']
+            early_stopping_rounds = None
+        else:
+            valid_dataset = lgb.Dataset(X_test, label=y_test, reference=train_dataset)
+            valid_sets = [train_dataset, valid_dataset]; valid_names = ['train', 'eval']
+            early_stopping_rounds = StrikeoutModelConfig.EARLY_STOPPING_ROUNDS
+
+        callbacks = [lgb.log_evaluation(period=verbose_eval)]
+        if early_stopping_rounds is not None and early_stopping_rounds > 0:
+            callbacks.insert(0, lgb.early_stopping(early_stopping_rounds, verbose=args.verbose_fit))
+
+        logger.info("Retraining final model after pruning zero-importance features...")
+        final_model = lgb.train(
+            best_params, train_dataset,
+            num_boost_round=StrikeoutModelConfig.FINAL_ESTIMATORS,
+            valid_sets=valid_sets, valid_names=valid_names,
+            callbacks=callbacks )
+        best_iter = final_model.best_iteration if early_stopping_rounds else StrikeoutModelConfig.FINAL_ESTIMATORS
+
+        train_preds = final_model.predict(X_final_train, num_iteration=best_iter)
+        if not X_test.empty and not y_test.empty:
+            test_preds = final_model.predict(X_test, num_iteration=best_iter)
+
+        pruned_path = model_dir / f"{model_prefix}_feature_columns_pruned_{timestamp}.pkl"
+        try:
+            with open(pruned_path, 'wb') as f: pickle.dump(final_training_features, f)
+            logger.info(f"Pruned features list ({len(final_training_features)}) saved: {pruned_path}")
+        except Exception as e: logger.error(f"Failed to save pruned feature list: {e}")
+    else:
+        logger.info("No zero-importance features to prune.")
+
     # Save plots (using final data/preds)
     try: plt.figure(figsize=(10, max(8, len(final_training_features)//5))); plot_n = min(30, len(importance_df)); sns.barplot(x="importance", y="feature", data=importance_df.head(plot_n)); plt.title(f"LGBM Feature Importance ({model_prefix.replace('_lgb','')} - Top {plot_n})"); plt.tight_layout(); plot_path = plot_dir / f"{model_prefix}_feat_imp_{timestamp}.png"; plt.savefig(plot_path); logger.info(f"Importance plot: {plot_path}"); plt.close()
     except Exception as e: logger.error(f"Failed to create importance plot: {e}")
