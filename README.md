@@ -198,6 +198,15 @@ rolling features:
 python -m src.scripts.run_feature_engineering --db-path path/to/pitcher_stats.db --n-jobs 8
 ```
 
+### Data Leakage Prevention
+
+`build_model_features` removes columns that could leak target information. Raw
+game outcome stats (e.g. `bat_strikeouts`) and identifier fields such as
+`away_pitcher_ids`, `home_pitcher_ids`, and `scraped_timestamp` are dropped
+before saving `model_features`. Only rolling statistics or whitelisted numeric
+columns like `temp`, `wind_speed`, `park_factor`, and `team_k_rate` are
+retained.
+
 ### Hyperparameter Tuning & Training
 
 Run Optuna tuning for each model to find the best parameters:

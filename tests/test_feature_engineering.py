@@ -122,15 +122,12 @@ def test_feature_pipeline(tmp_path: Path) -> None:
         assert f"strikeouts_ewm_{halflife}" in df.columns
         assert f"strikeouts_momentum_ewm_{halflife}" in df.columns
         assert all("_mean_77" not in c for c in df.columns)
-        # raw game stats should be retained
-        assert "pitches" in df.columns
-        assert "fip" in df.columns
-        assert "slider_pct" in df.columns
-        assert "team_k_rate" in df.columns
-        assert "park_factor" in df.columns
-        assert "log_fip" in df.columns
-        assert "log_pitches" in df.columns
-        assert "log_park_factor" in df.columns
+        # ensure raw game stats are dropped
+        assert "pitches" not in df.columns
+        assert "fip" not in df.columns
+        assert "slider_pct" not in df.columns
+        assert "team_k_rate" not in df.columns
+        assert "park_factor" not in df.columns
         assert "venue_humidity_mean_3" in df.columns
         assert "venue_park_factor_mean_3" in df.columns
         # encoded categorical columns should be numeric
@@ -289,3 +286,32 @@ def test_run_feature_engineering_script(tmp_path: Path) -> None:
         assert "lineup_avg_ops_mean_3" in lineup_cols
         model_cols = [row[1] for row in conn.execute("PRAGMA table_info(model_features)")]
         assert "lineup_avg_ops_mean_3" in model_cols
+
+
+def test_extra_cat_cols_excluded(tmp_path: Path) -> None:
+    """Ensure problematic categorical columns are not mean-encoded."""
+    db_path = setup_test_db(tmp_path)
+
+    engineer_pitcher_features(db_path=db_path)
+    engineer_opponent_features(db_path=db_path)
+    engineer_contextual_features(db_path=db_path)
+
+    # Inject columns that should not be encoded
+    with sqlite3.connect(db_path) as conn:
+        df = pd.read_sql_query("SELECT * FROM contextual_features", conn)
+        df["away_pitcher_ids"] = ["[1]"] * len(df)
+        df["home_pitcher_ids"] = ["[2]"] * len(df)
+        df["scraped_timestamp"] = "2024-04-01"
+        df.to_sql("contextual_features", conn, if_exists="replace", index=False)
+
+    engineer_lineup_trends(db_path=db_path)
+    build_model_features(db_path=db_path)
+
+    with sqlite3.connect(db_path) as conn:
+        df = pd.read_sql_query("SELECT * FROM model_features", conn)
+        assert "away_pitcher_ids_enc" not in df.columns
+        assert "home_pitcher_ids_enc" not in df.columns
+        assert "scraped_timestamp_enc" not in df.columns
+        assert "away_pitcher_ids" not in df.columns
+        assert "home_pitcher_ids" not in df.columns
+        assert "scraped_timestamp" not in df.columns

@@ -8,6 +8,13 @@ from src.utils import table_exists, get_latest_date
 from src.config import DBConfig, LogConfig, StrikeoutModelConfig
 from .encoding import mean_target_encode
 from .selection import BASE_EXCLUDE_COLS
+
+# Categorical columns that should be ignored when mean target encoding
+EXTRA_CAT_EXCLUDE_COLS = [
+    "away_pitcher_ids",
+    "home_pitcher_ids",
+    "scraped_timestamp",
+]
 import re
 import numpy as np
 
@@ -125,26 +132,48 @@ def build_model_features(
         if drop_cols:
             df = df.drop(columns=drop_cols)
 
-        # Retain all columns after dropping unsupported window sizes. Previously
-        # numeric columns that weren't rolled or explicitly listed in
-        # ``ALLOWED_BASE_NUMERIC_COLS`` were discarded.  Keeping them allows the
-        # model to consider raw game statistics as well.
+        # Drop numeric columns that would leak information. Only rolling stats
+        # or explicitly whitelisted numeric columns are kept.
+        allowed_numeric = set(StrikeoutModelConfig.ALLOWED_BASE_NUMERIC_COLS)
         target = StrikeoutModelConfig.TARGET_VARIABLE
-        keep_cols = list(df.columns)
+        keep_cols = []
+        for col in df.columns:
+            if pattern.search(col):
+                keep_cols.append(col)
+            elif col in allowed_numeric or col == target:
+                keep_cols.append(col)
+            elif not pd.api.types.is_numeric_dtype(df[col]):
+                keep_cols.append(col)
         df = df[keep_cols]
 
         numeric_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c]) and c != target]
         _winsorize_columns(df, numeric_cols)
         _log_transform(df, numeric_cols)
+        # Drop identifier columns entirely so they cannot be encoded or used as
+        # raw features
+        df = df.drop(columns=[c for c in EXTRA_CAT_EXCLUDE_COLS if c in df.columns])
+        exclude_set = set(BASE_EXCLUDE_COLS).union(EXTRA_CAT_EXCLUDE_COLS)
         cat_cols = [
             c
             for c in df.columns
-            if c not in BASE_EXCLUDE_COLS
+            if c not in exclude_set
             and not pd.api.types.is_numeric_dtype(df[c])
             and c != target
         ]
         if cat_cols:
-            df, _ = mean_target_encode(df, cat_cols, target)
+            train_mask = df["game_date"].dt.year.isin(
+                StrikeoutModelConfig.DEFAULT_TRAIN_YEARS
+            )
+            if not train_mask.any() or not (~train_mask).any():
+                df, _ = mean_target_encode(df, cat_cols, target)
+            else:
+                train_df, enc_map = mean_target_encode(
+                    df.loc[train_mask], cat_cols, target
+                )
+                test_df, _ = mean_target_encode(
+                    df.loc[~train_mask], cat_cols, mapping=enc_map
+                )
+                df = pd.concat([train_df, test_df]).sort_index()
         if df.empty:
             logger.info("No new rows to process for %s", target_table)
             return df
