@@ -114,6 +114,9 @@ def test_feature_pipeline(tmp_path: Path) -> None:
         assert "slider_pct_mean_3" in df.columns
         assert "offspeed_to_fastball_ratio_mean_3" in df.columns
         assert "fastball_then_breaking_rate_mean_3" in df.columns
+        assert "two_strike_k_rate_mean_3" in df.columns
+        assert "high_leverage_k_rate_mean_3" in df.columns
+        assert "woba_runners_on_mean_3" in df.columns
         assert "unique_pitch_types_mean_3" in df.columns
         assert "zone_pct_mean_3" in df.columns
         assert "hard_hit_rate_mean_3" in df.columns
