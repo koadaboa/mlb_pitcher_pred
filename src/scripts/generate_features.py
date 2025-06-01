@@ -71,6 +71,11 @@ PITCHER_METRICS_FOR_ROLLING = [
     "k_percent",
     "swinging_strike_percent",
     "avg_velocity",
+    "avg_plate_x",
+    "avg_plate_z",
+    "avg_release_pos_x",
+    "avg_release_pos_z",
+    "avg_release_pos_y",
     # 'k_percent_vs_lhb', 'swinging_strike_percent_vs_lhb', # These might not exist in starter stats
     # 'k_percent_vs_rhb', 'swinging_strike_percent_vs_rhb', # Need to confirm columns in game_level_starter_stats
     "fastball_percent",
