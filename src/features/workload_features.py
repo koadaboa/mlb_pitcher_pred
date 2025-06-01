@@ -17,7 +17,9 @@ def add_recent_pitch_counts(df: pd.DataFrame, window_days: int = 7) -> pd.Series
     for pid, g in df.groupby("pitcher_id"):
         shifted = g.set_index("game_date")["pitches"].shift(1)
         rolled = shifted.rolling(f"{window_days}D").sum()
-        result_parts.append(rolled.rename(g.index))
+        # Maintain alignment with the original group by restoring its index
+        rolled.index = g.index
+        result_parts.append(rolled)
     out = pd.concat(result_parts).sort_index()
     out.name = f"pitches_last_{window_days}d"
     return out
