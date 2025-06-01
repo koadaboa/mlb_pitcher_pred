@@ -75,6 +75,11 @@ PITCHER_METRICS_FOR_ROLLING = [
     "woba",
     "iso",
     "babip",  # Added more potentially available stats
+    "pitches_per_inning",
+    "pitches_first_time_through_order",
+    "pitches_high_leverage",
+    "two_strike_pct",
+    "three_ball_pct",
 ]
 OPPONENT_METRICS_FOR_ROLLING = [
     # These come from game_level_team_stats (batting side)

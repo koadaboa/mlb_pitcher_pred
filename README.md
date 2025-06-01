@@ -10,9 +10,13 @@ The project follows these main steps:
 
 1.  **Data Fetching:** Retrieves raw data (Statcast, schedules, team stats, umpire assignments) using `pybaseball` and web scraping (ESPN).
 2.  **Data Aggregation:** Processes pitch-level Statcast data into game-level summaries for pitchers and batters.
-3.  **Feature Engineering:** Calculates numerous features based on historical performance, including rolling averages for pitchers, opponents, ballparks, and umpires, as well as pitcher rest days.
+3.  **Feature Engineering:** Calculates numerous features based on historical performance, including rolling averages for pitchers, opponents, ballparks, and umpires, pitcher rest days, and additional context metrics such as pitches per inning, high‑leverage usage, and two‑strike/three‑ball rates.
 4.  **Model Training:** Trains a LightGBM model (using Poisson regression) on the historical features, incorporating feature selection and hyperparameter tuning (Optuna).
 5.  **Prediction:** Uses the trained model and newly generated features to predict strikeouts for upcoming games.
+
+### Pitch Sequencing & Context Metrics
+
+During aggregation, additional per-game context is derived from pitch-level data. These include pitches thrown per inning, first-time-through-the-order counts, high-leverage pitch usage (leverage index > 1.5), and the share of pitches thrown with two strikes or three balls. Rolling averages of these metrics are used alongside traditional stats when generating features.
 
 ## Project Structure
 mlb_pred/

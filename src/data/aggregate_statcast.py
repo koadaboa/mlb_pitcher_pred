@@ -63,8 +63,8 @@ else:
 
 # --- Constants (Keep identical) ---
 PITCHER_METRICS_RAW = [
-    'pitcher', 'game_pk', 'game_date', 'player_name', 'p_throws', 'home_team', 'away_team',
-    'inning', 'inning_topbot', 'events', 'description', 'zone',
+    'pitcher', 'batter', 'game_pk', 'game_date', 'player_name', 'p_throws', 'home_team', 'away_team',
+    'inning', 'inning_topbot', 'events', 'description', 'zone', 'leverage_index',
     'balls', 'strikes', 'outs_when_up', 'pitch_number', 'pitch_name',
     'release_speed', 'release_spin_rate', 'spin_axis', 'pfx_x', 'pfx_z', 'plate_x', 'plate_z',
     'effective_speed', 'release_extension', 'release_pos_x', 'release_pos_z', 'release_pos_y',
@@ -139,6 +139,32 @@ def calculate_additional_pitcher_stats(df):
         df['iso_value'] = pd.to_numeric(df['iso_value'], errors='coerce').fillna(0)
         df['iso_points'] = df['iso_value'] * df['woba_denom']
     else: logger.warning("'iso_value' column not found. Skipping iso_points."); df['iso_points'] = 0
+
+    # New context/sequencing flags
+    if 'strikes' in df.columns:
+        df['is_two_strike'] = (pd.to_numeric(df['strikes'], errors='coerce') == 2).astype(int)
+    else:
+        logger.warning("'strikes' column not found. Skipping two-strike flag.")
+        df['is_two_strike'] = 0
+
+    if 'balls' in df.columns:
+        df['is_three_ball'] = (pd.to_numeric(df['balls'], errors='coerce') == 3).astype(int)
+    else:
+        logger.warning("'balls' column not found. Skipping three-ball flag.")
+        df['is_three_ball'] = 0
+
+    if 'leverage_index' in df.columns:
+        df['is_high_leverage'] = (pd.to_numeric(df['leverage_index'], errors='coerce') > 1.5).astype(int)
+    else:
+        logger.warning("'leverage_index' column not found. Skipping high leverage calc.")
+        df['is_high_leverage'] = 0
+
+    if all(col in df.columns for col in ['game_pk', 'pitcher', 'batter', 'at_bat_number']):
+        first_pa = df.groupby(['game_pk', 'pitcher', 'batter'])['at_bat_number'].transform('min')
+        df['is_first_tto'] = (df['at_bat_number'] == first_pa).astype(int)
+    else:
+        logger.warning("Missing columns for first time through order calc.")
+        df['is_first_tto'] = 0
     logger.debug("Finished calculating additional pitcher stats.")
     return df
 
@@ -146,11 +172,11 @@ def aggregate_pitcher_data(df):
     # (Keep identical to previous version)
     logger.info(f"Aggregating pitcher data for {df['game_pk'].nunique()} games, {df['pitcher'].nunique()} pitchers...")
     if df.empty: return pd.DataFrame()
-    numeric_cols = [ 'release_speed', 'release_spin_rate', 'spin_axis', 'pfx_x', 'pfx_z', 'plate_x', 'plate_z', 'effective_speed', 'release_extension', 'release_pos_x', 'release_pos_z', 'release_pos_y', 'sz_top', 'sz_bot', 'strikeout', 'walk', 'hit', 'home_run', 'batters_faced', 'outs_recorded', 'is_swinging_strike', 'is_called_strike', 'is_in_zone', 'is_fastball', 'is_breaking', 'is_offspeed', 'woba_points', 'woba_denom', 'babip_points', 'iso_points' ]
+    numeric_cols = [ 'release_speed', 'release_spin_rate', 'spin_axis', 'pfx_x', 'pfx_z', 'plate_x', 'plate_z', 'effective_speed', 'release_extension', 'release_pos_x', 'release_pos_z', 'release_pos_y', 'sz_top', 'sz_bot', 'strikeout', 'walk', 'hit', 'home_run', 'batters_faced', 'outs_recorded', 'is_swinging_strike', 'is_called_strike', 'is_in_zone', 'is_fastball', 'is_breaking', 'is_offspeed', 'woba_points', 'woba_denom', 'babip_points', 'iso_points', 'is_two_strike', 'is_three_ball', 'is_high_leverage', 'is_first_tto' ]
     for col in numeric_cols:
         if col in df.columns: df[col] = pd.to_numeric(df[col], errors='coerce')
         else: logger.warning(f"Numeric column {col} not found for pitcher aggregation.")
-    agg_dict = { 'pitch_number': ('pitch_number', 'count'), 'strikeout': ('strikeout', 'sum'), 'walk': ('walk', 'sum'), 'hit': ('hit', 'sum'), 'home_run': ('home_run', 'sum'), 'batters_faced': ('batters_faced', 'first'), 'outs_recorded': ('outs_recorded', 'sum'), 'release_speed_mean': ('release_speed', 'mean'), 'release_speed_max': ('release_speed', 'max'), 'effective_speed': ('effective_speed', 'mean'), 'release_spin_rate': ('release_spin_rate', 'mean'), 'release_extension': ('release_extension', 'mean'), 'pfx_x': ('pfx_x', 'mean'), 'pfx_z': ('pfx_z', 'mean'), 'spin_axis': ('spin_axis', 'mean'), 'is_swinging_strike': ('is_swinging_strike', 'sum'), 'is_called_strike': ('is_called_strike', 'sum'), 'is_in_zone': ('is_in_zone', 'sum'), 'is_fastball': ('is_fastball', 'sum'), 'is_breaking': ('is_breaking', 'sum'), 'is_offspeed': ('is_offspeed', 'sum'), 'woba_points': ('woba_points', 'sum'), 'woba_denom': ('woba_denom', 'sum'), 'babip_points': ('babip_points', 'sum'), 'iso_points': ('iso_points', 'sum'), 'player_name': ('player_name', 'first'), 'p_throws': ('p_throws', 'first'), 'home_team': ('home_team', 'first'), 'away_team': ('away_team', 'first'), 'inning_topbot': ('inning_topbot', 'first') }
+    agg_dict = { 'pitch_number': ('pitch_number', 'count'), 'strikeout': ('strikeout', 'sum'), 'walk': ('walk', 'sum'), 'hit': ('hit', 'sum'), 'home_run': ('home_run', 'sum'), 'batters_faced': ('batters_faced', 'first'), 'outs_recorded': ('outs_recorded', 'sum'), 'release_speed_mean': ('release_speed', 'mean'), 'release_speed_max': ('release_speed', 'max'), 'effective_speed': ('effective_speed', 'mean'), 'release_spin_rate': ('release_spin_rate', 'mean'), 'release_extension': ('release_extension', 'mean'), 'pfx_x': ('pfx_x', 'mean'), 'pfx_z': ('pfx_z', 'mean'), 'spin_axis': ('spin_axis', 'mean'), 'is_swinging_strike': ('is_swinging_strike', 'sum'), 'is_called_strike': ('is_called_strike', 'sum'), 'is_in_zone': ('is_in_zone', 'sum'), 'is_fastball': ('is_fastball', 'sum'), 'is_breaking': ('is_breaking', 'sum'), 'is_offspeed': ('is_offspeed', 'sum'), 'woba_points': ('woba_points', 'sum'), 'woba_denom': ('woba_denom', 'sum'), 'babip_points': ('babip_points', 'sum'), 'iso_points': ('iso_points', 'sum'), 'is_two_strike': ('is_two_strike', 'sum'), 'is_three_ball': ('is_three_ball', 'sum'), 'is_high_leverage': ('is_high_leverage', 'sum'), 'is_first_tto': ('is_first_tto', 'sum'), 'player_name': ('player_name', 'first'), 'p_throws': ('p_throws', 'first'), 'home_team': ('home_team', 'first'), 'away_team': ('away_team', 'first'), 'inning_topbot': ('inning_topbot', 'first') }
     agg_dict_filtered = {k: v for k, v in agg_dict.items() if v[0] in df.columns}
     if not agg_dict_filtered: logger.error("No columns found for pitcher aggregation."); return pd.DataFrame()
     group_cols = ['game_pk', 'pitcher', 'game_date']
@@ -179,6 +205,15 @@ def aggregate_pitcher_data(df):
     gp_stats['iso'] = (gp_stats.get('iso_points', 0) / woba_den_divisor).fillna(0)
     gp_stats = gp_stats.rename(columns={ 'strikeout': 'strikeouts', 'walk': 'walks', 'hit': 'hits', 'home_run': 'home_runs', 'is_swinging_strike': 'total_swinging_strikes', 'is_called_strike': 'total_called_strikes', 'is_fastball': 'total_fastballs', 'is_breaking': 'total_breaking', 'is_offspeed': 'total_offspeed', 'is_in_zone': 'total_in_zone' })
     gp_stats['innings_pitched'] = (gp_stats.get('outs_recorded', 0) / 3.0).fillna(0)
+
+    # Derived context metrics
+    gp_stats['pitches_first_time_through_order'] = gp_stats.get('is_first_tto', 0)
+    gp_stats['pitches_high_leverage'] = gp_stats.get('is_high_leverage', 0)
+    gp_stats['two_strike_pct'] = (gp_stats.get('is_two_strike', 0) / pitches_divisor).fillna(0)
+    gp_stats['three_ball_pct'] = (gp_stats.get('is_three_ball', 0) / pitches_divisor).fillna(0)
+    ip_divisor = gp_stats.get('innings_pitched', pd.Series(dtype=float)).replace(0, np.nan)
+    gp_stats['pitches_per_inning'] = (gp_stats.get('total_pitches', 0) / ip_divisor).fillna(0)
+    gp_stats = gp_stats.drop(columns=['is_first_tto', 'is_high_leverage', 'is_two_strike', 'is_three_ball'], errors='ignore')
     logger.info(f"Finished aggregating pitcher data. Shape: {gp_stats.shape}")
     return gp_stats
 
@@ -662,7 +697,8 @@ def aggregate_game_level_data():
                         'player_name', 'p_throws', 'team', 'opponent_team', 'home_team', 'away_team',
                         # Use names from aggregate_pitcher_data output
                         'strikeouts', 'walks', 'batters_faced', 'outs_recorded', 'innings_pitched',
-                        'total_pitches', 'k_percent', 'bb_percent', 'woba', 'babip', 'iso',
+                        'total_pitches', 'pitches_per_inning', 'pitches_first_time_through_order', 'pitches_high_leverage',
+                        'two_strike_pct', 'three_ball_pct', 'k_percent', 'bb_percent', 'woba', 'babip', 'iso',
                         'avg_velocity', 'max_velocity', 'avg_spin_rate', 'fastball_percent',
                         'breaking_percent', 'offspeed_percent', 'swinging_strike_percent'
                     ]
