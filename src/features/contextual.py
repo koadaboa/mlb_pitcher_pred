@@ -558,9 +558,15 @@ def engineer_catcher_defense(
         return pd.DataFrame()
 
     metrics_df["game_date"] = pd.to_datetime(metrics_df["game_date"])
+    lineup_df["game_date"] = pd.to_datetime(lineup_df["game_date"])
     df = lineup_df.merge(
-        metrics_df, on=["game_pk", "catcher_id"], how="left"
+        metrics_df,
+        on=["game_pk", "catcher_id"],
+        how="left",
+        suffixes=("", "_metrics"),
     )
+    if "game_date_metrics" in df.columns:
+        df["game_date"] = df["game_date"].fillna(df.pop("game_date_metrics"))
     if latest is not None:
         df = df[df["game_date"] > latest]
     if df.empty:
