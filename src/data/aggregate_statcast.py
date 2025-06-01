@@ -150,13 +150,63 @@ def aggregate_pitcher_data(df):
     for col in numeric_cols:
         if col in df.columns: df[col] = pd.to_numeric(df[col], errors='coerce')
         else: logger.warning(f"Numeric column {col} not found for pitcher aggregation.")
-    agg_dict = { 'pitch_number': ('pitch_number', 'count'), 'strikeout': ('strikeout', 'sum'), 'walk': ('walk', 'sum'), 'hit': ('hit', 'sum'), 'home_run': ('home_run', 'sum'), 'batters_faced': ('batters_faced', 'first'), 'outs_recorded': ('outs_recorded', 'sum'), 'release_speed_mean': ('release_speed', 'mean'), 'release_speed_max': ('release_speed', 'max'), 'effective_speed': ('effective_speed', 'mean'), 'release_spin_rate': ('release_spin_rate', 'mean'), 'release_extension': ('release_extension', 'mean'), 'pfx_x': ('pfx_x', 'mean'), 'pfx_z': ('pfx_z', 'mean'), 'spin_axis': ('spin_axis', 'mean'), 'is_swinging_strike': ('is_swinging_strike', 'sum'), 'is_called_strike': ('is_called_strike', 'sum'), 'is_in_zone': ('is_in_zone', 'sum'), 'is_fastball': ('is_fastball', 'sum'), 'is_breaking': ('is_breaking', 'sum'), 'is_offspeed': ('is_offspeed', 'sum'), 'woba_points': ('woba_points', 'sum'), 'woba_denom': ('woba_denom', 'sum'), 'babip_points': ('babip_points', 'sum'), 'iso_points': ('iso_points', 'sum'), 'player_name': ('player_name', 'first'), 'p_throws': ('p_throws', 'first'), 'home_team': ('home_team', 'first'), 'away_team': ('away_team', 'first'), 'inning_topbot': ('inning_topbot', 'first') }
+    agg_dict = {
+        'pitch_number': ('pitch_number', 'count'),
+        'strikeout': ('strikeout', 'sum'),
+        'walk': ('walk', 'sum'),
+        'hit': ('hit', 'sum'),
+        'home_run': ('home_run', 'sum'),
+        'batters_faced': ('batters_faced', 'first'),
+        'outs_recorded': ('outs_recorded', 'sum'),
+        'release_speed_mean': ('release_speed', 'mean'),
+        'release_speed_max': ('release_speed', 'max'),
+        'effective_speed': ('effective_speed', 'mean'),
+        'release_spin_rate': ('release_spin_rate', 'mean'),
+        'release_extension': ('release_extension', 'mean'),
+        'pfx_x': ('pfx_x', 'mean'),
+        'pfx_z': ('pfx_z', 'mean'),
+        'plate_x': ('plate_x', 'mean'),
+        'plate_z': ('plate_z', 'mean'),
+        'release_pos_x': ('release_pos_x', 'mean'),
+        'release_pos_z': ('release_pos_z', 'mean'),
+        'release_pos_y': ('release_pos_y', 'mean'),
+        'spin_axis': ('spin_axis', 'mean'),
+        'is_swinging_strike': ('is_swinging_strike', 'sum'),
+        'is_called_strike': ('is_called_strike', 'sum'),
+        'is_in_zone': ('is_in_zone', 'sum'),
+        'is_fastball': ('is_fastball', 'sum'),
+        'is_breaking': ('is_breaking', 'sum'),
+        'is_offspeed': ('is_offspeed', 'sum'),
+        'woba_points': ('woba_points', 'sum'),
+        'woba_denom': ('woba_denom', 'sum'),
+        'babip_points': ('babip_points', 'sum'),
+        'iso_points': ('iso_points', 'sum'),
+        'player_name': ('player_name', 'first'),
+        'p_throws': ('p_throws', 'first'),
+        'home_team': ('home_team', 'first'),
+        'away_team': ('away_team', 'first'),
+        'inning_topbot': ('inning_topbot', 'first')
+    }
     agg_dict_filtered = {k: v for k, v in agg_dict.items() if v[0] in df.columns}
     if not agg_dict_filtered: logger.error("No columns found for pitcher aggregation."); return pd.DataFrame()
     group_cols = ['game_pk', 'pitcher', 'game_date']
     if any(c not in df.columns for c in group_cols): logger.error(f"Missing grouping columns for pitcher agg: {group_cols}"); return pd.DataFrame()
     game_pitcher_stats = df.groupby(group_cols, observed=True, dropna=False).agg(**agg_dict_filtered).reset_index()
-    game_pitcher_stats = game_pitcher_stats.rename(columns={ 'pitch_number': 'total_pitches', 'release_speed_mean': 'avg_velocity', 'release_speed_max': 'max_velocity', 'release_spin_rate': 'avg_spin_rate', 'pfx_x': 'avg_pfx_x', 'pfx_z': 'avg_pfx_z' })
+    game_pitcher_stats = game_pitcher_stats.rename(
+        columns={
+            'pitch_number': 'total_pitches',
+            'release_speed_mean': 'avg_velocity',
+            'release_speed_max': 'max_velocity',
+            'release_spin_rate': 'avg_spin_rate',
+            'pfx_x': 'avg_pfx_x',
+            'pfx_z': 'avg_pfx_z',
+            'plate_x': 'avg_plate_x',
+            'plate_z': 'avg_plate_z',
+            'release_pos_x': 'avg_release_pos_x',
+            'release_pos_z': 'avg_release_pos_z',
+            'release_pos_y': 'avg_release_pos_y',
+        }
+    )
     logger.debug("Calculating derived pitcher stats...")
     gp_stats = game_pitcher_stats
     outs_divisor = gp_stats.get('outs_recorded', pd.Series(dtype=float)).replace(0, np.nan)
@@ -663,8 +713,11 @@ def aggregate_game_level_data():
                         # Use names from aggregate_pitcher_data output
                         'strikeouts', 'walks', 'batters_faced', 'outs_recorded', 'innings_pitched',
                         'total_pitches', 'k_percent', 'bb_percent', 'woba', 'babip', 'iso',
-                        'avg_velocity', 'max_velocity', 'avg_spin_rate', 'fastball_percent',
-                        'breaking_percent', 'offspeed_percent', 'swinging_strike_percent'
+                        'avg_velocity', 'max_velocity', 'avg_spin_rate',
+                        'avg_plate_x', 'avg_plate_z', 'avg_release_pos_x',
+                        'avg_release_pos_z', 'avg_release_pos_y',
+                        'fastball_percent', 'breaking_percent',
+                        'offspeed_percent', 'swinging_strike_percent'
                     ]
                     final_starter_cols = [col for col in starter_cols if col in starter_stats.columns]
                     missing_final_cols = [col for col in starter_cols if col not in final_starter_cols]

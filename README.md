@@ -10,7 +10,7 @@ The project follows these main steps:
 
 1.  **Data Fetching:** Retrieves raw data (Statcast, schedules, team stats, umpire assignments) using `pybaseball` and web scraping (ESPN).
 2.  **Data Aggregation:** Processes pitch-level Statcast data into game-level summaries for pitchers and batters.
-3.  **Feature Engineering:** Calculates numerous features based on historical performance, including rolling averages for pitchers, opponents, ballparks, and umpires, as well as pitcher rest days.
+3.  **Feature Engineering:** Calculates numerous features based on historical performance, including rolling averages for pitchers, opponents, ballparks, and umpires, as well as pitcher rest days. Recent updates add location and release point metrics such as `avg_plate_x`, `avg_plate_z`, `avg_release_pos_x`, `avg_release_pos_y`, and `avg_release_pos_z` to the feature set.
 4.  **Model Training:** Trains a LightGBM model (using Poisson regression) on the historical features, incorporating feature selection and hyperparameter tuning (Optuna).
 5.  **Prediction:** Uses the trained model and newly generated features to predict strikeouts for upcoming games.
 
