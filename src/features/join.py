@@ -8,6 +8,13 @@ from src.utils import table_exists, get_latest_date
 from src.config import DBConfig, LogConfig, StrikeoutModelConfig
 from .encoding import mean_target_encode
 from .selection import BASE_EXCLUDE_COLS
+
+# Categorical columns that should be ignored when mean target encoding
+EXTRA_CAT_EXCLUDE_COLS = [
+    "away_pitcher_ids",
+    "home_pitcher_ids",
+    "scraped_timestamp",
+]
 import re
 import numpy as np
 
@@ -88,6 +95,10 @@ def build_model_features(
         df = df.merge(ctx_df, on=["game_pk", "pitcher_id"], how="left")
         df = df.merge(lineup_df, on=["game_pk", "pitcher_id"], how="left")
 
+        # Drop identifier columns that could leak future information before
+        # any transformations are applied.
+        df = df.drop(columns=[c for c in EXTRA_CAT_EXCLUDE_COLS if c in df.columns])
+
         # Deduplicate any columns that were suffixed during the merges
         dup_cols = [c for c in df.columns if c.endswith("_x") or c.endswith("_y")]
         for col in dup_cols:
@@ -136,15 +147,28 @@ def build_model_features(
         numeric_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c]) and c != target]
         _winsorize_columns(df, numeric_cols)
         _log_transform(df, numeric_cols)
+        exclude_set = set(BASE_EXCLUDE_COLS).union(EXTRA_CAT_EXCLUDE_COLS)
         cat_cols = [
             c
             for c in df.columns
-            if c not in BASE_EXCLUDE_COLS
+            if c not in exclude_set
             and not pd.api.types.is_numeric_dtype(df[c])
             and c != target
         ]
         if cat_cols:
-            df, _ = mean_target_encode(df, cat_cols, target)
+            train_mask = df["game_date"].dt.year.isin(
+                StrikeoutModelConfig.DEFAULT_TRAIN_YEARS
+            )
+            if not train_mask.any() or not (~train_mask).any():
+                df, _ = mean_target_encode(df, cat_cols, target)
+            else:
+                train_df, enc_map = mean_target_encode(
+                    df.loc[train_mask], cat_cols, target
+                )
+                test_df, _ = mean_target_encode(
+                    df.loc[~train_mask], cat_cols, mapping=enc_map
+                )
+                df = pd.concat([train_df, test_df]).sort_index()
         if df.empty:
             logger.info("No new rows to process for %s", target_table)
             return df
