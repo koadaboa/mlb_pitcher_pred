@@ -97,6 +97,10 @@ def build_model_features(
         df = df.merge(ctx_df, on=["game_pk", "pitcher_id"], how="left")
         df = df.merge(lineup_df, on=["game_pk", "pitcher_id"], how="left")
 
+        # Drop identifier columns that could leak future information before
+        # any transformations are applied.
+        df = df.drop(columns=[c for c in EXTRA_CAT_EXCLUDE_COLS if c in df.columns])
+
         # Deduplicate any columns that were suffixed during the merges
         dup_cols = [c for c in df.columns if c.endswith("_x") or c.endswith("_y")]
         for col in dup_cols:

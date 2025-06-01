@@ -315,3 +315,6 @@ def test_extra_cat_cols_excluded(tmp_path: Path) -> None:
         assert "away_pitcher_ids_enc" not in df.columns
         assert "home_pitcher_ids_enc" not in df.columns
         assert "scraped_timestamp_enc" not in df.columns
+        assert "away_pitcher_ids" not in df.columns
+        assert "home_pitcher_ids" not in df.columns
+        assert "scraped_timestamp" not in df.columns
