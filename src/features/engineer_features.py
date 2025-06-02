@@ -88,6 +88,10 @@ def add_rolling_features(
             if c in df.columns and c not in {"game_pk", group_col}
         ]
 
+    # remove any duplicate columns while preserving order
+    seen = set()
+    numeric_cols = [c for c in numeric_cols if not (c in seen or seen.add(c))]
+
     frames = [df]
     for col in numeric_cols:
         grouped = df.groupby(group_col)[col]
