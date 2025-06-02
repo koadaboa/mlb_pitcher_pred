@@ -27,8 +27,47 @@ LOG_EVERY_N = 100
 
 # Number of worker processes for parallel aggregation
 MAX_WORKERS = int(os.getenv("MAX_WORKERS", os.cpu_count() or 1))
-# Submit this many tasks to the pool at a time
-BATCH_SIZE = 5000
+# Chunk size for ``ProcessPoolExecutor.map``
+CHUNK_SIZE = 100
+
+# Select only required columns to reduce SQLite I/O
+PITCHER_COLS = [
+    "game_pk",
+    "game_date",
+    "pitcher",
+    "p_throws",
+    "home_team",
+    "away_team",
+    "inning_topbot",
+    "at_bat_number",
+    "pitch_number",
+    "pitch_type",
+    "description",
+    "zone",
+    "plate_x",
+    "plate_z",
+    "events",
+    "release_speed",
+    "release_spin_rate",
+    "pfx_x",
+    "pfx_z",
+    "release_extension",
+    "launch_speed",
+    "launch_angle",
+    "barrel",
+    "inning",
+    "type",
+    "strikes",
+    "balls",
+    "home_score",
+    "away_score",
+    "on_1b",
+    "on_2b",
+    "on_3b",
+    "woba_value",
+    "woba_denom",
+    "leverage_index",
+]
 
 
 def filter_starting_pitchers(conn) -> pd.DataFrame:
@@ -48,7 +87,10 @@ def filter_starting_pitchers(conn) -> pd.DataFrame:
 
 def load_pitcher_game(conn, game_pk: int, pitcher: int) -> pd.DataFrame:
     """Load all pitch-level rows for a pitcher in one game."""
-    q = "SELECT * FROM statcast_pitchers WHERE game_pk = ? AND pitcher = ?"
+    cols = ",".join(PITCHER_COLS)
+    q = (
+        f"SELECT {cols} FROM statcast_pitchers WHERE game_pk = ? AND pitcher = ?"
+    )
     return pd.read_sql_query(q, conn, params=(game_pk, pitcher))
 
 
@@ -59,6 +101,12 @@ def compute_game_features(game_pk: int, pitcher: int, db_path: Path) -> Optional
     if df.empty:
         return None
     return compute_features(df)
+
+
+def _map_compute_game_features(args: tuple[int, int, Path]) -> Optional[Dict]:
+    """Wrapper for ``ProcessPoolExecutor.map``."""
+    game_pk, pitcher, db_path = args
+    return compute_game_features(game_pk, pitcher, db_path)
 
 
 def compute_features(df: pd.DataFrame) -> Dict:
@@ -277,24 +325,12 @@ def aggregate_to_game_level(db_path: Path = DBConfig.PATH) -> pd.DataFrame:
         total_games = len(starters)
 
     result_rows: list[Dict] = []
-    processed = 0
+    pairs = [tuple(row) + (db_path,) for row in starters.itertuples(index=False, name=None)]
     with ProcessPoolExecutor(max_workers=MAX_WORKERS) as exc:
-        pending = []
-        for game_pk, pitcher in starters.itertuples(index=False):
-            pending.append(exc.submit(compute_game_features, game_pk, pitcher, db_path))
-            if len(pending) >= BATCH_SIZE:
-                for fut in as_completed(pending):
-                    res = fut.result()
-                    processed += 1
-                    if res:
-                        result_rows.append(res)
-                    if processed % LOG_EVERY_N == 0:
-                        logger.info("Processed %d/%d games", processed, total_games)
-                pending.clear()
-
-        for fut in as_completed(pending):
-            res = fut.result()
-            processed += 1
+        for processed, res in enumerate(
+            exc.map(_map_compute_game_features, pairs, chunksize=CHUNK_SIZE),
+            1,
+        ):
             if res:
                 result_rows.append(res)
             if processed % LOG_EVERY_N == 0:
