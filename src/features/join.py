@@ -23,6 +23,9 @@ EXTRA_CAT_EXCLUDE_COLS = [
 import re
 import numpy as np
 
+# Maximum number of columns supported by SQLite
+SQLITE_MAX_COLUMNS = 2000
+
 logger = setup_logger("join_features", LogConfig.LOG_DIR / "join_features.log")
 
 
@@ -237,12 +240,22 @@ def build_model_features(
         if df.empty:
             logger.info("No new rows to process for %s", target_table)
             return df
-
+        col_count = len(df.columns)
         logger.info(
             "Attempting to write %d columns to %s",
-            len(df.columns),
+            col_count,
             target_table,
         )
+
+        if col_count > SQLITE_MAX_COLUMNS:
+            logger.error(
+                "SQLite supports a maximum of %d columns, but %d were provided",
+                SQLITE_MAX_COLUMNS,
+                col_count,
+            )
+            raise ValueError(
+                f"Too many columns ({col_count}) for SQLite table {target_table}"
+            )
 
         if rebuild or not table_exists(conn, target_table):
             df.to_sql(target_table, conn, if_exists="replace", index=False)
