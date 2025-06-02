@@ -238,6 +238,12 @@ def build_model_features(
             logger.info("No new rows to process for %s", target_table)
             return df
 
+        logger.info(
+            "Attempting to write %d columns to %s",
+            len(df.columns),
+            target_table,
+        )
+
         if rebuild or not table_exists(conn, target_table):
             df.to_sql(target_table, conn, if_exists="replace", index=False)
         else:
