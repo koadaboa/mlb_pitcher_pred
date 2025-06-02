@@ -113,9 +113,13 @@ def build_model_features(
             return pitcher_df
 
         df = safe_merge(pitcher_df, opp_df, on=["game_pk", "pitcher_id"], how="left")
+        df = df.drop_duplicates(subset=["game_pk", "pitcher_id"])
         df = safe_merge(df, ctx_df, on=["game_pk", "pitcher_id"], how="left")
+        df = df.drop_duplicates(subset=["game_pk", "pitcher_id"])
         df = safe_merge(df, lineup_df, on=["game_pk", "pitcher_id"], how="left")
+        df = df.drop_duplicates(subset=["game_pk", "pitcher_id"])
         df = safe_merge(df, catcher_df, on=["game_pk", "pitcher_id"], how="left")
+        df = df.drop_duplicates(subset=["game_pk", "pitcher_id"])
 
         if not bp_df.empty and not lineup_ids.empty:
             if "team" in lineup_ids.columns and "opponent_team" not in lineup_ids.columns:
