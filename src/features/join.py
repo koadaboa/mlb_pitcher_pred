@@ -240,7 +240,6 @@ def build_model_features(
         if df.empty:
             logger.info("No new rows to process for %s", target_table)
             return df
-
         col_count = len(df.columns)
         logger.info(
             "Attempting to write %d columns to %s",
