@@ -20,7 +20,33 @@ logger = setup_logger(
 # Progress logging
 LOG_EVERY_N = 100
 MAX_WORKERS = int(os.getenv("MAX_WORKERS", os.cpu_count() or 1))
-BATCH_SIZE = 5000
+CHUNK_SIZE = 100
+
+# Only fetch required columns
+BATTER_COLS = [
+    "game_pk",
+    "game_date",
+    "batter",
+    "pitcher",
+    "stand",
+    "inning_topbot",
+    "home_team",
+    "away_team",
+    "at_bat_number",
+    "pitch_number",
+    "description",
+    "events",
+    "balls",
+    "strikes",
+    "leverage_index",
+    "home_score",
+    "away_score",
+    "on_1b",
+    "on_2b",
+    "on_3b",
+    "woba_value",
+    "woba_denom",
+]
 
 # --- Helper functions ---
 
@@ -42,7 +68,8 @@ def filter_starting_pitchers(conn) -> pd.DataFrame:
 
 def load_batter_game(conn, game_pk: int, pitcher: int) -> pd.DataFrame:
     """Load all batter rows for a pitcher in one game."""
-    q = "SELECT * FROM statcast_batters WHERE game_pk = ? AND pitcher = ?"
+    cols = ",".join(BATTER_COLS)
+    q = f"SELECT {cols} FROM statcast_batters WHERE game_pk = ? AND pitcher = ?"
     return pd.read_sql_query(q, conn, params=(game_pk, pitcher))
 
 
@@ -223,31 +250,24 @@ def compute_game_features(
     return compute_batter_rows(df)
 
 
+def _map_compute_game_features(args: tuple[int, int, Path]) -> Optional[list[Dict]]:
+    """Wrapper for ``ProcessPoolExecutor.map``."""
+    game_pk, pitcher, db_path = args
+    return compute_game_features(game_pk, pitcher, db_path)
+
+
 def aggregate_to_game_level(db_path: Path = DBConfig.PATH) -> pd.DataFrame:
     with DBConnection(db_path) as conn:
         starters = filter_starting_pitchers(conn)
         total_games = len(starters)
 
-    frames: list[pd.DataFrame] = []
     rows: list[Dict] = []
-    processed = 0
+    pairs = [tuple(row) + (db_path,) for row in starters.itertuples(index=False, name=None)]
     with ProcessPoolExecutor(max_workers=MAX_WORKERS) as exc:
-        pending = []
-        for game_pk, pitcher in starters.itertuples(index=False):
-            pending.append(exc.submit(compute_game_features, game_pk, pitcher, db_path))
-            if len(pending) >= BATCH_SIZE:
-                for fut in as_completed(pending):
-                    res = fut.result()
-                    processed += 1
-                    if res:
-                        rows.extend(res)
-                    if processed % LOG_EVERY_N == 0:
-                        logger.info("Processed %d/%d games", processed, total_games)
-                pending.clear()
-
-        for fut in as_completed(pending):
-            res = fut.result()
-            processed += 1
+        for processed, res in enumerate(
+            exc.map(_map_compute_game_features, pairs, chunksize=CHUNK_SIZE),
+            1,
+        ):
             if res:
                 rows.extend(res)
             if processed % LOG_EVERY_N == 0:
