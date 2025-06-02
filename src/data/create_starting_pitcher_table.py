@@ -65,7 +65,6 @@ PITCHER_COLS = [
     "on_3b",
     "woba_value",
     "woba_denom",
-    "leverage_index",
 ]
 
 
