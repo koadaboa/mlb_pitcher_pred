@@ -54,7 +54,6 @@ PITCHER_COLS = [
     "release_extension",
     "launch_speed",
     "launch_angle",
-    "barrel",
     "inning",
     "type",
     "strikes",
@@ -181,9 +180,16 @@ def compute_features(df: pd.DataFrame) -> Dict:
         if "launch_speed" in bip.columns and len(bip)
         else np.nan
     )
-    barrel_rate = (
-        bip["barrel"].mean() if "barrel" in bip.columns and len(bip) else np.nan
-    )
+    if "barrel" in bip.columns and len(bip):
+        barrel_rate = bip["barrel"].mean()
+    elif {"launch_speed", "launch_angle"}.issubset(bip.columns) and len(bip):
+        is_barrel = (
+            (bip["launch_angle"].between(26, 30))
+            & (bip["launch_speed"] >= 98)
+        )
+        barrel_rate = is_barrel.mean()
+    else:
+        barrel_rate = np.nan
 
     types = df["pitch_type"].values
     next_types = np.roll(types, -1)
