@@ -39,6 +39,7 @@ BATTER_COLS = [
     "balls",
     "strikes",
     "leverage_index",
+    "inning",
     "home_score",
     "away_score",
     "on_1b",
@@ -68,8 +69,10 @@ def filter_starting_pitchers(conn) -> pd.DataFrame:
 
 def load_batter_game(conn, game_pk: int, pitcher: int) -> pd.DataFrame:
     """Load all batter rows for a pitcher in one game."""
-    cols = ",".join(BATTER_COLS)
-    q = f"SELECT {cols} FROM statcast_batters WHERE game_pk = ? AND pitcher = ?"
+    pragma = pd.read_sql_query("PRAGMA table_info(statcast_batters)", conn)
+    available = set(pragma["name"].tolist())
+    cols = [c for c in BATTER_COLS if c in available]
+    q = f"SELECT {','.join(cols)} FROM statcast_batters WHERE game_pk = ? AND pitcher = ?"
     return pd.read_sql_query(q, conn, params=(game_pk, pitcher))
 
 
