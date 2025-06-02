@@ -35,6 +35,7 @@ PITCHER_COLS = [
     "game_pk",
     "game_date",
     "pitcher",
+    "batter",
     "p_throws",
     "home_team",
     "away_team",
