@@ -123,23 +123,37 @@ def get_latest_date(
 
 
 def deduplicate_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Remove pandas merge suffixes and resolve duplicate columns."""
-    dup_cols = [c for c in df.columns if c.endswith("_x") or c.endswith("_y")]
-    for col in dup_cols:
-        if col not in df.columns:
+    """Remove pandas merge suffixes and resolve duplicate columns.
+
+    Repeated merges can produce columns with nested ``_x``/``_y`` suffixes
+    (e.g. ``foo_x_y``). This function consolidates such variants by stripping the
+    suffixes and merging values.
+    """
+
+    import re
+
+    pattern = re.compile(r"(?:_x|_y)+$")
+    groups: dict[str, list[str]] = {}
+    for col in list(df.columns):
+        base = re.sub(pattern, "", col)
+        groups.setdefault(base, []).append(col)
+
+    for base, cols in groups.items():
+        if len(cols) == 1:
+            col = cols[0]
+            if col != base:
+                df = df.rename(columns={col: base})
             continue
-        base = col[:-2]
-        alt = base + ("_y" if col.endswith("_x") else "_x")
-        if base not in df.columns:
-            if alt in df.columns:
-                if df[col].equals(df[alt]):
-                    df = df.drop(columns=[alt])
-                else:
-                    df[col] = df[col].combine_first(df[alt])
-                    df = df.drop(columns=[alt])
-            df = df.rename(columns={col: base})
-        else:
-            df = df.drop(columns=[col], errors="ignore")
+
+        main = base if base in cols else cols[0]
+        for col in cols:
+            if col == main:
+                continue
+            df[main] = df[main].combine_first(df[col])
+            df = df.drop(columns=[col])
+        if main != base:
+            df = df.rename(columns={main: base})
+
     return df
 
 
