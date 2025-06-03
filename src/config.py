@@ -147,7 +147,6 @@ class StrikeoutModelConfig:
         "batter_so_rate",
         "batter_ops",
         "batter_whiff_rate",
-
     ]
     CONTEXT_ROLLING_COLS = [
         "strikeouts",
@@ -178,8 +177,10 @@ class StrikeoutModelConfig:
         "elevation",
         "rest_days",
         "pitches_last_7d",
+        "season_ip_last_30d",
         "on_il",
         "days_since_il",
+        "pitcher_age",
         "humidity",
         "park_factor",
         "team_k_rate",
@@ -282,6 +283,7 @@ class FileConfig:
     PLOTS_DIR = PROJECT_ROOT / "plots"
     DATA_DIR = PROJECT_ROOT / "data"
     FEATURE_IMPORTANCE_FILE = MODELS_DIR / "feature_importance.csv"
+    SHAP_IMPORTANCE_FILE = MODELS_DIR / "shap_feature_importance.csv"
     # Ensure these directories exist
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
     PLOTS_DIR.mkdir(parents=True, exist_ok=True)

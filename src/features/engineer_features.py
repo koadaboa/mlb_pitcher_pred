@@ -14,7 +14,12 @@ from src.utils import (
     get_latest_date,
 )
 from src.config import DBConfig, StrikeoutModelConfig, LogConfig
-from .workload_features import add_recent_pitch_counts, add_injury_indicators
+from .workload_features import (
+    add_recent_pitch_counts,
+    add_injury_indicators,
+    add_pitcher_age,
+    add_recent_innings,
+)
 
 logger = setup_logger(
     "engineer_features",
@@ -109,7 +114,9 @@ def add_rolling_features(
             stats[f"{col}_momentum_{window}"] = shifted - mean
             frames.append(stats)
         if ewm_halflife is not None:
-            ewm = grouped.apply(lambda x: x.shift(1).ewm(halflife=ewm_halflife, min_periods=1).mean())
+            ewm = grouped.apply(
+                lambda x: x.shift(1).ewm(halflife=ewm_halflife, min_periods=1).mean()
+            )
             ewm = ewm.reset_index(level=0, drop=True)
             ewm_stats = pd.DataFrame({f"{col}_ewm_{int(ewm_halflife)}": ewm})
             ewm_stats[f"{col}_momentum_ewm_{int(ewm_halflife)}"] = shifted - ewm
@@ -167,9 +174,17 @@ def engineer_pitcher_features(
             injury_df = pd.read_sql_query("SELECT * FROM player_injury_log", conn)
         else:
             injury_df = pd.DataFrame(columns=["player_id", "start_date", "end_date"])
+        if table_exists(conn, "players"):
+            player_df = pd.read_sql_query(
+                "SELECT player_id, birth_date FROM players", conn
+            )
+        else:
+            player_df = pd.DataFrame(columns=["player_id", "birth_date"])
 
     df["pitches_last_7d"] = add_recent_pitch_counts(df, 7)
+    df["season_ip_last_30d"] = add_recent_innings(df, 30)
     df = add_injury_indicators(df, injury_df)
+    df = add_pitcher_age(df, player_df)
 
     logger.info("Computing rolling features for %d rows", len(df))
     df = add_rolling_features(

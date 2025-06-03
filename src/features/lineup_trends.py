@@ -4,7 +4,13 @@ import pandas as pd
 from pathlib import Path
 
 
-from src.utils import DBConnection, setup_logger, table_exists, get_latest_date
+from src.utils import (
+    DBConnection,
+    setup_logger,
+    table_exists,
+    get_latest_date,
+    safe_merge,
+)
 from src.config import DBConfig, LogConfig, StrikeoutModelConfig
 from .contextual import _add_group_rolling
 
@@ -64,11 +70,19 @@ def engineer_lineup_trends(
         ewm_halflife=StrikeoutModelConfig.EWM_HALFLIFE,
     )
 
+    key_cols = ["game_pk", "opponent_team", "game_date"]
+    projected_df = None
+    if "projected_k_pct" in df.columns:
+        projected_df = (
+            df.groupby(key_cols)["projected_k_pct"]
+            .mean()
+            .rename("projected_lineup_k_pct")
+            .reset_index()
+        )
+
     # Drop raw numeric columns
     drop_cols = [c for c in StrikeoutModelConfig.LINEUP_ROLLING_COLS if c in df.columns]
     df = df.drop(columns=drop_cols, errors="ignore")
-
-    key_cols = ["game_pk", "opponent_team", "game_date"]
     frames = []
     for slot, g in df.groupby("batting_order"):
         slot_df = g.set_index(key_cols)[
@@ -77,6 +91,8 @@ def engineer_lineup_trends(
         frames.append(slot_df)
 
     final_df = pd.concat(frames, axis=1).reset_index()
+    if projected_df is not None:
+        final_df = safe_merge(final_df, projected_df, on=key_cols, how="left")
 
     with DBConnection(db_path) as conn:
         if rebuild or not table_exists(conn, target_table):
@@ -85,4 +101,3 @@ def engineer_lineup_trends(
             final_df.to_sql(target_table, conn, index=False, if_exists="append")
     logger.info("Saved lineup trends to %s", target_table)
     return final_df
-
