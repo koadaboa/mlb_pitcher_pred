@@ -253,6 +253,8 @@ python -m src.scripts.shap_sweep --db-path path/to/pitcher_stats.db
 ```
 
 This writes `plots/shap_importance.csv` with the mean absolute SHAP value for each feature.
+After running the sweep, subsequent training will automatically drop columns
+with zero SHAP importance using the saved CSV.
 * Add model monitoring & alerting for production use
 
 ## How to Contribute

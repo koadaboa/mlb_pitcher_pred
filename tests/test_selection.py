@@ -1,6 +1,10 @@
 import pandas as pd
 
-from src.features.selection import _prune_feature_importance, select_features
+from src.features.selection import (
+    _prune_feature_importance,
+    select_features,
+    filter_features_by_shap,
+)
 
 
 def test_prune_feature_importance() -> None:
@@ -55,3 +59,17 @@ def test_select_features_includes_base_numeric() -> None:
     )
     features, _ = select_features(df, "strikeouts")
     assert set(features) == {"pitches", "pitches_mean_3"}
+
+
+def test_filter_features_by_shap(tmp_path) -> None:
+    shap_path = tmp_path / "shap_importance.csv"
+    pd.DataFrame({"feature": ["a", "b"], "importance": [0.1, 0.0]}).to_csv(shap_path, index=False)
+    features = ["a", "b", "c"]
+    filtered = filter_features_by_shap(features, shap_path=shap_path)
+    assert filtered == ["a"]
+
+
+def test_filter_features_by_shap_missing(tmp_path) -> None:
+    features = ["a", "b"]
+    filtered = filter_features_by_shap(features, shap_path=tmp_path / "missing.csv")
+    assert filtered == features
