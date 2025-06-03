@@ -282,6 +282,7 @@ class FileConfig:
     PLOTS_DIR = PROJECT_ROOT / "plots"
     DATA_DIR = PROJECT_ROOT / "data"
     FEATURE_IMPORTANCE_FILE = MODELS_DIR / "feature_importance.csv"
+    SHAP_IMPORTANCE_FILE = MODELS_DIR / "shap_feature_importance.csv"
     # Ensure these directories exist
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
     PLOTS_DIR.mkdir(parents=True, exist_ok=True)

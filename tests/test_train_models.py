@@ -29,7 +29,7 @@ def test_train_lgbm_runs(monkeypatch):
     train_df, test_df = _make_train_test_dfs()
     monkeypatch.setattr(StrikeoutModelConfig, "FINAL_ESTIMATORS", 10)
     monkeypatch.setattr(StrikeoutModelConfig, "EARLY_STOPPING_ROUNDS", 2)
-    model, metrics = train_lgbm(train_df, test_df)
+    model, metrics, features = train_lgbm(train_df, test_df)
     assert hasattr(model, "predict")
     assert set(metrics) == {"rmse", "mae", "within_1_so"}
 

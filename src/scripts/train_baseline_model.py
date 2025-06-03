@@ -9,7 +9,8 @@ from src.train_model import (
     split_by_year,
     cross_validate_lgbm,
     train_lgbm,
-    get_feature_importance,
+    get_gain_importance,
+    get_shap_importance,
 )
 from src.utils import setup_logger
 
@@ -39,16 +40,21 @@ def main(argv: list[str] | None = None) -> None:
 
     cv_rmse = cross_validate_lgbm(train_df)
 
-    model, metrics = train_lgbm(train_df, test_df)
+    model, metrics, features = train_lgbm(train_df, test_df)
 
     model_path = FileConfig.MODELS_DIR / "lgbm_model.txt"
     model.booster_.save_model(str(model_path))
     logger.info("Saved model to %s", model_path)
 
-    fi_df = get_feature_importance(model)
+    fi_df = get_gain_importance(model)
     fi_path = FileConfig.FEATURE_IMPORTANCE_FILE
     fi_df.to_csv(fi_path, index=False)
     logger.info("Saved feature importance to %s", fi_path)
+
+    shap_df = get_shap_importance(model, train_df[features])
+    shap_path = FileConfig.SHAP_IMPORTANCE_FILE
+    shap_df.to_csv(shap_path, index=False)
+    logger.info("Saved SHAP importance to %s", shap_path)
 
     logger.info("CV RMSE: %.4f", cv_rmse)
     logger.info("RMSE: %.4f", metrics.get("rmse", float('nan')))
