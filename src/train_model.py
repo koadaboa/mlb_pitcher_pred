@@ -17,6 +17,7 @@ from src.config import (
 )
 from src.utils import DBConnection, setup_logger
 from src.features.selection import select_features
+from src.features.feature_groups import assign_feature_group
 
 logger = setup_logger("train_model", LogConfig.LOG_DIR / "train_model.log")
 
@@ -47,7 +48,7 @@ def train_lgbm(
     train_df: pd.DataFrame,
     test_df: pd.DataFrame,
     target: str = StrikeoutModelConfig.TARGET_VARIABLE,
-) -> Tuple[LGBMRegressor, Dict[str, float]]:
+) -> Tuple[LGBMRegressor, Dict[str, float], list[str]]:
     """Train LightGBM model and return the trained model and metrics."""
     # Select features using tree-based importance
     features, _ = select_features(
@@ -89,7 +90,7 @@ def train_lgbm(
 
     metrics = {"rmse": rmse, "mae": mae, "within_1_so": within_1}
     logger.info("Evaluation metrics: %s", metrics)
-    return model, metrics
+    return model, metrics, features
 
 
 def cross_validate_lgbm(
@@ -145,11 +146,31 @@ def cross_validate_lgbm(
     return avg_rmse
 
 
-def get_feature_importance(model: LGBMRegressor) -> pd.DataFrame:
-    """Return feature importance sorted by gain."""
+def get_gain_importance(model: LGBMRegressor) -> pd.DataFrame:
+    """Return LightGBM gain importance with feature groups."""
     booster = model.booster_
     importance = booster.feature_importance(importance_type="gain")
     fi = pd.DataFrame({"feature": booster.feature_name(), "importance": importance})
+    fi["group"] = fi["feature"].map(assign_feature_group)
+    fi.sort_values("importance", ascending=False, inplace=True)
+    return fi
+
+
+def get_shap_importance(model: LGBMRegressor, X: pd.DataFrame) -> pd.DataFrame:
+    """Return SHAP importance averaged over absolute values."""
+    try:
+        import shap  # type: ignore
+    except Exception as exc:  # pragma: no cover - optional dependency
+        logger.warning("SHAP unavailable: %s", exc)
+        return pd.DataFrame(columns=["feature", "importance", "group"])
+
+    explainer = shap.TreeExplainer(model)
+    values = explainer.shap_values(X)
+    if isinstance(values, list):
+        values = values[0]
+    importance = np.abs(values).mean(axis=0)
+    fi = pd.DataFrame({"feature": X.columns, "importance": importance})
+    fi["group"] = fi["feature"].map(assign_feature_group)
     fi.sort_values("importance", ascending=False, inplace=True)
     return fi
 
@@ -164,14 +185,19 @@ def main(db_path: Path | None = None) -> None:
     cv_rmse = cross_validate_lgbm(
         train_df, n_splits=StrikeoutModelConfig.OPTUNA_CV_SPLITS
     )
-    model, metrics = train_lgbm(train_df, test_df)
+    model, metrics, features = train_lgbm(train_df, test_df)
     model_path = FileConfig.MODELS_DIR / "lgbm_model.txt"
     model.booster_.save_model(str(model_path))
     logger.info("Saved model to %s", model_path)
-    fi_df = get_feature_importance(model)
+    fi_df = get_gain_importance(model)
     fi_path = FileConfig.FEATURE_IMPORTANCE_FILE
     fi_df.to_csv(fi_path, index=False)
     logger.info("Saved feature importance to %s", fi_path)
+
+    shap_df = get_shap_importance(model, train_df[features])
+    shap_path = FileConfig.SHAP_IMPORTANCE_FILE
+    shap_df.to_csv(shap_path, index=False)
+    logger.info("Saved SHAP importance to %s", shap_path)
     logger.info("CV RMSE: %.4f", cv_rmse)
     for name, val in metrics.items():
         logger.info("%s: %.4f", name, val)

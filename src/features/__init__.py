@@ -11,6 +11,7 @@ from .contextual import (
 )
 from .join import build_model_features
 from .encoding import mean_target_encode
+from .feature_groups import assign_feature_group
 
 __all__ = [
     "engineer_pitcher_features",
@@ -22,4 +23,5 @@ __all__ = [
     "engineer_catcher_defense",
     "build_model_features",
     "mean_target_encode",
+    "assign_feature_group",
 ]
