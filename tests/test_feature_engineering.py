@@ -324,6 +324,10 @@ def test_run_feature_engineering_script(tmp_path: Path) -> None:
         )
         assert cur.fetchone() is not None
         cur = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='pitcher_workload_features'"
+        )
+        assert cur.fetchone() is not None
+        cur = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='model_features'"
         )
         assert cur.fetchone() is not None

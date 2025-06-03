@@ -1,6 +1,7 @@
 """Feature engineering entry points."""
 
 from .engineer_features import engineer_pitcher_features
+from .workload_features import engineer_workload_features
 
 from .batter_pitcher_history import engineer_batter_pitcher_history
 from .contextual import (
