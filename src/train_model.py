@@ -16,7 +16,7 @@ from src.config import (
     LogConfig,
 )
 from src.utils import DBConnection, setup_logger
-from src.features.selection import select_features
+from src.features.selection import select_features, filter_features_by_shap
 from src.features.feature_groups import assign_feature_group
 
 logger = setup_logger("train_model", LogConfig.LOG_DIR / "train_model.log")
@@ -75,6 +75,7 @@ def train_lgbm(
         importance_threshold=StrikeoutModelConfig.IMPORTANCE_THRESHOLD,
         importance_method="lightgbm",
     )
+    features = filter_features_by_shap(features)
     logger.info("Using %d features", len(features))
     X_train = train_df[features]
     y_train = train_df[target]
@@ -127,6 +128,7 @@ def cross_validate_lgbm(
         importance_threshold=StrikeoutModelConfig.IMPORTANCE_THRESHOLD,
         importance_method="lightgbm",
     )
+    features = filter_features_by_shap(features)
     logger.info("Using %d features", len(features))
 
     X = df.sort_values("game_date")[features]

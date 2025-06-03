@@ -15,7 +15,7 @@ from src.train_model import (
     get_gain_importance,
     get_shap_importance,
 )
-from src.features.selection import select_features
+from src.features.selection import select_features, filter_features_by_shap
 from src.utils import setup_logger
 
 
@@ -66,6 +66,7 @@ def main(argv: list[str] | None = None) -> None:
             importance_threshold=StrikeoutModelConfig.IMPORTANCE_THRESHOLD,
             importance_method="lightgbm",
         )
+        features = filter_features_by_shap(features)
         X_hold = holdout_df[features]
         y_hold = holdout_df[StrikeoutModelConfig.TARGET_VARIABLE]
         preds_hold = model.predict(X_hold)

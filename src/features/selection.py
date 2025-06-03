@@ -7,12 +7,17 @@ pruned using tree-based model importances.
 
 from __future__ import annotations
 
-from typing import Iterable, List, Optional, Tuple
+from typing import Iterable, List, Optional, Tuple, Sequence
+from pathlib import Path
+import logging
+
 from lightgbm import LGBMRegressor
 from sklearn.ensemble import ExtraTreesRegressor
 
 import pandas as pd
-from src.config import StrikeoutModelConfig
+from src.config import StrikeoutModelConfig, FileConfig
+
+logger = logging.getLogger(__name__)
 
 # Columns that should never be used as model features
 BASE_EXCLUDE_COLS: List[str] = [
@@ -114,3 +119,27 @@ def select_features(
         info_df = imp.rename("importance").to_frame()
 
     return selected, info_df
+
+
+def filter_features_by_shap(
+    features: Sequence[str],
+    shap_path: Path = FileConfig.PLOTS_DIR / "shap_importance.csv",
+) -> List[str]:
+    """Filter ``features`` based on non-zero SHAP importance.
+
+    If ``shap_path`` exists, only features with importance greater than zero
+    are returned. If the file is missing or cannot be read, the input list is
+    returned unchanged.
+    """
+
+    if not shap_path.exists():
+        return list(features)
+
+    try:
+        shap_df = pd.read_csv(shap_path)
+    except Exception as exc:  # pragma: no cover - file read errors
+        logger.warning("Failed to read SHAP importance file %s: %s", shap_path, exc)
+        return list(features)
+
+    keep = set(shap_df.loc[shap_df["importance"] > 0, "feature"])
+    return [f for f in features if f in keep]
