@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import pandas as pd
+import numpy as np
+from sklearn.metrics import mean_absolute_error, mean_squared_error
 
-from src.config import DBConfig, FileConfig, LogConfig
+from src.config import DBConfig, FileConfig, LogConfig, StrikeoutModelConfig
 from src.train_model import (
     load_dataset,
     split_by_year,
@@ -11,6 +14,7 @@ from src.train_model import (
     train_lgbm,
     get_feature_importance,
 )
+from src.features.selection import select_features
 from src.utils import setup_logger
 
 
@@ -28,6 +32,12 @@ def main(argv: list[str] | None = None) -> None:
         default=DBConfig.PATH,
         help="Path to SQLite database with model_features table",
     )
+    parser.add_argument(
+        "--holdout-year",
+        type=int,
+        default=None,
+        help="Year to hold out from training for final evaluation",
+    )
     args = parser.parse_args(argv)
 
     df = load_dataset(args.db_path)
@@ -35,11 +45,34 @@ def main(argv: list[str] | None = None) -> None:
         logger.error("No data available for training")
         return
 
-    train_df, test_df = split_by_year(df)
+    split_result = split_by_year(df, holdout_year=args.holdout_year)
+    if args.holdout_year is not None:
+        train_df, test_df, holdout_df = split_result
+    else:
+        train_df, test_df = split_result
+        holdout_df = pd.DataFrame()
 
     cv_rmse = cross_validate_lgbm(train_df)
 
     model, metrics = train_lgbm(train_df, test_df)
+
+    holdout_metrics = {}
+    if not holdout_df.empty:
+        features, _ = select_features(
+            train_df,
+            StrikeoutModelConfig.TARGET_VARIABLE,
+            prune_importance=True,
+            importance_threshold=StrikeoutModelConfig.IMPORTANCE_THRESHOLD,
+            importance_method="lightgbm",
+        )
+        X_hold = holdout_df[features]
+        y_hold = holdout_df[StrikeoutModelConfig.TARGET_VARIABLE]
+        preds_hold = model.predict(X_hold)
+        holdout_metrics = {
+            "rmse": float(np.sqrt(mean_squared_error(y_hold, preds_hold))),
+            "mae": float(mean_absolute_error(y_hold, preds_hold)),
+            "within_1_so": float(((pd.Series(preds_hold).round() - y_hold).abs() <= 1).mean()),
+        }
 
     model_path = FileConfig.MODELS_DIR / "lgbm_model.txt"
     model.booster_.save_model(str(model_path))
@@ -54,6 +87,18 @@ def main(argv: list[str] | None = None) -> None:
     logger.info("RMSE: %.4f", metrics.get("rmse", float('nan')))
     logger.info("MAE: %.4f", metrics.get("mae", float('nan')))
     logger.info("within_1_so: %.4f", metrics.get("within_1_so", float('nan')))
+    if holdout_metrics:
+        logger.info(
+            "Holdout %d RMSE: %.4f", args.holdout_year, holdout_metrics.get("rmse", float("nan"))
+        )
+        logger.info(
+            "Holdout %d MAE: %.4f", args.holdout_year, holdout_metrics.get("mae", float("nan"))
+        )
+        logger.info(
+            "Holdout %d within_1_so: %.4f",
+            args.holdout_year,
+            holdout_metrics.get("within_1_so", float("nan")),
+        )
 
 
 if __name__ == "__main__":  # pragma: no cover

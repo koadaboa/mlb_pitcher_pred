@@ -34,12 +34,29 @@ def split_by_year(
     df: pd.DataFrame,
     train_years: Sequence[int] = StrikeoutModelConfig.DEFAULT_TRAIN_YEARS,
     test_years: Sequence[int] = StrikeoutModelConfig.DEFAULT_TEST_YEARS,
-) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Split ``df`` into train and test sets based on the ``game_date`` year."""
+    holdout_year: int | None = None,
+) -> Tuple[pd.DataFrame, ...]:
+    """Split ``df`` into train/test sets and optional holdout set by ``game_date`` year."""
     if "game_date" not in df.columns:
         raise KeyError("game_date column missing from dataframe")
-    train_df = df[df["game_date"].dt.year.isin(train_years)].sort_values("game_date")
-    test_df = df[df["game_date"].dt.year.isin(test_years)].sort_values("game_date")
+
+    # Filter train and test sets
+    train_mask = df["game_date"].dt.year.isin(train_years)
+    test_mask = df["game_date"].dt.year.isin(test_years)
+
+    holdout_df = pd.DataFrame()
+    if holdout_year is not None:
+        holdout_mask = df["game_date"].dt.year == holdout_year
+        holdout_df = df[holdout_mask].sort_values("game_date")
+        # Exclude holdout year from train and test splits
+        train_mask &= ~holdout_mask
+        test_mask &= ~holdout_mask
+
+    train_df = df[train_mask].sort_values("game_date")
+    test_df = df[test_mask].sort_values("game_date")
+
+    if holdout_year is not None:
+        return train_df, test_df, holdout_df
     return train_df, test_df
 
 
