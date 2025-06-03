@@ -9,7 +9,7 @@ from src.data.create_team_batting import aggregate_team_batting
 from src.data.create_matchup_details_table import build_matchup_table
 from src.data.create_catcher_defense import build_catcher_defense_metrics
 from src.data.create_starting_lineups import build_starting_lineups
-from src.create_pitcher_vs_team_stats import build_matchup_stats
+from src.data.create_pitcher_vs_team_stats import build_matchup_stats
 
 
 def main(argv: list[str] | None = None) -> None:

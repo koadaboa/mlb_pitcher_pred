@@ -107,7 +107,7 @@ class StrikeoutModelConfig:
     RANDOM_STATE = 3
     # Default rolling window sizes (in games)
     # Adjust if additional smoothing is required
-    WINDOW_SIZES = [3, 5, 10, 20, 50, 100]
+    WINDOW_SIZES = [3, 5, 10, 20, 50]
     # Halflife (games) used for exponentially weighted moving averages
     EWM_HALFLIFE = 7
     # Limit which numeric columns get rolling stats to avoid huge tables
@@ -193,15 +193,15 @@ class StrikeoutModelConfig:
     # --- LightGBM Hyperparameter Defaults ---
     LGBM_BASE_PARAMS = {
         "objective": "poisson",
-        "learning_rate": 0.03786686371695319,
-        "num_leaves": 82,
+        "learning_rate": 0.06780401195248975,
+        "num_leaves": 80,
         "max_depth": 3,
-        "min_child_samples": 40,
-        "feature_fraction": 0.6561758743969195,
-        "bagging_fraction": 0.6103902823033777,
-        "bagging_freq": 2,
-        "reg_alpha": 0.33907972084342536,
-        "reg_lambda": 8.296994158031719,
+        "min_child_samples": 80,
+        "feature_fraction": 0.6347685141697361,
+        "bagging_fraction": 0.6264591550945674,
+        "bagging_freq": 7,
+        "reg_alpha": 9.611789832490492,
+        "reg_lambda": 2.602540841216631,
         "seed": RANDOM_STATE,
     }
 
