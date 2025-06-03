@@ -245,6 +245,13 @@ python -m src.scripts.train_baseline_model --db-path path/to/pitcher_stats.db
 ```
 
 This computes a 5-fold time-series CV RMSE and evaluates on the test set.
+* Compute SHAP feature importances
+
+```bash
+python -m src.scripts.shap_sweep --db-path path/to/pitcher_stats.db
+```
+
+This writes `plots/shap_importance.csv` with the mean absolute SHAP value for each feature.
 * Add model monitoring & alerting for production use
 
 ## How to Contribute
