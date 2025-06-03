@@ -46,6 +46,7 @@ def main(argv: list[str] | None = None) -> None:
         values = values[0]
     importance = np.abs(values).mean(axis=0)
     shap_df = pd.DataFrame({"feature": X_train.columns, "importance": importance})
+    shap_df = shap_df[shap_df["importance"] > 0]
     shap_df.sort_values("importance", ascending=False, inplace=True)
 
     out_path = FileConfig.PLOTS_DIR / "shap_importance.csv"

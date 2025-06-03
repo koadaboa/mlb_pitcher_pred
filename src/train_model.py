@@ -189,6 +189,7 @@ def get_shap_importance(model: LGBMRegressor, X: pd.DataFrame) -> pd.DataFrame:
         values = values[0]
     importance = np.abs(values).mean(axis=0)
     fi = pd.DataFrame({"feature": X.columns, "importance": importance})
+    fi = fi[fi["importance"] > 0].copy()
     fi["group"] = fi["feature"].map(assign_feature_group)
     fi.sort_values("importance", ascending=False, inplace=True)
     return fi
