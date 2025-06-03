@@ -5,6 +5,7 @@ from pathlib import Path
 
 from src.features import (
     engineer_pitcher_features,
+    engineer_workload_features,
     engineer_opponent_features,
     engineer_contextual_features,
     engineer_lineup_trends,
@@ -38,6 +39,11 @@ def main(argv: list[str] | None = None) -> None:
 
     engineer_pitcher_features(
         db_path=args.db_path, year=args.year, rebuild=args.rebuild
+    )
+    engineer_workload_features(
+        db_path=args.db_path,
+        year=args.year,
+        rebuild=args.rebuild,
     )
     engineer_opponent_features(
         db_path=args.db_path,
