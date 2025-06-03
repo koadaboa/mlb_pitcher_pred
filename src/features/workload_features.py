@@ -4,7 +4,13 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 
-from src.utils import DBConnection, setup_logger, table_exists, get_latest_date
+from src.utils import (
+    DBConnection,
+    setup_logger,
+    table_exists,
+    get_latest_date,
+    safe_merge,
+)
 from src.config import DBConfig, LogConfig
 
 logger = setup_logger("workload_features", LogConfig.LOG_DIR / "workload_features.log")
@@ -50,7 +56,10 @@ def add_injury_indicators(df: pd.DataFrame, injury_df: pd.DataFrame) -> pd.DataF
         on_il = []
         days_since = []
         for date in g["game_date"]:
-            current = stints[(stints["start_date"] <= date) & ((stints["end_date"].isna()) | (date < stints["end_date"]))]
+            current = stints[
+                (stints["start_date"] <= date)
+                & ((stints["end_date"].isna()) | (date < stints["end_date"]))
+            ]
             on_il.append(1 if not current.empty else 0)
             past = stints[stints["end_date"] <= date]
             if not past.empty:
@@ -61,6 +70,36 @@ def add_injury_indicators(df: pd.DataFrame, injury_df: pd.DataFrame) -> pd.DataF
         frames.append(g)
 
     return pd.concat(frames).sort_index()
+
+
+def add_pitcher_age(df: pd.DataFrame, players_df: pd.DataFrame) -> pd.DataFrame:
+    """Merge birth dates and calculate pitcher age on ``game_date``."""
+    if players_df.empty or "birth_date" not in players_df.columns:
+        df["pitcher_age"] = np.nan
+        return df
+
+    players_df = players_df.rename(columns={"player_id": "pitcher_id"})
+    players_df["birth_date"] = pd.to_datetime(players_df["birth_date"])
+    df = safe_merge(
+        df, players_df[["pitcher_id", "birth_date"]], on="pitcher_id", how="left"
+    )
+    df["pitcher_age"] = (df["game_date"] - df["birth_date"]).dt.days / 365.25
+    df = df.drop(columns=["birth_date"], errors="ignore")
+    return df
+
+
+def add_recent_innings(df: pd.DataFrame, window_days: int = 30) -> pd.Series:
+    """Return rolling sum of innings pitched in the previous ``window_days``."""
+    df = df.sort_values(["pitcher_id", "game_date"])
+    parts = []
+    for pid, g in df.groupby("pitcher_id"):
+        shifted = g.set_index("game_date")["innings_pitched"].shift(1)
+        rolled = shifted.rolling(f"{window_days}D").sum()
+        rolled.index = g.index
+        parts.append(rolled)
+    out = pd.concat(parts).sort_index()
+    out.name = f"season_ip_last_{window_days}d"
+    return out
 
 
 def engineer_workload_features(
