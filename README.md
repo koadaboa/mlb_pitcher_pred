@@ -56,7 +56,9 @@ Aggregated per-game stats for starting pitchers only. Rows are filtered from `st
  'fastball_pct', 'slider_pct', 'curve_pct', 'changeup_pct', 'cutter_pct',
  'sinker_pct', 'splitter_pct', 'fastball_whiff_rate', 'slider_whiff_rate',
  'curve_whiff_rate', 'changeup_whiff_rate', 'cutter_whiff_rate',
- 'sinker_whiff_rate', 'splitter_whiff_rate', 'fastball_then_breaking_rate']
+'sinker_whiff_rate', 'splitter_whiff_rate', 'fastball_then_breaking_rate',
+ 'fb_to_fb_pct', 'fb_to_sl_pct', 'fb_to_cu_pct', 'fb_to_ch_pct',
+ 'fb_to_fc_pct', 'fb_to_si_pct', 'fb_to_fs_pct', 'sl_to_fb_pct']
 ```
 ### `game_level_batters_vs_starters`
 

@@ -59,6 +59,7 @@ def setup_test_db(tmp_path: Path, cross_season: bool = False) -> Path:
                 "release_extension": [6.0, 6.1, 6.2],
                 "plate_x": [-0.2, -0.3, -0.1],
                 "plate_z": [2.5, 2.6, 2.7],
+                "fb_to_sl_pct": [0.2, 0.25, 0.3],
             }
         )
         matchup_df = pitcher_df.copy()
@@ -138,6 +139,7 @@ def test_feature_pipeline(tmp_path: Path) -> None:
         assert "slider_pct_mean_3" in df.columns
         assert "offspeed_to_fastball_ratio_mean_3" in df.columns
         assert "fastball_then_breaking_rate_mean_3" in df.columns
+        assert "fb_to_sl_pct_mean_3" in df.columns
         assert "two_strike_k_rate_mean_3" in df.columns
         assert "high_leverage_k_rate_mean_3" in df.columns
         assert "woba_runners_on_mean_3" in df.columns

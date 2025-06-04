@@ -111,6 +111,10 @@ class StrikeoutModelConfig:
     # Halflife (games) used for exponentially weighted moving averages
     EWM_HALFLIFE = 7
     # Limit which numeric columns get rolling stats to avoid huge tables
+    PITCH_TYPE_CATS = ["fb", "sl", "cu", "ch", "fc", "si", "fs"]
+    PITCH_TRANSITION_COLS = [
+        f"{a}_to_{b}_pct" for a in PITCH_TYPE_CATS for b in PITCH_TYPE_CATS
+    ]
     PITCHER_ROLLING_COLS = [
         "strikeouts",
         "pitches",
@@ -147,7 +151,7 @@ class StrikeoutModelConfig:
         "batter_so_rate",
         "batter_ops",
         "batter_whiff_rate",
-    ]
+    ] + PITCH_TRANSITION_COLS
     CONTEXT_ROLLING_COLS = [
         "strikeouts",
         "pitches",

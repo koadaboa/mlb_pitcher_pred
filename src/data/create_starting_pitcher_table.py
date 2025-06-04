@@ -195,6 +195,39 @@ def compute_features(df: pd.DataFrame) -> Dict:
     next_types = np.roll(types, -1)
     fastball_then_break = fastball_mask & np.isin(next_types, list(BREAKING_TYPES))
 
+    # --- Pitch Type Transition Probabilities ---
+    category_map = {
+        **{pt: "fb" for pt in FASTBALL_TYPES - OFFSPEED_TYPES},
+        "SL": "sl",
+        "CU": "cu",
+        "KC": "cu",
+        "SV": "cu",
+        "SC": "cu",
+        "CH": "ch",
+        "FC": "fc",
+        "SI": "si",
+        "FT": "si",
+        "FS": "fs",
+        "SF": "fs",
+    }
+    categories = [category_map.get(t) for t in df["pitch_type"]]
+    curr_cats = categories[:-1]
+    next_cats = categories[1:]
+    unique_cats = ["fb", "sl", "cu", "ch", "fc", "si", "fs"]
+    transition_rates = {}
+    for from_cat in unique_cats:
+        mask_from = [c == from_cat for c in curr_cats]
+        denom = sum(mask_from)
+        for to_cat in unique_cats:
+            key = f"{from_cat}_to_{to_cat}_pct"
+            if denom:
+                mask_next = [nc == to_cat for nc in next_cats]
+                count = sum(f and n for f, n in zip(mask_from, mask_next))
+                transition_rates[key] = count / denom
+            else:
+                transition_rates[key] = np.nan
+
+
     features = {
         "game_pk": first_row["game_pk"],
         "game_date": first_row["game_date"],
@@ -253,6 +286,8 @@ def compute_features(df: pd.DataFrame) -> Dict:
             else np.nan
         ),
     }
+    # Insert pitch transition probabilities
+    features.update(transition_rates)
 
     # --- Pitch Usage Percentages ---
     for name, mask in {
