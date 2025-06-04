@@ -109,6 +109,7 @@ def setup_test_db(tmp_path: Path, cross_season: bool = False) -> Path:
                 "game_date": pd.to_datetime(dates),
                 "called_strike_rate": [0.5, 0.55, 0.6],
                 "framing_runs": [1.0, 1.2, 1.4],
+                "below_zone_called_strike_rate": [0.2, 0.25, 0.3],
             }
         )
         catcher_df.to_sql("catcher_defense_metrics", conn, index=False)
@@ -341,6 +342,7 @@ def test_run_feature_engineering_script(tmp_path: Path) -> None:
         ]
         assert "lineup_avg_ops_mean_3" in model_cols
         assert "catcher_called_strike_rate_mean_3" in model_cols
+        assert "catcher_below_zone_called_strike_rate_mean_3" in model_cols
         assert "projected_lineup_k_pct" in model_cols
 
 

@@ -21,6 +21,12 @@ def _compute_metrics(df: pd.DataFrame) -> Dict:
     called = df["description"].eq("called_strike")
     called_strike_rate = called[taken].mean() if taken.any() else np.nan
     framing_runs = called.sum()  # placeholder for more advanced metric
+    below_zone_rate = np.nan
+    if "plate_z" in df.columns:
+        called_total = called.sum()
+        if called_total:
+            below_zone = (called & (df["plate_z"] < 1.5)).sum()
+            below_zone_rate = below_zone / called_total
     first = df.iloc[0]
     return {
         "game_pk": first["game_pk"],
@@ -28,6 +34,7 @@ def _compute_metrics(df: pd.DataFrame) -> Dict:
         "catcher_id": first["fielder_2"],
         "called_strike_rate": called_strike_rate,
         "framing_runs": framing_runs,
+        "below_zone_called_strike_rate": below_zone_rate,
     }
 
 
@@ -39,8 +46,12 @@ def build_catcher_defense_metrics(
 ) -> pd.DataFrame:
     """Aggregate pitch-level data into per game catcher framing metrics."""
     with DBConnection(db_path) as conn:
+        cols = [row[1] for row in conn.execute(f"PRAGMA table_info({source_table})")]
+        select_cols = ["game_pk", "game_date", "fielder_2", "description"]
+        if "plate_z" in cols:
+            select_cols.append("plate_z")
         df = pd.read_sql_query(
-            f"SELECT game_pk, game_date, fielder_2, description FROM {source_table}",
+            f"SELECT {', '.join(select_cols)} FROM {source_table}",
             conn,
         )
     if df.empty:
