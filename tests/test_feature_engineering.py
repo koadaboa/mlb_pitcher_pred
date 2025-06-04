@@ -168,6 +168,7 @@ def test_feature_pipeline(tmp_path: Path) -> None:
         assert pd.api.types.is_numeric_dtype(df["home_team_enc"])
         assert "day_of_week" in df.columns
         assert "travel_distance" in df.columns
+        assert "time_zone_change" in df.columns
         assert "on_il" in df.columns
         assert "days_since_il" in df.columns
         assert "pitches_last_7d" in df.columns
@@ -278,6 +279,7 @@ def test_base_context_fields_kept(tmp_path: Path) -> None:
         assert "log_park_factor" in df.columns
         assert "day_of_week" in df.columns
         assert "travel_distance" in df.columns
+        assert "time_zone_change" in df.columns
 
 
 def test_rest_days_across_seasons(tmp_path: Path) -> None:

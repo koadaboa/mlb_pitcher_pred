@@ -52,6 +52,40 @@ BALLPARK_COORDS = {
     "Nationals Park": (38.8731, -77.0074),
 }
 
+# Map stadium name to IANA time zone identifier
+BALLPARK_TIME_ZONES = {
+    "Chase Field": "America/Phoenix",
+    "Truist Park": "America/New_York",
+    "Oriole Park at Camden Yards": "America/New_York",
+    "Fenway Park": "America/New_York",
+    "Wrigley Field": "America/Chicago",
+    "Guaranteed Rate Field": "America/Chicago",
+    "Great American Ball Park": "America/New_York",
+    "Progressive Field": "America/New_York",
+    "Coors Field": "America/Denver",
+    "Comerica Park": "America/Detroit",
+    "Minute Maid Park": "America/Chicago",
+    "Kauffman Stadium": "America/Chicago",
+    "Angel Stadium": "America/Los_Angeles",
+    "Dodger Stadium": "America/Los_Angeles",
+    "loanDepot Park": "America/New_York",
+    "American Family Field": "America/Chicago",
+    "Target Field": "America/Chicago",
+    "Citi Field": "America/New_York",
+    "Yankee Stadium": "America/New_York",
+    "Oakland Coliseum": "America/Los_Angeles",
+    "Citizens Bank Park": "America/New_York",
+    "PNC Park": "America/New_York",
+    "Petco Park": "America/Los_Angeles",
+    "Oracle Park": "America/Los_Angeles",
+    "T-Mobile Park": "America/Los_Angeles",
+    "Busch Stadium": "America/Chicago",
+    "Tropicana Field": "America/New_York",
+    "Globe Life Field": "America/Chicago",
+    "Rogers Centre": "America/Toronto",
+    "Nationals Park": "America/New_York",
+}
+
 # Approximate run-scoring park factors indexed by stadium name. Values above 100
 # indicate a hitter-friendly environment while numbers below 100 favor
 # pitchers.  These are coarse averages and can be refined when more granular
@@ -186,6 +220,7 @@ class StrikeoutModelConfig:
         "team_k_rate",
         "day_of_week",
         "travel_distance",
+        "time_zone_change",
     ]
     DEFAULT_TRAIN_YEARS = (2016, 2017, 2018, 2019, 2021, 2022, 2023)
     DEFAULT_TEST_YEARS = (2024, 2025)

@@ -24,6 +24,7 @@ PREFIX_TO_GROUP = {
     "park_factor": "Context",
     "day_of_week": "Context",
     "travel_distance": "Context",
+    "time_zone_change": "Context",
     "pitches_last_": "Context",
     "rest_days": "Context",
     "on_il": "Context",
@@ -57,6 +58,7 @@ SPECIFIC_GROUPS = {
     "days_since_il": "Context",
     "day_of_week": "Context",
     "travel_distance": "Context",
+    "time_zone_change": "Context",
 }
 
 DEFAULT_GROUP = "Performance"

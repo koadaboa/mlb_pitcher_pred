@@ -14,12 +14,14 @@ from src.utils import (
     get_latest_date,
     safe_merge,
 )
+from zoneinfo import ZoneInfo
 from src.config import (
     DBConfig,
     StrikeoutModelConfig,
     LogConfig,
     BALLPARK_FACTORS,
     BALLPARK_COORDS,
+    BALLPARK_TIME_ZONES,
 )
 
 logger = setup_logger(
@@ -384,6 +386,25 @@ def engineer_contextual_features(
 
         df["stadium"] = df["home_team"].map(TEAM_TO_BALLPARK)
         df["park_factor"] = df["stadium"].map(BALLPARK_FACTORS)
+        df["time_zone"] = df["stadium"].map(BALLPARK_TIME_ZONES)
+
+        def _offset(dt: pd.Timestamp, tz: str | None) -> float:
+            if not tz:
+                return np.nan
+            try:
+                return dt.tz_localize(ZoneInfo(tz)).utcoffset().total_seconds() / 3600
+            except Exception:
+                return np.nan
+
+        df["_tz_offset"] = [
+            _offset(d, tz) for d, tz in zip(df["game_date"], df["time_zone"])
+        ]
+        df["time_zone_change"] = (
+            df.groupby("pitcher_id")["_tz_offset"].apply(
+                lambda s: s.sort_index().diff().abs()
+            )
+        )
+        df = df.drop(columns=["_tz_offset"])
 
         df = _add_group_rolling(
             df,
