@@ -119,6 +119,11 @@ def compute_features(df: pd.DataFrame) -> Dict:
         opp = first_row["home_team"]
 
     pitches = len(df)
+    inning_counts = df.groupby("inning").size().sort_index()
+    if len(inning_counts) > 1:
+        slope = np.polyfit(inning_counts.index.values, inning_counts.values, 1)[0]
+    else:
+        slope = np.nan
     strike_events = df["events"].isin(["strikeout", "strikeout_double_play"])
     swinging = df["description"].str.contains("swinging_strike", na=False)
     called = df["description"].eq("called_strike")
@@ -203,6 +208,7 @@ def compute_features(df: pd.DataFrame) -> Dict:
         "pitching_team": team,
         "opponent_team": opp,
         "pitches": pitches,
+        "pitches_per_inning_decay": slope,
         "innings_pitched": df["inning"].nunique(),
         "batters_faced": df["batter"].nunique(),
         "strikeouts": strike_events.sum(),

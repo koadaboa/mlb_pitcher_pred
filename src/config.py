@@ -114,6 +114,7 @@ class StrikeoutModelConfig:
     PITCHER_ROLLING_COLS = [
         "strikeouts",
         "pitches",
+        "pitches_per_inning_decay",
         "fip",
         "csw_pct",
         "swinging_strike_rate",
