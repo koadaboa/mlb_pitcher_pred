@@ -171,6 +171,7 @@ def test_feature_pipeline(tmp_path: Path) -> None:
         assert "on_il" in df.columns
         assert "days_since_il" in df.columns
         assert "pitches_last_7d" in df.columns
+        assert "season_ip_last_14d" in df.columns
         assert "season_ip_last_30d" in df.columns
         assert "pitcher_age" in df.columns
         assert pd.api.types.is_numeric_dtype(df["on_il"])

@@ -182,6 +182,7 @@ def engineer_pitcher_features(
             player_df = pd.DataFrame(columns=["player_id", "birth_date"])
 
     df["pitches_last_7d"] = add_recent_pitch_counts(df, 7)
+    df["season_ip_last_14d"] = add_recent_innings(df, 14)
     df["season_ip_last_30d"] = add_recent_innings(df, 30)
     df = add_injury_indicators(df, injury_df)
     df = add_pitcher_age(df, player_df)

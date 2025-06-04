@@ -177,6 +177,7 @@ class StrikeoutModelConfig:
         "elevation",
         "rest_days",
         "pitches_last_7d",
+        "season_ip_last_14d",
         "season_ip_last_30d",
         "on_il",
         "days_since_il",
