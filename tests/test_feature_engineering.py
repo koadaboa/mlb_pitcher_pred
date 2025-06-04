@@ -173,6 +173,9 @@ def test_feature_pipeline(tmp_path: Path) -> None:
         assert "pitches_last_7d" in df.columns
         assert "season_ip_last_30d" in df.columns
         assert "pitcher_age" in df.columns
+        assert "years_in_MLB" in df.columns
+        assert "career_k_per9" in df.columns
+        assert "career_fip" in df.columns
         assert pd.api.types.is_numeric_dtype(df["on_il"])
         # ensure merge suffixes were resolved
         assert "game_date" in df.columns

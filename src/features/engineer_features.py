@@ -19,6 +19,7 @@ from .workload_features import (
     add_injury_indicators,
     add_pitcher_age,
     add_recent_innings,
+    add_career_metrics,
 )
 
 logger = setup_logger(
@@ -185,6 +186,7 @@ def engineer_pitcher_features(
     df["season_ip_last_30d"] = add_recent_innings(df, 30)
     df = add_injury_indicators(df, injury_df)
     df = add_pitcher_age(df, player_df)
+    df = add_career_metrics(df)
 
     logger.info("Computing rolling features for %d rows", len(df))
     df = add_rolling_features(

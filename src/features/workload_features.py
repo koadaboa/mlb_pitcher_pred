@@ -102,6 +102,45 @@ def add_recent_innings(df: pd.DataFrame, window_days: int = 30) -> pd.Series:
     return out
 
 
+def add_career_metrics(df: pd.DataFrame) -> pd.DataFrame:
+    """Add career-level metrics for each pitcher.
+
+    Adds the following columns:
+        - ``years_in_MLB``: Years since the pitcher's first appearance in the
+          dataset.
+        - ``career_k_per9``: Cumulative average strikeouts per nine innings
+          over all prior games.
+        - ``career_fip``: Cumulative average FIP over all prior games.
+
+    Parameters
+    ----------
+    df : DataFrame
+        DataFrame containing ``pitcher_id``, ``game_date``, ``strikeouts``,
+        ``innings_pitched`` and ``fip`` columns.
+    """
+
+    df = df.sort_values(["pitcher_id", "game_date"]).copy()
+
+    first_game = df.groupby("pitcher_id")["game_date"].transform("min")
+    df["years_in_MLB"] = (df["game_date"] - first_game).dt.days / 365.25
+
+    k_per9 = df["strikeouts"] / df["innings_pitched"] * 9
+    df["career_k_per9"] = (
+        df.assign(k_per9=k_per9)
+        .groupby("pitcher_id")["k_per9"]
+        .apply(lambda x: x.shift(1).expanding().mean())
+        .reset_index(level=0, drop=True)
+    )
+
+    df["career_fip"] = (
+        df.groupby("pitcher_id")["fip"]
+        .apply(lambda x: x.shift(1).expanding().mean())
+        .reset_index(level=0, drop=True)
+    )
+
+    return df
+
+
 def engineer_workload_features(
     db_path: Path = DBConfig.PATH,
     source_table: str = "game_level_starting_pitchers",
