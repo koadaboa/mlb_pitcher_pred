@@ -143,6 +143,7 @@ def test_feature_pipeline(tmp_path: Path) -> None:
         assert "woba_runners_on_mean_3" in df.columns
         assert "unique_pitch_types_mean_3" in df.columns
         assert "zone_pct_mean_3" in df.columns
+        assert "whiff_rate_zone_low_outside_mean_3" in df.columns
         assert "hard_hit_rate_mean_3" in df.columns
         assert "pfx_x_mean_3" in df.columns
         assert "lineup_avg_ops_mean_3" in df.columns

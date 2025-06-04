@@ -40,6 +40,7 @@ PREFIX_TO_GROUP = {
     "release_": "Pitch_Quality",
     "plate_": "Pitch_Quality",
     "spin": "Pitch_Quality",
+    "whiff_rate_zone_": "Pitch_Quality",
     "whiff": "Pitch_Quality",
     "csw": "Pitch_Quality",
     "zone_": "Pitch_Quality",

@@ -271,6 +271,38 @@ def compute_features(df: pd.DataFrame) -> Dict:
         swinging[fastball_only].mean() if fastball_only.sum() else np.nan
     )
 
+    # --- Whiff rates by strike zone location ---
+    if "zone" in df.columns:
+        zone_groups = {
+            "high_inside": [1],
+            "high_middle": [2],
+            "high_outside": [3],
+            "middle_inside": [4],
+            "middle_middle": [5],
+            "middle_outside": [6],
+            "low_inside": [7],
+            "low_middle": [8],
+            "low_outside": [9],
+        }
+        for name, zones in zone_groups.items():
+            mask = df["zone"].isin(zones)
+            features[f"whiff_rate_zone_{name}"] = (
+                swinging[mask].mean() if mask.sum() else np.nan
+            )
+    else:
+        for name in [
+            "high_inside",
+            "high_middle",
+            "high_outside",
+            "middle_inside",
+            "middle_middle",
+            "middle_outside",
+            "low_inside",
+            "low_middle",
+            "low_outside",
+        ]:
+            features[f"whiff_rate_zone_{name}"] = np.nan
+
     last_pitch = df.groupby("at_bat_number").tail(1)
     if "strikes" in last_pitch.columns:
         mask = last_pitch["strikes"] == 2
