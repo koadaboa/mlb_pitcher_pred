@@ -144,6 +144,9 @@ class StrikeoutModelConfig:
         "hard_hit_rate",
         "offspeed_to_fastball_ratio",
         "fastball_then_breaking_rate",
+        "fb_breaking_sequence_rate",
+        "two_strike_sequence_variety",
+        "high_lev_first_pitch_strike",
         "unique_pitch_types",
         "batter_so_rate",
         "batter_ops",
@@ -170,6 +173,15 @@ class StrikeoutModelConfig:
         "bat_ops_vs_RHP",
         "bat_k_rate_vs_LHP",
         "bat_k_rate_vs_RHP",
+        "temp_optimal",
+        "temp_extreme",
+        "wind_breaking_ball_effect",
+        "night_game_breaking_advantage",
+        "platoon_advantage",
+        "extreme_platoon_split",
+        "top_order_k_rate",
+        "consecutive_same_hand",
+        "weighted_recent_ops",
     ]
     # Numeric columns that may be used without rolling (known before the game)
     ALLOWED_BASE_NUMERIC_COLS = [
@@ -188,6 +200,15 @@ class StrikeoutModelConfig:
         "day_of_week",
         "travel_distance",
         "days_into_season",
+        "temp_optimal",
+        "temp_extreme",
+        "wind_breaking_ball_effect",
+        "night_game_breaking_advantage",
+        "platoon_advantage",
+        "extreme_platoon_split",
+        "top_order_k_rate",
+        "consecutive_same_hand",
+        "weighted_recent_ops",
     ]
     DEFAULT_TRAIN_YEARS = (2016, 2017, 2018, 2019, 2021, 2022, 2023)
     DEFAULT_TEST_YEARS = (2024, 2025)
