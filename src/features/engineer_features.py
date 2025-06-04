@@ -166,6 +166,21 @@ def engineer_pitcher_features(
         logger.info("No new rows to process for %s", target_table)
         return df
 
+    # Days into season relative to each year's first game
+    df["season_year"] = df["game_date"].dt.year
+    opening_day = df.groupby("season_year")["game_date"].transform("min")
+    df["days_into_season"] = (df["game_date"] - opening_day).dt.days
+    df.drop(columns=["season_year"], inplace=True)
+
+    month = df["game_date"].dt.month
+    df["month_bucket"] = pd.cut(
+        month,
+        bins=[0, 4, 8, 12],
+        labels=["early", "mid", "late"],
+        include_lowest=True,
+    ).astype(str)
+
+
     df["rest_days"] = calculate_rest_days(df, "pitcher_id", "game_date")
 
     # Add workload features

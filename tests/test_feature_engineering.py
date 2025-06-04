@@ -166,8 +166,11 @@ def test_feature_pipeline(tmp_path: Path) -> None:
         # encoded categorical columns should be numeric
         assert "home_team_enc" in df.columns
         assert pd.api.types.is_numeric_dtype(df["home_team_enc"])
+        assert "month_bucket_enc" in df.columns
+        assert pd.api.types.is_numeric_dtype(df["month_bucket_enc"])
         assert "day_of_week" in df.columns
         assert "travel_distance" in df.columns
+        assert "days_into_season" in df.columns
         assert "on_il" in df.columns
         assert "days_since_il" in df.columns
         assert "pitches_last_7d" in df.columns
@@ -278,6 +281,8 @@ def test_base_context_fields_kept(tmp_path: Path) -> None:
         assert "log_park_factor" in df.columns
         assert "day_of_week" in df.columns
         assert "travel_distance" in df.columns
+        assert "days_into_season" in df.columns
+        assert "month_bucket_enc" in df.columns
 
 
 def test_rest_days_across_seasons(tmp_path: Path) -> None:
@@ -293,6 +298,9 @@ def test_rest_days_across_seasons(tmp_path: Path) -> None:
         # Cross-season gap should be calculated correctly
         assert df.loc[1, "rest_days"] == 186
         assert df.loc[2, "rest_days"] == 7
+        assert df.loc[0, "days_into_season"] == 0
+        # Next season should reset
+        assert df.loc[1, "days_into_season"] == 0
 
 
 def test_engineer_lineup_trends(tmp_path: Path) -> None:
