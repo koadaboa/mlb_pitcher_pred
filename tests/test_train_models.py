@@ -5,6 +5,7 @@ from src.config import StrikeoutModelConfig
 from src.train_model import train_lgbm
 from src.train_catboost import train_catboost
 from src.train_xgb_model import train_xgb
+from src.train_ensemble_model import train_ensemble
 
 
 def _make_train_test_dfs(n_rows: int = 20):
@@ -49,4 +50,15 @@ def test_train_xgb_runs(monkeypatch):
     monkeypatch.setattr(StrikeoutModelConfig, "FINAL_ESTIMATORS", 10)
     model, metrics = train_xgb(train_df, test_df)
     assert hasattr(model, "predict")
+    assert set(metrics) == {"rmse", "mae", "within_1_so"}
+
+
+def test_train_ensemble_runs(monkeypatch):
+    pytest.importorskip("lightgbm")
+    pytest.importorskip("xgboost")
+    pytest.importorskip("catboost")
+    train_df, test_df = _make_train_test_dfs()
+    monkeypatch.setattr(StrikeoutModelConfig, "FINAL_ESTIMATORS", 10)
+    model, metrics = train_ensemble(train_df, test_df)
+    assert hasattr(model.meta_model, "predict")
     assert set(metrics) == {"rmse", "mae", "within_1_so"}
