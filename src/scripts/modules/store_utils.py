@@ -1,7 +1,25 @@
 import sqlite3
 import logging
-from src.utils import DBConnection
+from src.utils import DBConnection, table_exists
+import pandas as pd
 from .fetch_utils import dedup_pitch_df
+
+
+def _ensure_columns(conn: sqlite3.Connection, table: str, df: pd.DataFrame) -> None:
+    """Add missing columns to ``table`` so it matches ``df``."""
+    cur = conn.execute(f"PRAGMA table_info('{table}')")
+    existing = {row[1] for row in cur.fetchall()}
+    for col in [c for c in df.columns if c not in existing]:
+        dtype = "TEXT"
+        if pd.api.types.is_integer_dtype(df[col]):
+            dtype = "INTEGER"
+        elif pd.api.types.is_float_dtype(df[col]):
+            dtype = "REAL"
+        try:
+            conn.execute(f'ALTER TABLE "{table}" ADD COLUMN "{col}" {dtype}')
+            logger.info("Added column '%s' (%s) to '%s'", col, dtype, table)
+        except sqlite3.Error as exc:
+            logger.error("Failed to add column '%s' to '%s': %s", col, table, exc)
 logger = logging.getLogger(__name__)
 
 
@@ -51,6 +69,9 @@ def store_data_to_sql(df, table_name, db_path, if_exists='append'):
                     # Log warning but proceed; to_sql might still work if table didn't exist
                     logger.warning(f"Could not explicitly drop table '{table_name}': {drop_e}. Continuing with to_sql...")
 
+            # Ensure schema has all columns when appending
+            if if_exists == 'append' and table_exists(conn, table_name):
+                _ensure_columns(conn, table_name, df)
 
             # Use pandas to_sql for writing data
             df.to_sql(
