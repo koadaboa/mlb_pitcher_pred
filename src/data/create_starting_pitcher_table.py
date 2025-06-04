@@ -53,6 +53,7 @@ PITCHER_COLS = [
     "pfx_x",
     "pfx_z",
     "release_extension",
+    "release_pos_z",
     "launch_speed",
     "launch_angle",
     "inning",
@@ -234,6 +235,9 @@ def compute_features(df: pd.DataFrame) -> Dict:
         "pfx_z": df["pfx_z"].mean() if "pfx_z" in df.columns else np.nan,
         "release_extension": df["release_extension"].mean()
         if "release_extension" in df.columns
+        else np.nan,
+        "release_height": df["release_pos_z"].mean()
+        if "release_pos_z" in df.columns
         else np.nan,
         "plate_x": df["plate_x"].mean() if "plate_x" in df.columns else np.nan,
         "plate_z": df["plate_z"].mean() if "plate_z" in df.columns else np.nan,
