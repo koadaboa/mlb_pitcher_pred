@@ -126,6 +126,29 @@ def add_rolling_features(
     return df
 
 
+def add_pitch_sequence_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Generate pitch sequence based metrics."""
+    if "fastball_then_breaking_rate" in df.columns:
+        df["fb_breaking_sequence_rate"] = df["fastball_then_breaking_rate"]
+    if "unique_pitch_types_two_strike" in df.columns:
+        seq_var = (
+            df.groupby("pitcher_id")["unique_pitch_types_two_strike"]
+            .rolling(10, min_periods=1)
+            .mean()
+            .reset_index(level=0, drop=True)
+        )
+        df["two_strike_sequence_variety"] = seq_var
+    if "first_pitch_strike_high_lev" in df.columns:
+        first_pitch = (
+            df.groupby("pitcher_id")["first_pitch_strike_high_lev"]
+            .rolling(5, min_periods=1)
+            .mean()
+            .reset_index(level=0, drop=True)
+        )
+        df["high_lev_first_pitch_strike"] = first_pitch
+    return df
+
+
 def engineer_pitcher_features(
     db_path: Path = DBConfig.PATH,
     source_table: str = "game_level_starting_pitchers",
@@ -200,6 +223,7 @@ def engineer_pitcher_features(
     df["season_ip_last_30d"] = add_recent_innings(df, 30)
     df = add_injury_indicators(df, injury_df)
     df = add_pitcher_age(df, player_df)
+    df = add_pitch_sequence_features(df)
 
     logger.info("Computing rolling features for %d rows", len(df))
     df = add_rolling_features(

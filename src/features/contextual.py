@@ -86,6 +86,67 @@ def _parse_wind_speed(value: str | None) -> float:
     return float(m.group(1)) if m else np.nan
 
 
+def add_enhanced_context_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Add additional environmental interaction features."""
+    if "temp" in df.columns:
+        df["temp_optimal"] = (df["temp"] - 72).abs()
+        df["temp_extreme"] = ((df["temp"] < 50) | (df["temp"] > 85)).astype(int)
+    if "wind_speed" in df.columns and "breaking_ball_pct" in df.columns:
+        df["wind_breaking_ball_effect"] = df["wind_speed"] * df["breaking_ball_pct"]
+    if "dayNight" in df.columns and "breaking_ball_pct" in df.columns:
+        df["night_game_breaking_advantage"] = (
+            (df["dayNight"] == "night").astype(int) * df["breaking_ball_pct"]
+        )
+    return df
+
+
+def add_platoon_effects(df: pd.DataFrame) -> pd.DataFrame:
+    """Flag platoon advantage situations and extreme splits."""
+    if "pitcher_hand" in df.columns and "batter_hand" in df.columns:
+        df["platoon_advantage"] = (
+            ((df["pitcher_hand"] == "R") & (df["batter_hand"] == "L"))
+            | ((df["pitcher_hand"] == "L") & (df["batter_hand"] == "R"))
+        ).astype(int)
+    if "ops_vs_LHP" in df.columns and "ops_vs_RHP" in df.columns and "batter_id" in df.columns:
+        diff = (
+            df.groupby("batter_id")["ops_vs_LHP"].transform("mean")
+            - df.groupby("batter_id")["ops_vs_RHP"].transform("mean")
+        ).abs()
+        df["extreme_platoon_split"] = (diff > 0.200).astype(int)
+    return df
+
+
+def add_lineup_order_effects(df: pd.DataFrame) -> pd.DataFrame:
+    """Add lineup slot based metrics."""
+    if "batting_order" in df.columns:
+        df["top_order_k_rate"] = df.groupby(["game_pk", "opponent_team"])["batting_order"].transform(
+            lambda x: (x <= 3).mean()
+        )
+    if set(["game_pk", "opponent_team", "batting_order", "batter_hand"]).issubset(df.columns):
+        def _calc(group: pd.DataFrame) -> pd.Series:
+            return group["batter_hand"].eq(group["batter_hand"].shift()).astype(int)
+
+        df["consecutive_same_hand"] = (
+            df.sort_values("batting_order")
+            .groupby(["game_pk", "opponent_team"])
+            .apply(_calc)
+            .reset_index(level=[0, 1], drop=True)
+        )
+    return df
+
+
+def add_recency_weighting(df: pd.DataFrame) -> pd.DataFrame:
+    """Weighted recent OPS using exponential decay."""
+    if "ops" in df.columns and "batter_id" in df.columns:
+        weights = np.exp(-0.1 * np.arange(10)[::-1])
+        def _recent(series: pd.Series) -> float:
+            tail = series.tail(10)
+            return float(np.average(tail, weights=weights[: len(tail)]))
+
+        df["weighted_recent_ops"] = df.groupby("batter_id")["ops"].transform(_recent)
+    return df
+
+
 def _add_group_rolling(
     df: pd.DataFrame,
     group_cols: Sequence[str],
@@ -278,6 +339,10 @@ def engineer_opponent_features(
         if df.empty:
             logger.info("No new rows to process for %s", target_table)
             return df
+
+        df = add_platoon_effects(df)
+        df = add_lineup_order_effects(df)
+        df = add_recency_weighting(df)
         df = _add_group_rolling(
             df,
             ["pitcher_id", "opponent_team"],
@@ -384,6 +449,8 @@ def engineer_contextual_features(
 
         df["stadium"] = df["home_team"].map(TEAM_TO_BALLPARK)
         df["park_factor"] = df["stadium"].map(BALLPARK_FACTORS)
+
+        df = add_enhanced_context_features(df)
 
         df = _add_group_rolling(
             df,
