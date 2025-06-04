@@ -102,6 +102,34 @@ def add_recent_innings(df: pd.DataFrame, window_days: int = 30) -> pd.Series:
     return out
 
 
+def add_drop_flags(df: pd.DataFrame, threshold: float = 1.0) -> pd.DataFrame:
+    """Flag significant velocity and spin rate drops compared to the last start.
+
+    Parameters
+    ----------
+    df : DataFrame
+        Input dataframe containing ``avg_release_speed`` and ``avg_spin_rate``.
+    threshold : float, default 1.0
+        Minimum drop required to set the flag to ``True``.
+    """
+
+    if not {"avg_release_speed", "avg_spin_rate"}.issubset(df.columns):
+        df["velocity_drop_flag"] = False
+        df["spin_drop_flag"] = False
+        return df
+
+    df = df.sort_values(["pitcher_id", "game_date"])
+    prev_velocity = df.groupby("pitcher_id")["avg_release_speed"].shift(1)
+    prev_spin = df.groupby("pitcher_id")["avg_spin_rate"].shift(1)
+
+    df["velocity_drop_flag"] = (prev_velocity - df["avg_release_speed"]) >= threshold
+    df["spin_drop_flag"] = (prev_spin - df["avg_spin_rate"]) >= threshold
+
+    df["velocity_drop_flag"] = df["velocity_drop_flag"].fillna(False)
+    df["spin_drop_flag"] = df["spin_drop_flag"].fillna(False)
+    return df
+
+
 def engineer_workload_features(
     db_path: Path = DBConfig.PATH,
     source_table: str = "game_level_starting_pitchers",

@@ -19,6 +19,7 @@ from .workload_features import (
     add_injury_indicators,
     add_pitcher_age,
     add_recent_innings,
+    add_drop_flags,
 )
 
 logger = setup_logger(
@@ -195,6 +196,8 @@ def engineer_pitcher_features(
         numeric_cols=StrikeoutModelConfig.PITCHER_ROLLING_COLS,
         ewm_halflife=StrikeoutModelConfig.EWM_HALFLIFE,
     )
+
+    df = add_drop_flags(df)
 
     with DBConnection(db_path) as conn:
         if rebuild or not table_exists(conn, target_table):

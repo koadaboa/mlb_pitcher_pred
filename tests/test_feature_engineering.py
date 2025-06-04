@@ -13,6 +13,7 @@ from src.features import (
     build_model_features,
 )
 from src.features.engineer_features import add_rolling_features
+from src.features.workload_features import add_drop_flags
 from src.config import StrikeoutModelConfig
 
 
@@ -173,6 +174,8 @@ def test_feature_pipeline(tmp_path: Path) -> None:
         assert "pitches_last_7d" in df.columns
         assert "season_ip_last_30d" in df.columns
         assert "pitcher_age" in df.columns
+        assert "velocity_drop_flag" in df.columns
+        assert "spin_drop_flag" in df.columns
         assert pd.api.types.is_numeric_dtype(df["on_il"])
         # ensure merge suffixes were resolved
         assert "game_date" in df.columns
@@ -232,6 +235,29 @@ def test_group_specific_rolling() -> None:
         or result.loc[2, "strikeouts_mean_3"] == 0
     )
     assert f"strikeouts_ewm_{StrikeoutModelConfig.EWM_HALFLIFE}" in result.columns
+
+
+def test_add_drop_flags() -> None:
+    df = pd.DataFrame(
+        {
+            "game_pk": [1, 2, 3],
+            "game_date": pd.to_datetime([
+                "2024-04-01",
+                "2024-04-08",
+                "2024-04-15",
+            ]),
+            "pitcher_id": [10, 10, 10],
+            "avg_release_speed": [95.0, 94.0, 93.5],
+            "avg_spin_rate": [2300.0, 2299.0, 2280.0],
+        }
+    )
+    result = add_drop_flags(df)
+    assert not result.loc[0, "velocity_drop_flag"]
+    assert result.loc[1, "velocity_drop_flag"]
+    assert result.loc[2, "velocity_drop_flag"]
+    assert not result.loc[0, "spin_drop_flag"]
+    assert result.loc[1, "spin_drop_flag"]
+    assert result.loc[2, "spin_drop_flag"]
 
 
 def test_log_features_added(tmp_path: Path) -> None:
