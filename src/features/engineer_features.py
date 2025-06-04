@@ -20,6 +20,10 @@ from .workload_features import (
     add_pitcher_age,
     add_recent_innings,
 )
+from .advanced_features import (
+    add_advanced_rolling_features,
+    add_game_state_features,
+)
 
 logger = setup_logger(
     "engineer_features",
@@ -201,6 +205,8 @@ def engineer_pitcher_features(
     df = add_injury_indicators(df, injury_df)
     df = add_pitcher_age(df, player_df)
 
+    df = add_game_state_features(df)
+
     logger.info("Computing rolling features for %d rows", len(df))
     df = add_rolling_features(
         df,
@@ -210,6 +216,7 @@ def engineer_pitcher_features(
         numeric_cols=StrikeoutModelConfig.PITCHER_ROLLING_COLS,
         ewm_halflife=StrikeoutModelConfig.EWM_HALFLIFE,
     )
+    df = add_advanced_rolling_features(df)
 
     with DBConnection(db_path) as conn:
         if rebuild or not table_exists(conn, target_table):
