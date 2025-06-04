@@ -57,6 +57,8 @@ SPECIFIC_GROUPS = {
     "days_since_il": "Context",
     "day_of_week": "Context",
     "travel_distance": "Context",
+    "days_into_season": "Context",
+    "month_bucket": "Context",
 }
 
 DEFAULT_GROUP = "Performance"
