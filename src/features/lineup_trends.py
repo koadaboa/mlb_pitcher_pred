@@ -72,13 +72,37 @@ def engineer_lineup_trends(
 
     key_cols = ["game_pk", "opponent_team", "game_date"]
     projected_df = None
-    if "projected_k_pct" in df.columns:
-        projected_df = (
-            df.groupby(key_cols)["projected_k_pct"]
-            .mean()
-            .rename("projected_lineup_k_pct")
-            .reset_index()
-        )
+    weighted_df = None
+    projected_cols = [c for c in df.columns if c.startswith("projected_")]
+    weight_col = None
+    for cand in ("projected_pa", "projected_plate_appearances"):
+        if cand in projected_cols:
+            weight_col = cand
+            break
+    if projected_cols:
+        # Compute simple means for all projected metrics
+        mean_df = df.groupby(key_cols)[projected_cols].mean().reset_index()
+        rename_map = {
+            c: f"projected_lineup_{c[len('projected_'):]}" for c in projected_cols
+        }
+        projected_df = mean_df.rename(columns=rename_map)
+
+    if weight_col:
+        metric_cols = [c for c in projected_cols if c != weight_col]
+        if metric_cols:
+            weighted = df[key_cols + metric_cols + [weight_col]].copy()
+            for col in metric_cols:
+                weighted[col] = weighted[col] * weighted[weight_col]
+            grouped = weighted.groupby(key_cols)
+            sums = grouped[metric_cols + [weight_col]].sum()
+            for col in metric_cols:
+                sums[col] = sums[col] / sums[weight_col]
+            sums = sums.drop(columns=[weight_col]).reset_index()
+            rename_map = {
+                col: f"projected_lineup_{col[len('projected_'):]}_pa_weighted"
+                for col in metric_cols
+            }
+            weighted_df = sums.rename(columns=rename_map)
 
     # Drop raw numeric columns
     drop_cols = [c for c in StrikeoutModelConfig.LINEUP_ROLLING_COLS if c in df.columns]
@@ -93,6 +117,8 @@ def engineer_lineup_trends(
     final_df = pd.concat(frames, axis=1).reset_index()
     if projected_df is not None:
         final_df = safe_merge(final_df, projected_df, on=key_cols, how="left")
+    if weighted_df is not None:
+        final_df = safe_merge(final_df, weighted_df, on=key_cols, how="left")
 
     with DBConnection(db_path) as conn:
         if rebuild or not table_exists(conn, target_table):

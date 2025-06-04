@@ -50,6 +50,7 @@ def build_model_features(
     opp_table: str = "rolling_pitcher_vs_team",
     context_table: str = "contextual_features",
     lineup_table: str = "lineup_trends",
+    lineup_slot_table: str = "rolling_lineup_features",
     catcher_table: str = "rolling_catcher_defense",
     batter_history_table: str = "rolling_batter_pitcher_history",
     lineup_ids_table: str = "game_starting_lineups",
@@ -65,6 +66,9 @@ def build_model_features(
     rebuild : bool, default False
         Drop ``target_table`` and recreate it with only the configured window
         sizes.
+    lineup_slot_table : str, default "rolling_lineup_features"
+        Table containing lineup slot-based rolling features to merge using
+        ``game_pk`` and ``opponent_team``.
     """
     db_path = db_path or DBConfig.PATH
 
@@ -92,6 +96,12 @@ def build_model_features(
         lineup_df = pd.read_sql_query(
             base_query.format(lineup_table) + filter_clause, conn
         )
+        if table_exists(conn, lineup_slot_table):
+            slot_df = pd.read_sql_query(
+                base_query.format(lineup_slot_table) + filter_clause, conn
+            )
+        else:
+            slot_df = pd.DataFrame()
         catcher_df = pd.read_sql_query(
             base_query.format(catcher_table) + filter_clause, conn
         )
@@ -106,7 +116,7 @@ def build_model_features(
         # and ``pitcher_id``. Drop duplicate instances from the right-hand
         # DataFrames before merging to avoid pandas adding suffixes that can clash
         # on subsequent merges.
-        for frame in (opp_df, ctx_df, lineup_df, catcher_df, bp_df, lineup_ids):
+        for frame in (opp_df, ctx_df, lineup_df, slot_df, catcher_df, bp_df, lineup_ids):
 
             if "game_date" in frame.columns:
                 frame.drop(columns=["game_date"], inplace=True)
@@ -121,6 +131,9 @@ def build_model_features(
         df = df.drop_duplicates(subset=["game_pk", "pitcher_id"])
         df = safe_merge(df, lineup_df, on=["game_pk", "pitcher_id"], how="left")
         df = df.drop_duplicates(subset=["game_pk", "pitcher_id"])
+        if not slot_df.empty:
+            df = safe_merge(df, slot_df, on=["game_pk", "opponent_team"], how="left")
+            df = df.drop_duplicates(subset=["game_pk", "pitcher_id"])
         df = safe_merge(df, catcher_df, on=["game_pk", "pitcher_id"], how="left")
         df = df.drop_duplicates(subset=["game_pk", "pitcher_id"])
 
