@@ -445,6 +445,18 @@ def engineer_lineup_trends(
         if year:
             query += f" WHERE strftime('%Y', game_date) = '{year}'"
         df = pd.read_sql_query(query, conn)
+        if {"num_rhb", "num_lhb"}.issubset(df.columns):
+            count_df=df[["game_pk","team","num_rhb","num_lhb"]].drop_duplicates()
+        elif "stand" in df.columns:
+            count_df=(
+                df.groupby(["game_pk","team"])["stand"].value_counts()
+                .unstack(fill_value=0)
+                .rename(columns={"R":"num_rhb","L":"num_lhb"})
+                .reset_index()
+            )
+            df=safe_merge(df,count_df,on=["game_pk","team"],how="left")
+        else:
+            count_df=pd.DataFrame(columns=["game_pk","team","num_rhb","num_lhb"])
 
         if "game_date" not in df.columns:
             date_df = pd.read_sql_query("SELECT game_pk, pitcher_id, game_date FROM game_level_starting_pitchers", conn)
@@ -466,7 +478,7 @@ def engineer_lineup_trends(
     numeric_cols = [
         c
         for c in df.select_dtypes(include=np.number).columns
-        if c not in {"game_pk", "pitcher_id"}
+        if c not in {"game_pk", "pitcher_id", "num_rhb", "num_lhb"}
     ]
     df = _add_group_rolling(
         df,
@@ -477,6 +489,9 @@ def engineer_lineup_trends(
         numeric_cols=numeric_cols,
         ewm_halflife=StrikeoutModelConfig.EWM_HALFLIFE,
     )
+
+    if 'count_df' in locals() and not count_df.empty:
+        df = safe_merge(df, count_df, on=["game_pk", "team"], how="left")
 
     with DBConnection(db_path) as conn:
         if rebuild or not table_exists(conn, target_table):

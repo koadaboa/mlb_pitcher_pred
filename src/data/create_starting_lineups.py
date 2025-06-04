@@ -119,6 +119,14 @@ def build_starting_lineups(
         return pd.DataFrame()
 
     df = pd.DataFrame(rows)
+    if not df.empty and "stand" in df.columns:
+        counts = (
+            df.groupby(["game_pk", "team"]) ["stand"].value_counts()
+            .unstack(fill_value=0)
+            .rename(columns={"R": "num_rhb", "L": "num_lhb"})
+            .reset_index()
+        )
+        df = df.merge(counts, on=["game_pk", "team"], how="left")
     with DBConnection(db_path) as conn:
         if rebuild or not table_exists(conn, "game_starting_lineups"):
             df.to_sql("game_starting_lineups", conn, index=False, if_exists="replace")

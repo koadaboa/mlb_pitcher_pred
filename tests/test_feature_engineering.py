@@ -93,6 +93,8 @@ def setup_test_db(tmp_path: Path, cross_season: bool = False) -> Path:
                 "batter_id": ["101", "102", "103"],
                 "lineup_avg_ops": [0.72, 0.73, 0.74],
                 "projected_k_pct": [0.2, 0.22, 0.21],
+                "num_rhb": [6, 7, 5],
+                "num_lhb": [3, 2, 4],
             }
         )
         lineup_df.to_sql("game_starting_lineups", conn, index=False)
@@ -180,6 +182,8 @@ def test_feature_pipeline(tmp_path: Path) -> None:
         assert "slot1_lineup_ops_mean_3" in df.columns
         assert "opp_batter_batter_so_rate_mean_3" in df.columns
         assert "projected_lineup_k_pct" in df.columns
+        assert "num_rhb" in df.columns
+        assert "num_lhb" in df.columns
 
 
 def test_old_window_columns_removed(tmp_path: Path) -> None:
@@ -304,6 +308,8 @@ def test_engineer_lineup_trends(tmp_path: Path) -> None:
         df = pd.read_sql_query("SELECT * FROM lineup_trends", conn)
         assert "lineup_avg_ops_mean_3" in df.columns
         assert "projected_lineup_k_pct" in df.columns
+        assert "num_rhb" in df.columns
+        assert "num_lhb" in df.columns
 
 
 def test_run_feature_engineering_script(tmp_path: Path) -> None:
@@ -336,12 +342,16 @@ def test_run_feature_engineering_script(tmp_path: Path) -> None:
         ]
         assert "lineup_avg_ops_mean_3" in lineup_cols
         assert "projected_lineup_k_pct" in lineup_cols
+        assert "num_rhb" in lineup_cols
+        assert "num_lhb" in lineup_cols
         model_cols = [
             row[1] for row in conn.execute("PRAGMA table_info(model_features)")
         ]
         assert "lineup_avg_ops_mean_3" in model_cols
         assert "catcher_called_strike_rate_mean_3" in model_cols
         assert "projected_lineup_k_pct" in model_cols
+        assert "num_rhb" in model_cols
+        assert "num_lhb" in model_cols
 
 
 def test_extra_cat_cols_excluded(tmp_path: Path) -> None:
