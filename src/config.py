@@ -186,6 +186,8 @@ class StrikeoutModelConfig:
         "team_k_rate",
         "day_of_week",
         "travel_distance",
+        "day_of_week_x_rest_days",
+        "travel_distance_x_day_of_week",
     ]
     DEFAULT_TRAIN_YEARS = (2016, 2017, 2018, 2019, 2021, 2022, 2023)
     DEFAULT_TEST_YEARS = (2024, 2025)

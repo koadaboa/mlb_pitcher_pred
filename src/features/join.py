@@ -195,6 +195,14 @@ def build_model_features(
         if drop_cols:
             df = df.drop(columns=drop_cols)
 
+        # Interaction features between contextual variables
+        if {"day_of_week", "rest_days"}.issubset(df.columns):
+            df["day_of_week_x_rest_days"] = df["day_of_week"] * df["rest_days"]
+        if {"travel_distance", "day_of_week"}.issubset(df.columns):
+            df["travel_distance_x_day_of_week"] = (
+                df["travel_distance"] * df["day_of_week"]
+            )
+
         # Drop numeric columns that would leak information. Only rolling stats
         # or explicitly whitelisted numeric columns are kept.
         allowed_numeric = set(StrikeoutModelConfig.ALLOWED_BASE_NUMERIC_COLS)
