@@ -123,6 +123,7 @@ class StrikeoutModelConfig:
         "two_strike_k_rate",
         "high_leverage_k_rate",
         "woba_runners_on",
+        "batters_faced",
         "slider_pct",
         "curve_pct",
         "changeup_pct",
