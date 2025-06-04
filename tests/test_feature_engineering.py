@@ -112,6 +112,32 @@ def setup_test_db(tmp_path: Path, cross_season: bool = False) -> Path:
             }
         )
         catcher_df.to_sql("catcher_defense_metrics", conn, index=False)
+
+        box_df = pd.DataFrame(
+            {
+                "game_pk": [1, 2, 3],
+                "game_date": pd.to_datetime(dates),
+                "hp_umpire": ["U1", "U1", "U2"],
+            }
+        )
+        box_df.to_sql("mlb_boxscores", conn, index=False)
+
+        pitch_df = pd.DataFrame(
+            {
+                "game_pk": [1, 1, 2, 2, 3, 3],
+                "balls": [0, 1, 0, 1, 0, 1],
+                "strikes": [0, 1, 0, 1, 0, 1],
+                "description": [
+                    "called_strike",
+                    "ball",
+                    "ball",
+                    "called_strike",
+                    "called_strike",
+                    "ball",
+                ],
+            }
+        )
+        pitch_df.to_sql("statcast_pitchers", conn, index=False)
     return db_path
 
 
@@ -180,6 +206,7 @@ def test_feature_pipeline(tmp_path: Path) -> None:
         assert "slot1_lineup_ops_mean_3" in df.columns
         assert "opp_batter_batter_so_rate_mean_3" in df.columns
         assert "projected_lineup_k_pct" in df.columns
+        assert "ump_ump_count_strike_prob_by_count_mean_3" in df.columns
 
 
 def test_old_window_columns_removed(tmp_path: Path) -> None:

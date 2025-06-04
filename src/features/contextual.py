@@ -179,6 +179,53 @@ def _add_group_rolling(
     return df
 
 
+def _compute_umpire_count_probs(
+    conn: DBConnection, game_pks: Sequence[int]
+) -> pd.DataFrame:
+    """Return called strike probability by count for each game/umpire."""
+    if not game_pks:
+        return pd.DataFrame(
+            columns=[
+                "game_pk",
+                "hp_umpire",
+                "game_date",
+                "ump_count_strike_prob_by_count",
+            ]
+        )
+
+    placeholders = ",".join(["?"] * len(game_pks))
+    query = f"""
+        SELECT p.game_pk, b.hp_umpire, b.game_date, p.balls, p.strikes, p.description
+        FROM statcast_pitchers p
+        JOIN mlb_boxscores b ON p.game_pk = b.game_pk
+        WHERE p.game_pk IN ({placeholders})
+    """
+    pitches = pd.read_sql_query(query, conn, params=game_pks)
+    if pitches.empty:
+        return pd.DataFrame(
+            columns=[
+                "game_pk",
+                "hp_umpire",
+                "game_date",
+                "ump_count_strike_prob_by_count",
+            ]
+        )
+
+    pitches["taken"] = ~pitches["description"].str.contains(
+        "swing", case=False, na=False
+    )
+    pitches["called"] = pitches["description"].eq("called_strike")
+    rate = (
+        pitches[pitches["taken"]]
+        .groupby(["game_pk", "hp_umpire", "game_date", "balls", "strikes"])["called"]
+        .mean()
+        .groupby(["game_pk", "hp_umpire", "game_date"])
+        .mean()
+        .reset_index(name="ump_count_strike_prob_by_count")
+    )
+    return rate
+
+
 def engineer_opponent_features(
     db_path: str | None = None,
     source_table: str = "game_level_matchup_details",
@@ -251,7 +298,6 @@ def engineer_opponent_features(
                 on=["game_pk", "opponent_team"],
                 how="left",
             )
-
 
         if "pitcher_hand" in df.columns and "bat_ops" in df.columns:
             df["bat_ops_vs_LHP"] = np.where(
@@ -385,6 +431,18 @@ def engineer_contextual_features(
         df["stadium"] = df["home_team"].map(TEAM_TO_BALLPARK)
         df["park_factor"] = df["stadium"].map(BALLPARK_FACTORS)
 
+        game_pks = df["game_pk"].unique().tolist()
+        ump_df = _compute_umpire_count_probs(conn, game_pks)
+        if not ump_df.empty:
+            df = safe_merge(
+                df,
+                ump_df,
+                on=["game_pk", "hp_umpire", "game_date"],
+                how="left",
+            )
+        else:
+            df["ump_count_strike_prob_by_count"] = np.nan
+
         df = _add_group_rolling(
             df,
             ["hp_umpire"],
@@ -447,8 +505,11 @@ def engineer_lineup_trends(
         df = pd.read_sql_query(query, conn)
 
         if "game_date" not in df.columns:
-            date_df = pd.read_sql_query("SELECT game_pk, pitcher_id, game_date FROM game_level_starting_pitchers", conn)
-            merge_cols=["game_pk"]
+            date_df = pd.read_sql_query(
+                "SELECT game_pk, pitcher_id, game_date FROM game_level_starting_pitchers",
+                conn,
+            )
+            merge_cols = ["game_pk"]
             if "pitcher_id" in df.columns:
                 merge_cols.append("pitcher_id")
             df = safe_merge(df, date_df, on=merge_cols, how="left")
@@ -510,7 +571,9 @@ def engineer_catcher_defense(
         # "catcher_id" was added in later versions of the lineup table. Infer it
         # from pitch-level data if the column is missing so the feature
         # engineering script can run on older databases.
-        table_cols = [row[1] for row in conn.execute(f"PRAGMA table_info({lineup_table})")]
+        table_cols = [
+            row[1] for row in conn.execute(f"PRAGMA table_info({lineup_table})")
+        ]
         select_cols = ["game_pk", "team"]
         if "catcher_id" in table_cols:
             select_cols.append("catcher_id")

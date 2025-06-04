@@ -169,6 +169,7 @@ class StrikeoutModelConfig:
         "bat_ops_vs_RHP",
         "bat_k_rate_vs_LHP",
         "bat_k_rate_vs_RHP",
+        "ump_count_strike_prob_by_count",
     ]
     # Numeric columns that may be used without rolling (known before the game)
     ALLOWED_BASE_NUMERIC_COLS = [
