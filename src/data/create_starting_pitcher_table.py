@@ -109,7 +109,8 @@ def _map_compute_game_features(args: tuple[int, int, Path]) -> Optional[Dict]:
 
 
 def compute_features(df: pd.DataFrame) -> Dict:
-    df = df.sort_values(["at_bat_number", "pitch_number"])
+    df = df.sort_values(["at_bat_number", "pitch_number"]).reset_index(drop=True)
+    df["cum_pitch"] = np.arange(len(df)) + 1
     first_row = df.iloc[0]
     if first_row["inning_topbot"] == "Top":
         team = first_row["home_team"]
@@ -304,6 +305,31 @@ def compute_features(df: pd.DataFrame) -> Dict:
                 "strikeout_double_play",
             ]).mean()
     features["high_leverage_k_rate"] = high_lev_rate
+
+    # --- Inning and pitch count specific K-rates ---
+    k_mask = last_pitch["events"].isin(["strikeout", "strikeout_double_play"])
+
+    inn1 = last_pitch[last_pitch["inning"] == 1]
+    k_rate_1st = k_mask[inn1.index].mean() if len(inn1) else np.nan
+
+    inn5 = last_pitch[last_pitch["inning"] == 5]
+    k_rate_5th = k_mask[inn5.index].mean() if len(inn5) else np.nan
+
+    if pd.notna(k_rate_1st) and pd.notna(k_rate_5th):
+        k_drop = k_rate_1st - k_rate_5th
+    else:
+        k_drop = np.nan
+
+    pre60 = last_pitch[last_pitch["cum_pitch"] <= 60]
+    post60 = last_pitch[last_pitch["cum_pitch"] > 60]
+    k_pre60 = k_mask[pre60.index].mean() if len(pre60) else np.nan
+    k_post60 = k_mask[post60.index].mean() if len(post60) else np.nan
+
+    features["k_rate_1st_inning"] = k_rate_1st
+    features["k_rate_5th_inning"] = k_rate_5th
+    features["k_rate_drop_1st_to_5th"] = k_drop
+    features["k_rate_pre60_pitches"] = k_pre60
+    features["k_rate_post60_pitches"] = k_post60
 
     if {
         "on_1b",

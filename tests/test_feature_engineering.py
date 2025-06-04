@@ -140,6 +140,11 @@ def test_feature_pipeline(tmp_path: Path) -> None:
         assert "fastball_then_breaking_rate_mean_3" in df.columns
         assert "two_strike_k_rate_mean_3" in df.columns
         assert "high_leverage_k_rate_mean_3" in df.columns
+        assert "k_rate_1st_inning_mean_3" in df.columns
+        assert "k_rate_5th_inning_mean_3" in df.columns
+        assert "k_rate_drop_1st_to_5th_mean_3" in df.columns
+        assert "k_rate_pre60_pitches_mean_3" in df.columns
+        assert "k_rate_post60_pitches_mean_3" in df.columns
         assert "woba_runners_on_mean_3" in df.columns
         assert "unique_pitch_types_mean_3" in df.columns
         assert "zone_pct_mean_3" in df.columns
