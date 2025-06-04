@@ -140,6 +140,7 @@ class StrikeoutModelConfig:
         "avg_release_speed",
         "max_release_speed",
         "avg_spin_rate",
+        "release_height",
         "hard_hit_rate",
         "offspeed_to_fastball_ratio",
         "fastball_then_breaking_rate",

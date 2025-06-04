@@ -57,6 +57,7 @@ def setup_test_db(tmp_path: Path, cross_season: bool = False) -> Path:
                 "pfx_x": [0.1, 0.2, 0.15],
                 "pfx_z": [-0.5, -0.6, -0.4],
                 "release_extension": [6.0, 6.1, 6.2],
+                "release_height": [6.5, 6.6, 6.7],
                 "plate_x": [-0.2, -0.3, -0.1],
                 "plate_z": [2.5, 2.6, 2.7],
             }
@@ -145,6 +146,7 @@ def test_feature_pipeline(tmp_path: Path) -> None:
         assert "zone_pct_mean_3" in df.columns
         assert "hard_hit_rate_mean_3" in df.columns
         assert "pfx_x_mean_3" in df.columns
+        assert "release_height_mean_3" in df.columns
         assert "lineup_avg_ops_mean_3" in df.columns
         assert "team_k_rate_mean_3" in df.columns
         assert "opp_lineup_woba_mean_3" in df.columns
