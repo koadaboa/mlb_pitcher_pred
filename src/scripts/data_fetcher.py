@@ -24,7 +24,7 @@ from .modules.checkpoint_manager import CheckpointManager
 from .modules.pitcher_fetcher import fetch_pitcher_single_date, fetch_pitcher_historical
 from .modules.batter_fetcher import fetch_batter_single_date, fetch_batter_historical
 from .modules.api_fetcher import fetch_probable_pitchers
-from .fetch_mlb_boxscores import fetch_boxscores_for_date
+from .fetch_mlb_boxscores import fetch_boxscores_for_date, daterange
 from .modules.store_utils import store_data_to_sql
 
 # Columns that uniquely identify a pitch in Statcast data
@@ -290,6 +290,68 @@ class DataFetcher:
                     except Exception:
                         continue
         return sorted(ids)
+
+    def _ensure_boxscores_for_range(self, start_dt: date, end_dt: date) -> None:
+        """Ensure mlb_boxscores rows exist for every date in the range."""
+        start_str = start_dt.strftime("%Y-%m-%d")
+        end_str = end_dt.strftime("%Y-%m-%d")
+        existing_dates: set[date] = set()
+        try:
+            with DBConnection(self.db_path) as conn:
+                q = "SELECT DISTINCT game_date FROM mlb_boxscores WHERE game_date BETWEEN ? AND ?"
+                df = pd.read_sql_query(q, conn, params=(start_str, end_str))
+                if not df.empty:
+                    existing_dates = set(pd.to_datetime(df["game_date"]).dt.date)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.error("Failed querying mlb_boxscores dates %s to %s: %s", start_str, end_str, exc)
+
+        for dt in daterange(start_dt, end_dt):
+            if dt not in existing_dates:
+                date_str = dt.strftime("%Y-%m-%d")
+                logger.info("Boxscores missing for %s. Fetching via API...", date_str)
+                try:
+                    new_df = fetch_boxscores_for_date(date_str)
+                    if not new_df.empty:
+                        store_data_to_sql(new_df, "mlb_boxscores", self.db_path, if_exists="append")
+                except Exception as exc:
+                    logger.error("Failed fetching boxscores for %s: %s", date_str, exc)
+
+    def get_boxscore_pitchers_for_seasons(self) -> list[int]:
+        """Return pitcher IDs from mlb_boxscores for configured seasons."""
+        pitcher_ids: set[int] = set()
+        for season in self.seasons_to_fetch:
+            start_dt = date(season, 3, 1)
+            end_dt = date(season, 11, 30)
+            if season == self.end_date_limit.year:
+                end_dt = min(end_dt, self.end_date_limit)
+
+            self._ensure_boxscores_for_range(start_dt, end_dt)
+
+            start_str = start_dt.strftime("%Y-%m-%d")
+            end_str = end_dt.strftime("%Y-%m-%d")
+            try:
+                with DBConnection(self.db_path) as conn:
+                    q = (
+                        "SELECT away_pitcher_ids, home_pitcher_ids FROM mlb_boxscores "
+                        "WHERE game_date BETWEEN ? AND ?"
+                    )
+                    df = pd.read_sql_query(q, conn, params=(start_str, end_str))
+            except Exception as exc:
+                logger.error("Failed reading mlb_boxscores for %s season: %s", season, exc)
+                continue
+
+            for _, row in df.iterrows():
+                for col in ["away_pitcher_ids", "home_pitcher_ids"]:
+                    try:
+                        plist = json.loads(row[col]) if row[col] else []
+                    except Exception:
+                        plist = []
+                    for pid in plist:
+                        try:
+                            pitcher_ids.add(int(pid))
+                        except Exception:
+                            continue
+        return sorted(pitcher_ids)
 
     # --- fetch_statcast_for_pitcher (REFACTORED into helpers) ---
     # This method is now removed, logic moved to helpers below
@@ -626,7 +688,15 @@ class DataFetcher:
 
                     # Step 2: Fetch Pitcher Statcast (Historical)
                     logger.info("[Historical - Step 2/4] Fetching Pitcher Statcast Data...")
-                    if not self.fetch_all_pitchers(pitcher_mapping): # Calls refactored helper internally
+                    boxscore_ids = self.get_boxscore_pitchers_for_seasons()
+                    if boxscore_ids:
+                        pitcher_mapping = pitcher_mapping[pitcher_mapping['pitcher_id'].isin(boxscore_ids)]
+                        logger.info(
+                            "Filtered to %d pitchers from mlb_boxscores for seasons %s",
+                            len(pitcher_mapping),
+                            self.seasons_to_fetch,
+                        )
+                    if not self.fetch_all_pitchers(pitcher_mapping):  # Calls refactored helper internally
                         pipeline_success = False
 
                     # Step 3: Fetch Team Batting Data (Historical)
