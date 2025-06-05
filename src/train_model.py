@@ -165,17 +165,27 @@ def cross_validate_lgbm(
     return avg_rmse
 
 
-def get_gain_importance(model: LGBMRegressor) -> pd.DataFrame:
-    """Return LightGBM gain importance with feature groups."""
+def get_gain_importance(
+    model: LGBMRegressor,
+    *,
+    group_features: bool = StrikeoutModelConfig.FEATURE_GROUPING,
+) -> pd.DataFrame:
+    """Return LightGBM gain importance with optional feature grouping."""
     booster = model.booster_
     importance = booster.feature_importance(importance_type="gain")
     fi = pd.DataFrame({"feature": booster.feature_name(), "importance": importance})
-    fi["group"] = fi["feature"].map(assign_feature_group)
+    if group_features:
+        fi["group"] = fi["feature"].map(assign_feature_group)
     fi.sort_values("importance", ascending=False, inplace=True)
     return fi
 
 
-def get_shap_importance(model: LGBMRegressor, X: pd.DataFrame) -> pd.DataFrame:
+def get_shap_importance(
+    model: LGBMRegressor,
+    X: pd.DataFrame,
+    *,
+    group_features: bool = StrikeoutModelConfig.FEATURE_GROUPING,
+) -> pd.DataFrame:
     """Return SHAP importance averaged over absolute values."""
     try:
         import shap  # type: ignore
@@ -190,7 +200,8 @@ def get_shap_importance(model: LGBMRegressor, X: pd.DataFrame) -> pd.DataFrame:
     importance = np.abs(values).mean(axis=0)
     fi = pd.DataFrame({"feature": X.columns, "importance": importance})
     fi = fi[fi["importance"] > 0].copy()
-    fi["group"] = fi["feature"].map(assign_feature_group)
+    if group_features:
+        fi["group"] = fi["feature"].map(assign_feature_group)
     fi.sort_values("importance", ascending=False, inplace=True)
     return fi
 
@@ -209,12 +220,19 @@ def main(db_path: Path | None = None) -> None:
     model_path = FileConfig.MODELS_DIR / "lgbm_model.txt"
     model.booster_.save_model(str(model_path))
     logger.info("Saved model to %s", model_path)
-    fi_df = get_gain_importance(model)
+    fi_df = get_gain_importance(
+        model,
+        group_features=StrikeoutModelConfig.FEATURE_GROUPING,
+    )
     fi_path = FileConfig.FEATURE_IMPORTANCE_FILE
     fi_df.to_csv(fi_path, index=False)
     logger.info("Saved feature importance to %s", fi_path)
 
-    shap_df = get_shap_importance(model, train_df[features])
+    shap_df = get_shap_importance(
+        model,
+        train_df[features],
+        group_features=StrikeoutModelConfig.FEATURE_GROUPING,
+    )
     shap_path = FileConfig.SHAP_IMPORTANCE_FILE
     shap_df.to_csv(shap_path, index=False)
     logger.info("Saved SHAP importance to %s", shap_path)
