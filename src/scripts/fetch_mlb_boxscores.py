@@ -1,5 +1,5 @@
-# src/scripts/scrape_mlb_boxscores.py
-# (CSV Output Version with API Schedule, AL/NL Filter, New Columns)
+# src/scripts/fetch_mlb_boxscores.py
+# (Fetch boxscores via MLB Stats API and store to CSV)
 
 import httpx
 # Removed BeautifulSoup import as it's no longer needed for get_game_pks
@@ -33,7 +33,7 @@ except ImportError as e:
     print(f"ERROR: Failed to import required modules from src: {e}. Using fallback logging/config.")
     MODULE_IMPORTS_OK = False
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-    logger = logging.getLogger('scrape_mlb_boxscores_fallback')
+    logger = logging.getLogger('fetch_mlb_boxscores_fallback')
     class FileConfig:
         DATA_DIR = project_root / 'data'
         DEBUG_DIR = DATA_DIR / 'debug_api' / 'mlb_boxscores'
@@ -71,9 +71,9 @@ PROBLEMATIC_GAME_PKS = set()
 
 # --- Setup Logger ---
 log_dir = LogConfig.LOG_DIR if MODULE_IMPORTS_OK else project_root / 'logs'
-log_file = log_dir / 'scrape_mlb_boxscores_api.log'
+log_file = log_dir / 'fetch_mlb_boxscores_api.log'
 ensure_dir(log_dir)
-logger = setup_logger('scrape_mlb_boxscores_api_csv', log_file=log_file, level=logging.INFO)
+logger = setup_logger('fetch_mlb_boxscores_api_csv', log_file=log_file, level=logging.INFO)
 
 # --- Define Output and Debug Directories ---
 OUTPUT_DIR = FileConfig.DATA_DIR / 'raw' if MODULE_IMPORTS_OK else project_root / 'data' / 'raw'
@@ -299,6 +299,28 @@ def save_debug_json(api_response, date_str, game_pk):
 
 def daterange(start_date, end_date):
     for n in range(int((end_date - start_date).days) + 1): yield start_date + timedelta(n)
+
+# Simplified helper to fetch boxscore data for a single date and return a DataFrame
+def fetch_boxscores_for_date(date_str: str, debug_api: bool = False) -> pd.DataFrame:
+    async def _run(single_date: str) -> pd.DataFrame:
+        rows = []
+        async with httpx.AsyncClient(headers=API_HEADERS, http2=True, timeout=REQUEST_TIMEOUT + 5) as client:
+            game_pks = await get_game_pks(client, single_date)
+            if not game_pks:
+                return pd.DataFrame()
+            tasks = [fetch_api_data_wrapper(client, MLB_GAME_ENDPOINT_FORMAT.format(game_pk=pk)) for pk in game_pks]
+            results = await asyncio.gather(*tasks)
+            for resp, pk in zip(results, game_pks):
+                if resp is None:
+                    continue
+                parsed = parse_api_data(resp, pk)
+                if parsed:
+                    rows.append(parsed)
+                elif debug_api and resp:
+                    save_debug_json(resp, single_date, pk)
+        return pd.DataFrame(rows)
+
+    return asyncio.run(_run(date_str))
 
 # --- Main Execution ---
 async def main(start_date_str, end_date_str, debug_api):
