@@ -1,5 +1,5 @@
 import pytest
-from src.scripts.scrape_mlb_boxscores import parse_api_data, MLB_LEAGUE_IDS
+from src.scripts.fetch_mlb_boxscores import parse_api_data, MLB_LEAGUE_IDS
 
 
 def _base_sample(final=True):
