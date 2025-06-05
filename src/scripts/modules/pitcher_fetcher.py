@@ -1,7 +1,7 @@
 """Helpers for fetching pitcher statcast data."""
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import List
 
@@ -30,10 +30,10 @@ def fetch_pitcher_single_date(
     data_exists = False
     try:
         with DBConnection(db_path) as conn:
-            query = "SELECT COUNT(*) FROM statcast_pitchers WHERE DATE(game_date) = ? AND pitcher = ?"
+            # Check if this date already exists in the table regardless of pitcher
+            query = "SELECT COUNT(*) FROM statcast_pitchers WHERE DATE(game_date) = ?"
             cursor = conn.cursor()
-            pid_primitive = pitcher_id.item() if hasattr(pitcher_id, "item") else pitcher_id
-            cursor.execute(query, (target_date_str, pid_primitive))
+            cursor.execute(query, (target_date_str,))
             count = cursor.fetchone()[0]
             if count > 0:
                 data_exists = True
@@ -89,8 +89,24 @@ def fetch_pitcher_historical(
     problematic_ids: set,
 ) -> pd.DataFrame:
     """Fetch historical statcast data for a pitcher across seasons."""
-    if checkpoint_manager.is_pitcher_processed(pitcher_id):
-        logger.debug(" -> Skipping P fetch %s (%s): Already processed per checkpoint.", name, pitcher_id)
+    # Determine the latest date already stored for this pitcher
+    last_date = None
+    try:
+        with DBConnection(db_path) as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT MAX(game_date) FROM statcast_pitchers WHERE pitcher = ?",
+                (pitcher_id.item() if hasattr(pitcher_id, "item") else pitcher_id,),
+            )
+            row = cur.fetchone()
+            if row and row[0]:
+                last_date = datetime.strptime(row[0], "%Y-%m-%d").date()
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("DB lookup for last date of P %s (%s) failed: %s", name, pitcher_id, exc)
+
+    # If the last stored date already exceeds the end date limit, nothing to do
+    if last_date and last_date >= end_date_limit:
+        logger.debug(" -> Skipping P fetch %s (%s): Data already up to %s", name, pitcher_id, last_date)
         return pd.DataFrame()
 
     all_data = []
@@ -100,6 +116,14 @@ def fetch_pitcher_historical(
     for season in relevant_seasons:
         start_dt = date(season, 3, 1)
         end_dt = end_date_limit if season == end_date_limit.year else date(season, 11, 30)
+
+        if last_date:
+            if last_date.year > season:
+                # Season already fully fetched
+                continue
+            if last_date.year == season:
+                start_dt = max(start_dt, last_date + timedelta(days=1))
+
         if start_dt > end_dt:
             logger.debug(
                 " -> Skipping season %s for P %s: Start date %s is after end date %s.",
@@ -109,6 +133,7 @@ def fetch_pitcher_historical(
                 end_dt,
             )
             continue
+
         start_str = start_dt.strftime("%Y-%m-%d")
         end_str = end_dt.strftime("%Y-%m-%d")
         logger.debug(" -> Fetching %s (%s): %s to %s", name, season, start_str, end_str)
