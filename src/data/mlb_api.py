@@ -1,6 +1,6 @@
 # src/data/mlb_api.py (Updated for MLB Stats API)
 
-import httpx # Use httpx for consistency with scrape_mlb_boxscores.py
+import httpx  # Use httpx for consistency with fetch_mlb_boxscores.py
 import pandas as pd
 import json
 import logging
@@ -56,7 +56,7 @@ MLB_TRANSACTIONS_ENDPOINT = MLB_STATS_API_BASE + "/transactions"
 # Includes gamePk, status, teams(abbr, name, id, league), probablePitcher(id, fullName)
 SCHEDULE_API_FIELDS = "dates,date,games,gamePk,status,abstractGameState,teams,team,id,name,abbreviation,league,probablePitcher,id,fullName"
 
-# Use headers similar to scrape_mlb_boxscores
+# Use headers similar to fetch_mlb_boxscores
 API_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/98.0.4758.102 Safari/537.36',
     'Accept': 'application/json',
@@ -68,7 +68,7 @@ INITIAL_RETRY_DELAY = DataConfig.INITIAL_RETRY_DELAY if hasattr(DataConfig, 'INI
 MAX_RETRY_DELAY = DataConfig.MAX_RETRY_DELAY if hasattr(DataConfig, 'MAX_RETRY_DELAY') else 10
 REQUEST_TIMEOUT = DataConfig.REQUEST_TIMEOUT if hasattr(DataConfig, 'REQUEST_TIMEOUT') else 20
 
-# --- Retry Logic (adapted from scrape_mlb_boxscores.py) ---
+# --- Retry Logic (adapted from fetch_mlb_boxscores.py) ---
 RETRY_EXCEPTIONS = (httpx.RequestError, httpx.TimeoutException, httpx.HTTPStatusError)
 def is_retryable_exception(exception):
     """Determine if an exception is retryable."""
