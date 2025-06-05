@@ -290,23 +290,15 @@ class DataFetcher:
             process_desc = f"Processing {total_pitchers} pitchers for {self.target_fetch_date_obj}"
             use_checkpoint = False
         else: # Historical backfill mode
-            logger.info(f"Fetching pitcher Statcast historically up to {self.end_date_limit_str} for seasons {self.seasons_to_fetch}")
-            # Filter out already processed pitchers using the checkpoint
-            unprocessed_pitchers = [(pid, name) for pid, name in pitcher_list if not self.checkpoint_manager.is_pitcher_processed(pid)]
-            processed_count_prev = total_pitchers - len(unprocessed_pitchers)
-            if processed_count_prev > 0: logger.info(f"Skipping {processed_count_prev} pitchers already processed per checkpoint.")
-
-            if not unprocessed_pitchers:
-                logger.info("No new pitchers require historical fetching based on checkpoint.")
-                return True # Success, nothing to do
-
-            total_pitchers = len(unprocessed_pitchers) # Update total for progress bar
-            # Prepare tasks for the historical helper
-            for pid, name in unprocessed_pitchers:
-                fetch_tasks.append((pid, name, self.seasons_to_fetch)) # pid, name, seasons_list
+            logger.info(
+                f"Fetching pitcher Statcast historically up to {self.end_date_limit_str} for seasons {self.seasons_to_fetch}"
+            )
+            # Always attempt to fetch updates for all pitchers; the helper will check existing dates
+            for pid, name in pitcher_list:
+                fetch_tasks.append((pid, name, self.seasons_to_fetch))
             fetch_function = self._fetch_pitcher_statcast_historical
             mode_desc = "Pitcher Statcast (Historical)"
-            process_desc = f"Fetching {total_pitchers} unprocessed pitchers historically"
+            process_desc = f"Fetching {total_pitchers} pitchers historically"
             use_checkpoint = True
 
         logger.info(process_desc)
