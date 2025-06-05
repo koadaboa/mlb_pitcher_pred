@@ -290,7 +290,7 @@ class StrikeoutModelConfig:
     EARLY_STOPPING_ROUNDS = 50
     VERBOSE_FIT_FREQUENCY = 20
 
-    IMPORTANCE_THRESHOLD = 0.02
+    IMPORTANCE_THRESHOLD = 0.3
 
 
 class LogConfig:
