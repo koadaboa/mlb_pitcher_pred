@@ -22,10 +22,34 @@ from src.features.feature_groups import assign_feature_group
 logger = setup_logger("train_model", LogConfig.LOG_DIR / "train_model.log")
 
 
-def load_dataset(db_path: Path = DBConfig.PATH) -> pd.DataFrame:
-    """Return the full model features table as a DataFrame."""
+def load_dataset(
+    db_path: Path = DBConfig.PATH,
+    *,
+    chunk_size: int | None = None,
+) -> pd.DataFrame:
+    """Return the full ``model_features`` table.
+
+    Parameters
+    ----------
+    db_path : Path
+        Location of the SQLite database.
+    chunk_size : int | None, optional
+        Number of rows per chunk when reading. ``None`` reads the table in one
+        call. Providing a chunk size can drastically reduce peak memory usage
+        for very wide tables.
+    """
+
     with DBConnection(db_path) as conn:
-        df = pd.read_sql_query("SELECT * FROM model_features", conn)
+        if chunk_size:
+            chunks = pd.read_sql_query(
+                "SELECT * FROM model_features",
+                conn,
+                chunksize=chunk_size,
+            )
+            df = pd.concat(chunks, ignore_index=True)
+        else:
+            df = pd.read_sql_query("SELECT * FROM model_features", conn)
+
     if "game_date" in df.columns:
         df["game_date"] = pd.to_datetime(df["game_date"])
     return df
@@ -206,9 +230,20 @@ def get_shap_importance(
     return fi
 
 
-def main(db_path: Path | None = None) -> None:
+def main(db_path: Path | None = None, *, chunk_size: int | None = None) -> None:
+    """Train the LightGBM strikeout model and save artifacts.
+
+    Parameters
+    ----------
+    db_path : Path | None, optional
+        Path to the SQLite database containing the ``model_features`` table.
+    chunk_size : int | None, optional
+        Row chunk size to pass to :func:`load_dataset`. Useful when the table is
+        extremely wide and cannot be read into memory at once.
+    """
+
     db_path = db_path or DBConfig.PATH
-    df = load_dataset(db_path)
+    df = load_dataset(db_path, chunk_size=chunk_size)
     if df.empty:
         logger.error("No data available for training")
         return
