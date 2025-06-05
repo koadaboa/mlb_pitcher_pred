@@ -5,6 +5,7 @@ import sqlite3
 from pathlib import Path
 from typing import Sequence
 
+from src.config import DBConfig
 from src.utils import DBConnection
 
 
@@ -41,7 +42,12 @@ def deduplicate_table(db_path: Path, table: str, subset: Sequence[str] | None = 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Remove duplicate rows from a SQLite table")
-    parser.add_argument("--db-path", type=Path, required=True, help="Path to SQLite database")
+    parser.add_argument(
+        "--db-path",
+        type=Path,
+        default=DBConfig.PATH,
+        help="Path to SQLite database",
+    )
     parser.add_argument("--table", required=True, help="Table name to deduplicate")
     parser.add_argument(
         "--subset",
