@@ -292,6 +292,9 @@ class StrikeoutModelConfig:
 
     IMPORTANCE_THRESHOLD = 0.3
 
+    # Enable grouping of related features when saving importance files
+    FEATURE_GROUPING = False
+
 
 class LogConfig:
     # Define Log directory relative to project root
