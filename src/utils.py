@@ -32,7 +32,6 @@ class DBConnection:
             self.conn.close()
             self.conn = None
 
-
 def ensure_dir(path: Union[str, Path]) -> Path:
     """Ensure that the directory exists and return a ``Path`` object."""
     p = Path(path)
@@ -172,3 +171,24 @@ def safe_merge(
     return merged
 
 
+def ensure_statcast_indexes(conn: sqlite3.Connection) -> None:
+    """Create helpful indexes on Statcast tables if they do not exist."""
+    index_sql = [
+        (
+            "statcast_pitchers",
+            "idx_pitchers_pk_pitcher",
+            "game_pk, pitcher",
+        ),
+        (
+            "statcast_batters",
+            "idx_batters_pk_pitcher",
+            "game_pk, pitcher",
+        ),
+    ]
+    for table, name, cols in index_sql:
+        try:
+            conn.execute(
+                f"CREATE INDEX IF NOT EXISTS {name} ON {table} ({cols})"
+            )
+        except Exception as exc:  # pragma: no cover - log and continue
+            logging.warning("Failed to create index %s on %s: %s", name, table, exc)

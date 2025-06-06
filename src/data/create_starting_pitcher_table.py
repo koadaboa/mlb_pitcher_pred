@@ -6,10 +6,11 @@ from pathlib import Path
 import logging
 
 from typing import Dict, Optional
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor
 import os
+import sqlite3
 
-from src.utils import DBConnection, setup_logger
+from src.utils import DBConnection, setup_logger, table_exists, get_latest_date
 from src.config import DBConfig, LogConfig
 
 # --- Pitch Type Groups ---
@@ -29,6 +30,15 @@ LOG_EVERY_N = 100
 MAX_WORKERS = int(os.getenv("MAX_WORKERS", os.cpu_count() or 1))
 # Chunk size for ``ProcessPoolExecutor.map``
 CHUNK_SIZE = 100
+
+# Global connection for worker processes
+_WORKER_CONN: sqlite3.Connection | None = None
+
+
+def _init_worker(db_path: Path) -> None:
+    """Create a persistent SQLite connection for each worker."""
+    global _WORKER_CONN
+    _WORKER_CONN = sqlite3.connect(str(db_path))
 
 # Select only required columns to reduce SQLite I/O
 PITCHER_COLS = [
@@ -70,20 +80,6 @@ PITCHER_COLS = [
 ]
 
 
-def filter_starting_pitchers(conn) -> pd.DataFrame:
-    """Return game_pk/pitcher combos likely representing true starters."""
-    query = """
-        SELECT game_pk, pitcher
-        FROM statcast_pitchers
-        GROUP BY game_pk, pitcher
-        HAVING MIN(inning) = 1
-           AND COUNT(*) > 30
-           AND MAX(inning) > 3
-    """
-    df = pd.read_sql_query(query, conn)
-    logger.info("Found %d potential starting pitcher rows", len(df))
-    return df
-
 
 def load_pitcher_game(conn, game_pk: int, pitcher: int) -> pd.DataFrame:
     """Load all pitch-level rows for a pitcher in one game."""
@@ -94,9 +90,15 @@ def load_pitcher_game(conn, game_pk: int, pitcher: int) -> pd.DataFrame:
     return pd.read_sql_query(q, conn, params=(game_pk, pitcher))
 
 
-def compute_game_features(game_pk: int, pitcher: int, db_path: Path) -> Optional[Dict]:
+def compute_game_features(
+    game_pk: int, pitcher: int, db_path: Path
+) -> Optional[Dict]:
     """Load one pitcher/game from SQLite and compute features."""
-    with DBConnection(db_path) as conn:
+    conn = _WORKER_CONN
+    if conn is None:
+        with DBConnection(db_path) as tmp:
+            df = load_pitcher_game(tmp, game_pk, pitcher)
+    else:
         df = load_pitcher_game(conn, game_pk, pitcher)
     if df.empty:
         return None
@@ -329,14 +331,41 @@ def compute_features(df: pd.DataFrame) -> Dict:
     return features
 
 
-def aggregate_to_game_level(db_path: Path = DBConfig.PATH) -> pd.DataFrame:
+def aggregate_to_game_level(
+    db_path: Path = DBConfig.PATH, rebuild: bool = False
+) -> pd.DataFrame:
     with DBConnection(db_path) as conn:
-        starters = filter_starting_pitchers(conn)
+        query = """
+            SELECT game_pk, pitcher, MIN(game_date) as game_date
+            FROM statcast_pitchers
+            GROUP BY game_pk, pitcher
+            HAVING MIN(inning) = 1
+               AND COUNT(*) > 30
+               AND MAX(inning) > 3
+        """
+        starters = pd.read_sql_query(query, conn)
+        if not rebuild:
+            latest = get_latest_date(
+                conn, "game_level_starting_pitchers", "game_date"
+            )
+            if latest is not None:
+                starters["game_date"] = pd.to_datetime(starters["game_date"])
+                starters = starters[starters["game_date"] > latest]
         total_games = len(starters)
 
+    if not total_games:
+        logger.info("No new starting pitcher games to process")
+        return pd.DataFrame()
+
     result_rows: list[Dict] = []
-    pairs = [tuple(row) + (db_path,) for row in starters.itertuples(index=False, name=None)]
-    with ProcessPoolExecutor(max_workers=MAX_WORKERS) as exc:
+    pairs = [
+        tuple(row)
+        + (db_path,)
+        for row in starters[["game_pk", "pitcher"]].itertuples(index=False, name=None)
+    ]
+    with ProcessPoolExecutor(
+        max_workers=MAX_WORKERS, initializer=_init_worker, initargs=(db_path,)
+    ) as exc:
         for processed, res in enumerate(
             exc.map(_map_compute_game_features, pairs, chunksize=CHUNK_SIZE),
             1,
@@ -348,11 +377,15 @@ def aggregate_to_game_level(db_path: Path = DBConfig.PATH) -> pd.DataFrame:
 
     game_df = pd.DataFrame(result_rows)
     with DBConnection(db_path) as conn:
+        if rebuild or not table_exists(conn, "game_level_starting_pitchers"):
+            if_exists = "replace"
+        else:
+            if_exists = "append"
         game_df.to_sql(
             "game_level_starting_pitchers",
             conn,
             index=False,
-            if_exists="replace",
+            if_exists=if_exists,
         )
     return game_df
 
