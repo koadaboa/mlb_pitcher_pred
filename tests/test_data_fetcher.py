@@ -6,7 +6,7 @@ import pandas as pd
 from src.scripts import data_fetcher
 
 
-def _setup_dummy_fetcher(monkeypatch, tmp_path, dummy_df):
+def _setup_dummy_fetcher(monkeypatch, tmp_path, dummy_df, date_str="2024-04-01"):
     # Avoid writing to real locations
     monkeypatch.setattr(data_fetcher.pb.cache, "enable", lambda: None)
     monkeypatch.setattr(data_fetcher.signal, "signal", lambda *a, **k: None)
@@ -22,7 +22,7 @@ def _setup_dummy_fetcher(monkeypatch, tmp_path, dummy_df):
 
     monkeypatch.setattr(data_fetcher.DataFetcher, "fetch_with_retries", fake_fetch)
 
-    args = argparse.Namespace(date="2024-03-15", seasons=None, parallel=False, mlb_api=False, debug=False)
+    args = argparse.Namespace(date=date_str, seasons=None, parallel=False, mlb_api=False, debug=False)
     fetcher = data_fetcher.DataFetcher(args)
     fetcher.db_path = tmp_path / "test.db"
     with sqlite3.connect(fetcher.db_path) as conn:
@@ -34,15 +34,15 @@ def _setup_dummy_fetcher(monkeypatch, tmp_path, dummy_df):
 def test_pitcher_single_date_filters_game_type(monkeypatch, tmp_path):
     dummy_df = pd.DataFrame({
         "game_pk": [1, 2],
-        "game_date": ["2024-03-15", "2024-03-15"],
+        "game_date": ["2024-04-01", "2024-04-01"],
         "pitcher": [100, 100],
         "batter": [10, 20],
         "pitch_number": [1, 1],
         "game_type": ["S", "R"],
     })
 
-    fetcher = _setup_dummy_fetcher(monkeypatch, tmp_path, dummy_df)
-    result = fetcher._fetch_pitcher_statcast_single_date(100, "Test", datetime(2024, 3, 15).date())
+    fetcher = _setup_dummy_fetcher(monkeypatch, tmp_path, dummy_df, "2024-04-01")
+    result = fetcher._fetch_pitcher_statcast_single_date(100, "Test", datetime(2024, 4, 1).date())
     assert set(result["game_type"]) == {"R"}
     assert len(result) == 1
 
@@ -50,13 +50,28 @@ def test_pitcher_single_date_filters_game_type(monkeypatch, tmp_path):
 def test_batter_single_date_filters_game_type(monkeypatch, tmp_path):
     dummy_df = pd.DataFrame({
         "game_pk": [1, 2],
-        "game_date": ["2024-03-15", "2024-03-15"],
+        "game_date": ["2024-04-01", "2024-04-01"],
         "pitcher": [100, 100],
         "batter": [11, 22],
         "game_type": ["S", "R"],
     })
 
-    fetcher = _setup_dummy_fetcher(monkeypatch, tmp_path, dummy_df)
-    result = fetcher._fetch_batter_statcast_single_date(datetime(2024, 3, 15).date())
+    fetcher = _setup_dummy_fetcher(monkeypatch, tmp_path, dummy_df, "2024-04-01")
+    result = fetcher._fetch_batter_statcast_single_date(datetime(2024, 4, 1).date())
     assert set(result["game_type"]) == {"R"}
     assert len(result) == 1
+
+
+def test_spring_training_rows_filtered(monkeypatch, tmp_path):
+    dummy_df = pd.DataFrame({
+        "game_pk": [1],
+        "game_date": ["2024-03-10"],
+        "pitcher": [100],
+        "batter": [10],
+        "pitch_number": [1],
+        "game_type": ["R"],
+    })
+
+    fetcher = _setup_dummy_fetcher(monkeypatch, tmp_path, dummy_df, "2024-03-10")
+    result = fetcher._fetch_pitcher_statcast_single_date(100, "Test", datetime(2024, 3, 10).date())
+    assert result.empty
