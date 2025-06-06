@@ -3,13 +3,18 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from src.data.create_starting_pitcher_table import aggregate_to_game_level as build_starting_pitchers
-from src.data.create_batters_vs_starters import aggregate_to_game_level as build_batters_vs_starters
+from src.data.create_starting_pitcher_table import (
+    aggregate_to_game_level as build_starting_pitchers,
+)
+from src.data.create_batters_vs_starters import (
+    aggregate_to_game_level as build_batters_vs_starters,
+)
 from src.data.create_team_batting import aggregate_team_batting
 from src.data.create_matchup_details_table import build_matchup_table
 from src.data.create_catcher_defense import build_catcher_defense_metrics
 from src.data.create_starting_lineups import build_starting_lineups
 from src.data.create_pitcher_vs_team_stats import build_matchup_stats
+from src.utils import DBConnection, ensure_statcast_indexes
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -31,8 +36,11 @@ def main(argv: list[str] | None = None) -> None:
 
     kwargs = {"db_path": args.db_path} if args.db_path else {}
 
-    build_starting_pitchers(**kwargs)
-    build_batters_vs_starters(**kwargs)
+    with DBConnection(args.db_path) as conn:
+        ensure_statcast_indexes(conn)
+
+    build_starting_pitchers(rebuild=args.rebuild, **kwargs)
+    build_batters_vs_starters(rebuild=args.rebuild, **kwargs)
     aggregate_team_batting(**kwargs)
     build_matchup_stats(**kwargs)
     build_matchup_table(**kwargs)
