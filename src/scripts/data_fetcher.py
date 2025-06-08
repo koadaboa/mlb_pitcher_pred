@@ -246,6 +246,45 @@ class DataFetcher:
             logger.error(f"Unexpected error loading pitcher mapping: {e}", exc_info=True)
             return pd.DataFrame()
 
+    def _build_pitcher_mapping_via_api(self) -> pd.DataFrame:
+        """Fallback: build pitcher mapping by scraping MLB Stats API for seasons."""
+        logger.info("Attempting to build pitcher mapping via MLB Stats API for seasons: %s", self.seasons_to_fetch)
+        mapping: dict[int, str] = {}
+        for season in self.seasons_to_fetch:
+            start = date(season, 3, 1)
+            end = date(season, 11, 30)
+            current = start
+            while current <= end:
+                daily_data = scrape_probable_pitchers(current.strftime("%Y-%m-%d"))
+                for game in daily_data:
+                    for pid, name in [
+                        (game.get("home_probable_pitcher_id"), game.get("home_probable_pitcher_name")),
+                        (game.get("away_probable_pitcher_id"), game.get("away_probable_pitcher_name")),
+                    ]:
+                        if pid and name:
+                            mapping[int(pid)] = name
+                current += timedelta(days=1)
+
+        if not mapping:
+            logger.error("No pitcher info retrieved while building mapping from API")
+            return pd.DataFrame()
+
+        df = pd.DataFrame({"pitcher_id": list(mapping.keys()), "name": list(mapping.values())})
+        saved = store_data_to_sql(df, "pitcher_mapping", self.db_path, if_exists="replace")
+        if saved:
+            logger.info("Stored %d pitcher mappings to table 'pitcher_mapping'", len(df))
+        else:
+            logger.error("Failed to store pitcher mapping to database")
+        return df
+
+    def ensure_pitcher_mapping(self) -> pd.DataFrame:
+        """Load pitcher mapping, building it if missing."""
+        pm = self.fetch_pitcher_id_mapping()
+        if pm is not None and not pm.empty:
+            return pm
+        logger.warning("Pitcher mapping missing or empty; attempting rebuild via API")
+        return self._build_pitcher_mapping_via_api()
+
     # --- fetch_statcast_for_pitcher (REFACTORED into helpers) ---
     # This method is now removed, logic moved to helpers below
 
@@ -557,7 +596,7 @@ class DataFetcher:
                 logger.info(f"Running Single-Date Historical Fetch for {self.target_fetch_date_obj.strftime('%Y-%m-%d')}...")
 
                 logger.info("[Single Date - Step 1/2] Fetching Pitcher Statcast Data...")
-                pitcher_mapping = self.fetch_pitcher_id_mapping()
+                pitcher_mapping = self.ensure_pitcher_mapping()
                 if pitcher_mapping is not None and not pitcher_mapping.empty:
                     if not self.fetch_all_pitchers(pitcher_mapping): # Calls refactored helper internally
                         pipeline_success = False
@@ -576,7 +615,7 @@ class DataFetcher:
 
                 # Step 1: Load Pitcher Mapping (Essential for fetching pitcher data)
                 logger.info("[Historical - Step 1/4] Loading Pitcher ID Mapping...")
-                pitcher_mapping = self.fetch_pitcher_id_mapping()
+                pitcher_mapping = self.ensure_pitcher_mapping()
                 if pitcher_mapping is None or pitcher_mapping.empty:
                     logger.error("Pitcher mapping failed to load or is empty. Aborting historical pitcher/batter fetch as mapping is required.")
                     pipeline_success = False # Cannot proceed without mapping
