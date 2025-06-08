@@ -255,7 +255,7 @@ class DataFetcher:
             end = date(season, 11, 30)
             current = start
             while current <= end:
-                daily_data = fetch_probable_pitchers(current.strftime("%Y-%m-%d"))
+                daily_data = scrape_probable_pitchers(current.strftime("%Y-%m-%d"))
                 for game in daily_data:
                     for pid, name in [
                         (game.get("home_probable_pitcher_id"), game.get("home_probable_pitcher_name")),
