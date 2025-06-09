@@ -19,7 +19,7 @@ from tqdm import tqdm # Keep for progress bars
 from concurrent.futures import ThreadPoolExecutor, as_completed # Keep for parallel fetching
 import warnings
 import threading # Needed for parallel checkpoint updates
-from .modules.fetch_utils import dedup_pitch_df, filter_regular_season
+
 from .modules.checkpoint_manager import CheckpointManager
 from .modules.pitcher_fetcher import fetch_pitcher_single_date, fetch_pitcher_historical
 from .modules.batter_fetcher import fetch_batter_single_date, fetch_batter_historical

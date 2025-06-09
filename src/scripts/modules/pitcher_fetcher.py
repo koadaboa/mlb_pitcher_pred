@@ -9,7 +9,7 @@ import pandas as pd
 import pybaseball as pb
 
 from src.utils import DBConnection
-from .fetch_utils import dedup_pitch_df, filter_regular_season
+from .fetch_utils import dedup_pitch_df
 
 import logging
 
@@ -46,7 +46,6 @@ def fetch_pitcher_single_date(
         return pd.DataFrame()
     logger.debug(" -> Fetch P %s (%s) for single date: %s", name, pitcher_id, target_date_str)
     pd_data = fetch_with_retries(pb.statcast_pitcher, target_date_str, target_date_str, pitcher_id)
-    pd_data = filter_regular_season(pd_data)
     if pd_data is None:
         logger.error(" -> Error fetching P %s (%s) single date %s after retries.", name, pitcher_id, target_date_str)
         problematic_ids.add(pitcher_id)
@@ -113,7 +112,6 @@ def fetch_pitcher_historical(
         end_str = end_dt.strftime("%Y-%m-%d")
         logger.debug(" -> Fetching %s (%s): %s to %s", name, season, start_str, end_str)
         pd_data = fetch_with_retries(pb.statcast_pitcher, start_str, end_str, pitcher_id)
-        pd_data = filter_regular_season(pd_data)
         if pd_data is None:
             logger.error(
                 " -> Error fetching Hist Statcast P %s (%s) season %s after retries.",

@@ -14,7 +14,6 @@ import logging
 
 from src.utils import DBConnection
 from src.config import DataConfig
-from .fetch_utils import filter_regular_season
 from .fetch_utils import dedup_pitch_df
 from .checkpoint_manager import CheckpointManager
 
@@ -46,7 +45,6 @@ def fetch_batter_single_date(
         return True
     logger.info("Fetching batter Statcast for single date: %s", target_date_str)
     pdata = fetch_with_retries(pb.statcast, start_dt=target_date_str, end_dt=target_date_str)
-    pdata = filter_regular_season(pdata)
     if pdata is None:
         logger.error("Error fetching batter data for single date %s after retries.", target_date_str)
         failed_batter_fetches.add(("single_date", target_date_str, target_date_str))
@@ -134,7 +132,6 @@ def fetch_batter_historical(
             fetch_key = (season, start_str, end_str)
             logger.debug("Fetching hist batter: %s to %s", start_str, end_str)
             pdata = fetch_with_retries(pb.statcast, start_dt=start_str, end_dt=end_str)
-            pdata = filter_regular_season(pdata)
             if pdata is None:
                 logger.error(" -> Error fetching hist batter range %s-%s for season %s after retries.", start_str, end_str, season)
                 failed_batter_fetches.add(fetch_key)
