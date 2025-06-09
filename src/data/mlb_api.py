@@ -52,9 +52,13 @@ logger = setup_logger('mlb_api_module', log_file= log_dir / 'mlb_api.log', level
 MLB_STATS_API_BASE = "https://statsapi.mlb.com/api/v1"
 MLB_SCHEDULE_ENDPOINT = MLB_STATS_API_BASE + "/schedule"
 MLB_TRANSACTIONS_ENDPOINT = MLB_STATS_API_BASE + "/transactions"
-# Define fields for the schedule endpoint to get necessary info
-# Includes gamePk, status, teams(abbr, name, id, league), probablePitcher(id, fullName)
-SCHEDULE_API_FIELDS = "dates,date,games,gamePk,status,abstractGameState,teams,team,id,name,abbreviation,league,probablePitcher,id,fullName"
+# The schedule endpoint supports a ``fields`` parameter to limit returned
+# columns. The previous string attempted to manually specify nested paths but
+# inadvertently omitted the ``away`` and ``home`` keys required to access
+# probable pitcher data. This resulted in the API returning an empty schedule
+# because the fields string was invalid.  To keep the query robust, simply omit
+# the ``fields`` parameter and request the full schedule payload.
+SCHEDULE_API_FIELDS = None
 
 # Use headers similar to scrape_mlb_boxscores
 API_HEADERS = {
@@ -92,11 +96,12 @@ retry_decorator = retry(
 def fetch_schedule_api(target_date_str):
     """Fetches schedule data from MLB Stats API for a specific date with retries."""
     params = {
-        "sportId": 1, # MLB
+        "sportId": 1,  # MLB
         "startDate": target_date_str,
         "endDate": target_date_str,
-        "fields": SCHEDULE_API_FIELDS # Use the defined fields string
     }
+    if SCHEDULE_API_FIELDS:
+        params["fields"] = SCHEDULE_API_FIELDS
     logger.debug(f"Fetching API URL: {MLB_SCHEDULE_ENDPOINT} with params: {params}")
     # Use synchronous httpx client for this non-async script part
     with httpx.Client(headers=API_HEADERS, timeout=REQUEST_TIMEOUT) as client:
