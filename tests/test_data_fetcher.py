@@ -43,8 +43,8 @@ def test_pitcher_single_date_filters_game_type(monkeypatch, tmp_path):
 
     fetcher = _setup_dummy_fetcher(monkeypatch, tmp_path, dummy_df)
     result = fetcher._fetch_pitcher_statcast_single_date(100, "Test", datetime(2024, 3, 15).date())
-    assert set(result["game_type"]) == {"R"}
-    assert len(result) == 1
+    assert set(result["game_type"]) == {"S", "R"}
+    assert len(result) == 2
 
 
 def test_batter_single_date_filters_game_type(monkeypatch, tmp_path):
@@ -58,5 +58,5 @@ def test_batter_single_date_filters_game_type(monkeypatch, tmp_path):
 
     fetcher = _setup_dummy_fetcher(monkeypatch, tmp_path, dummy_df)
     result = fetcher._fetch_batter_statcast_single_date(datetime(2024, 3, 15).date())
-    assert set(result["game_type"]) == {"R"}
-    assert len(result) == 1
+    assert set(result["game_type"]) == {"S", "R"}
+    assert len(result) == 2
