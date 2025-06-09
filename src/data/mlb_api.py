@@ -52,13 +52,14 @@ logger = setup_logger('mlb_api_module', log_file= log_dir / 'mlb_api.log', level
 MLB_STATS_API_BASE = "https://statsapi.mlb.com/api/v1"
 MLB_SCHEDULE_ENDPOINT = MLB_STATS_API_BASE + "/schedule"
 MLB_TRANSACTIONS_ENDPOINT = MLB_STATS_API_BASE + "/transactions"
-# The schedule endpoint supports a ``fields`` parameter to limit returned
-# columns. The previous string attempted to manually specify nested paths but
-# inadvertently omitted the ``away`` and ``home`` keys required to access
-# probable pitcher data. This resulted in the API returning an empty schedule
-# because the fields string was invalid.  To keep the query robust, simply omit
-# the ``fields`` parameter and request the full schedule payload.
+# The schedule endpoint can be limited via a ``fields`` parameter.  A previous
+# attempt to enumerate nested fields inadvertently omitted required keys,
+# resulting in empty responses.  Leaving ``fields`` unset ensures the payload
+# contains all game data, including probable pitchers.
 SCHEDULE_API_FIELDS = None
+# Explicitly request probable pitchers via ``hydrate`` to guarantee the API
+# includes this information for historical dates.
+SCHEDULE_API_HYDRATE = "probablePitcher"
 
 # Use headers similar to scrape_mlb_boxscores
 API_HEADERS = {
@@ -100,6 +101,10 @@ def fetch_schedule_api(target_date_str):
         "startDate": target_date_str,
         "endDate": target_date_str,
     }
+
+    if SCHEDULE_API_HYDRATE:
+        params["hydrate"] = SCHEDULE_API_HYDRATE
+        
     if SCHEDULE_API_FIELDS:
         params["fields"] = SCHEDULE_API_FIELDS
     logger.debug(f"Fetching API URL: {MLB_SCHEDULE_ENDPOINT} with params: {params}")
