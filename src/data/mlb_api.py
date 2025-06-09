@@ -101,8 +101,10 @@ def fetch_schedule_api(target_date_str):
         "startDate": target_date_str,
         "endDate": target_date_str,
     }
+
     if SCHEDULE_API_HYDRATE:
         params["hydrate"] = SCHEDULE_API_HYDRATE
+        
     if SCHEDULE_API_FIELDS:
         params["fields"] = SCHEDULE_API_FIELDS
     logger.debug(f"Fetching API URL: {MLB_SCHEDULE_ENDPOINT} with params: {params}")
