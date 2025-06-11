@@ -9,7 +9,7 @@ This project aims to predict the number of strikeouts a Major League Baseball (M
   * `pybaseball` for Statcast data (pitch-level stats)
   * MLB Stats API for box scores and scheduling metadata
 * **Data Pipeline:** Fully automated data-fetching and preprocessing pipeline
-* **Multi-core Processing:** Aggregation scripts use all CPUs by default; override with `MAX_WORKERS` env var
+* **Multi-core Processing:** Aggregation and feature engineering scripts use all CPUs by default; override with `MAX_WORKERS` env var or `--n-jobs`
 * **Current Focus:** Aggregation, feature engineering, and LightGBM model training
 
 ## Tables & Schemas
@@ -167,8 +167,9 @@ dramatically reducing runtime on multi-core machines.
 ### Multi-core Usage
 
 `create_starting_pitcher_table.py` launches one process per CPU by default.
-The worker count is controlled by `DataConfig.MAX_WORKERS`, which can be
-overridden via the `MAX_WORKERS` environment variable:
+The worker count is controlled by `DataConfig.MAX_WORKERS` (also exposed as
+`StrikeoutModelConfig.MAX_WORKERS`). Set the value with the `MAX_WORKERS`
+environment variable or the `--n-jobs` option:
 
 ```bash
 MAX_WORKERS=4 python -m src.create_starting_pitcher_table
@@ -197,7 +198,8 @@ If the feature tables already exist, the script only processes games newer than
 the latest date stored in each table and appends the new rows.
 
 Use the `--n-jobs` option to control how many processes are used when computing
-rolling features:
+rolling features. If omitted, the value defaults to
+`StrikeoutModelConfig.MAX_WORKERS`:
 
 ```bash
 python -m src.scripts.run_feature_engineering --db-path path/to/pitcher_stats.db --n-jobs 8
