@@ -3,6 +3,7 @@ from __future__ import annotations
 import pandas as pd
 import numpy as np
 from pathlib import Path
+import sqlite3
 
 from src.utils import (
     DBConnection,
@@ -127,10 +128,26 @@ def engineer_workload_features(
         else:
             latest = get_latest_date(conn, target_table, "game_date")
 
-        query = f"SELECT * FROM {source_table}"
+        supports_window = sqlite3.sqlite_version_info >= (3, 25, 0)
+        if supports_window:
+            pitch_expr = (
+                "SUM(pitches) OVER (PARTITION BY pitcher_id ORDER BY game_date "
+                "ROWS BETWEEN ? PRECEDING AND 1 PRECEDING) AS pitches_last_7d"
+            )
+            ip_expr = (
+                "SUM(innings_pitched) OVER (PARTITION BY pitcher_id ORDER BY game_date "
+                "ROWS BETWEEN ? PRECEDING AND 1 PRECEDING) AS season_ip_last_30d"
+            )
+            query = f"SELECT *, {pitch_expr}, {ip_expr} FROM {source_table}"
+            params = (7, 30)
+        else:
+            query = f"SELECT * FROM {source_table}"
+            params = ()
+
         if year:
             query += f" WHERE strftime('%Y', game_date) = '{year}'"
-        df = pd.read_sql_query(query, conn)
+
+        df = pd.read_sql_query(query, conn, params=params)
 
         if table_exists(conn, injury_table):
             injury_df = pd.read_sql_query(f"SELECT * FROM {injury_table}", conn)
@@ -148,7 +165,12 @@ def engineer_workload_features(
         logger.info("No new rows to process for %s", target_table)
         return df
 
-    df[f"pitches_last_7d"] = add_recent_pitch_counts(df, 7)
+    if supports_window:
+        # Columns were calculated in SQL query
+        pass
+    else:
+        df["pitches_last_7d"] = add_recent_pitch_counts(df, 7)
+        df["season_ip_last_30d"] = add_recent_innings(df, 30)
     df = add_injury_indicators(df, injury_df)
 
     with DBConnection(db_path) as conn:
