@@ -104,6 +104,8 @@ class DataConfig:
 
 
 class StrikeoutModelConfig:
+    # Number of parallel workers for feature engineering
+    MAX_WORKERS = DataConfig.MAX_WORKERS
     RANDOM_STATE = 3
     # Default rolling window sizes (in games)
     # Adjust if additional smoothing is required

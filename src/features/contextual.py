@@ -110,6 +110,9 @@ def _add_group_rolling(
         Prefix for the generated feature names.
     windows : list[int], optional
         Rolling window sizes. Defaults to ``StrikeoutModelConfig.WINDOW_SIZES``.
+    n_jobs : int, optional
+        Number of parallel workers. Defaults to ``StrikeoutModelConfig.MAX_WORKERS``
+        or the ``MAX_WORKERS`` environment variable.
     numeric_cols : Sequence[str], optional
         Restrict calculations to these numeric columns. If ``None`` (default),
         all numeric columns except identifiers are used.
@@ -122,7 +125,7 @@ def _add_group_rolling(
         windows = StrikeoutModelConfig.WINDOW_SIZES
 
     if n_jobs is None:
-        n_jobs = os.cpu_count() or 1
+        n_jobs = int(os.getenv("MAX_WORKERS", StrikeoutModelConfig.MAX_WORKERS))
 
     df = df.sort_values(list(group_cols) + [date_col])
     exclude_cols = {"game_pk"}.union(set(group_cols))
