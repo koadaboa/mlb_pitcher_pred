@@ -12,6 +12,7 @@ from src.utils import (
     setup_logger,
     table_exists,
     get_latest_date,
+    load_table_cached,
 )
 from src.config import DBConfig, StrikeoutModelConfig, LogConfig
 from .workload_features import (
@@ -152,10 +153,7 @@ def engineer_pitcher_features(
         else:
             latest = get_latest_date(conn, target_table, "game_date")
 
-        query = f"SELECT * FROM {source_table}"
-        if year:
-            query += f" WHERE strftime('%Y', game_date) = '{year}'"
-        df = pd.read_sql_query(query, conn)
+        df = load_table_cached(db_path, source_table, year, rebuild=rebuild)
 
     if "game_date" not in df.columns:
         logger.error("Required column 'game_date' not found in %s", source_table)
@@ -189,13 +187,16 @@ def engineer_pitcher_features(
     # Add workload features
     with DBConnection(db_path) as conn:
         if table_exists(conn, "player_injury_log"):
-            injury_df = pd.read_sql_query("SELECT * FROM player_injury_log", conn)
+            injury_df = load_table_cached(db_path, "player_injury_log", rebuild=rebuild)
         else:
             injury_df = pd.DataFrame(columns=["player_id", "start_date", "end_date"])
         if table_exists(conn, "players"):
-            player_df = pd.read_sql_query(
-                "SELECT player_id, birth_date FROM players", conn
-            )
+            player_df = load_table_cached(db_path, "players", rebuild=rebuild)
+            if {
+                "player_id",
+                "birth_date",
+            }.issubset(player_df.columns):
+                player_df = player_df[["player_id", "birth_date"]]
         else:
             player_df = pd.DataFrame(columns=["player_id", "birth_date"])
 
