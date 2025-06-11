@@ -97,33 +97,36 @@ def add_rolling_features(
     seen = set()
     numeric_cols = [c for c in numeric_cols if not (c in seen or seen.add(c))]
 
-    frames = [df]
-    for col in numeric_cols:
-        grouped = df.groupby(group_col)[col]
-        shifted = grouped.shift(1)
-        for window in windows:
-            roll = shifted.groupby(df[group_col]).rolling(window, min_periods=1)
-            mean = roll.mean().reset_index(level=0, drop=True)
-            stats = pd.DataFrame(
-                {
-                    f"{col}_mean_{window}": mean,
-                    f"{col}_std_{window}": roll.std().reset_index(level=0, drop=True),
-                }
-            )
-            # Momentum compares last game's value to the previous average
-            stats[f"{col}_momentum_{window}"] = shifted - mean
-            frames.append(stats)
-        if ewm_halflife is not None:
-            ewm = grouped.apply(
-                lambda x: x.shift(1).ewm(halflife=ewm_halflife, min_periods=1).mean()
-            )
-            ewm = ewm.reset_index(level=0, drop=True)
-            ewm_stats = pd.DataFrame({f"{col}_ewm_{int(ewm_halflife)}": ewm})
-            ewm_stats[f"{col}_momentum_ewm_{int(ewm_halflife)}"] = shifted - ewm
-            frames.append(ewm_stats)
+    df_idx = df.set_index([group_col, date_col])
+    shifted = df_idx[numeric_cols].groupby(level=0).shift(1)
 
-    df = pd.concat(frames, axis=1)
-    return df
+    frames = [df_idx]
+    for window in windows:
+        roll = (
+            shifted.groupby(level=0, group_keys=False)[numeric_cols]
+            .rolling(window, min_periods=1)
+            .agg(["mean", "std"])
+        )
+        means = roll.xs("mean", level=-1, axis=1)
+        stds = roll.xs("std", level=-1, axis=1)
+        means.columns = [f"{c}_mean_{window}" for c in numeric_cols]
+        stds.columns = [f"{c}_std_{window}" for c in numeric_cols]
+        momentum = shifted[numeric_cols] - means
+        momentum.columns = [f"{c}_momentum_{window}" for c in numeric_cols]
+        frames.extend([means, stds, momentum])
+
+    if ewm_halflife is not None:
+        ewm = (
+            shifted.groupby(level=0, group_keys=False)[numeric_cols]
+            .apply(lambda x: x.ewm(halflife=ewm_halflife, min_periods=1).mean())
+        )
+        ewm.columns = [f"{c}_ewm_{int(ewm_halflife)}" for c in numeric_cols]
+        momentum_ewm = shifted[numeric_cols] - ewm
+        momentum_ewm.columns = [f"{c}_momentum_ewm_{int(ewm_halflife)}" for c in numeric_cols]
+        frames.extend([ewm, momentum_ewm])
+
+    result = pd.concat(frames, axis=1)
+    return result.reset_index()
 
 
 def engineer_pitcher_features(
