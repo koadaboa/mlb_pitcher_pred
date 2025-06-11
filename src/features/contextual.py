@@ -13,6 +13,7 @@ from src.utils import (
     table_exists,
     get_latest_date,
     safe_merge,
+    load_table_cached,
 )
 from src.config import (
     DBConfig,
@@ -110,6 +111,9 @@ def _add_group_rolling(
         Prefix for the generated feature names.
     windows : list[int], optional
         Rolling window sizes. Defaults to ``StrikeoutModelConfig.WINDOW_SIZES``.
+    n_jobs : int, optional
+        Number of parallel workers. Defaults to ``StrikeoutModelConfig.MAX_WORKERS``
+        or the ``MAX_WORKERS`` environment variable.
     numeric_cols : Sequence[str], optional
         Restrict calculations to these numeric columns. If ``None`` (default),
         all numeric columns except identifiers are used.
@@ -122,7 +126,7 @@ def _add_group_rolling(
         windows = StrikeoutModelConfig.WINDOW_SIZES
 
     if n_jobs is None:
-        n_jobs = os.cpu_count() or 1
+        n_jobs = int(os.getenv("MAX_WORKERS", StrikeoutModelConfig.MAX_WORKERS))
 
     df = df.sort_values(list(group_cols) + [date_col])
     exclude_cols = {"game_pk"}.union(set(group_cols))
@@ -133,50 +137,40 @@ def _add_group_rolling(
             if c not in exclude_cols
         ]
     else:
-        numeric_cols = [
-            c for c in numeric_cols if c in df.columns and c not in exclude_cols
+        numeric_cols = [c for c in numeric_cols if c in df.columns and c not in exclude_cols]
+
+    df_idx = df.set_index(list(group_cols) + [date_col])
+    shifted = df_idx[numeric_cols].groupby(level=group_cols).shift(1)
+
+    frames = [df_idx]
+    for window in windows:
+        roll = (
+            shifted.groupby(level=group_cols, group_keys=False)[numeric_cols]
+            .rolling(window, min_periods=1)
+            .agg(["mean", "std"])
+        )
+        means = roll.xs("mean", level=-1, axis=1)
+        stds = roll.xs("std", level=-1, axis=1)
+        means.columns = [f"{prefix}{c}_mean_{window}" for c in numeric_cols]
+        stds.columns = [f"{prefix}{c}_std_{window}" for c in numeric_cols]
+        momentum = shifted[numeric_cols] - means
+        momentum.columns = [f"{prefix}{c}_momentum_{window}" for c in numeric_cols]
+        frames.extend([means, stds, momentum])
+
+    if ewm_halflife is not None:
+        ewm = (
+            shifted.groupby(level=group_cols, group_keys=False)[numeric_cols]
+            .apply(lambda x: x.ewm(halflife=ewm_halflife, min_periods=1).mean())
+        )
+        ewm.columns = [f"{prefix}{c}_ewm_{int(ewm_halflife)}" for c in numeric_cols]
+        momentum_ewm = shifted[numeric_cols] - ewm
+        momentum_ewm.columns = [
+            f"{prefix}{c}_momentum_ewm_{int(ewm_halflife)}" for c in numeric_cols
         ]
+        frames.extend([ewm, momentum_ewm])
 
-    def _calc_for_col(col: str, local_df: pd.DataFrame) -> pd.DataFrame:
-        """Calculate rolling stats for a single column using a dataframe slice."""
-        grouped = local_df.groupby(list(group_cols))[col]
-        shifted = grouped.shift(1)
-        parts = []
-        for window in windows:
-            roll = shifted.groupby([local_df[c] for c in group_cols]).rolling(
-                window, min_periods=1
-            )
-            mean = roll.mean().reset_index(
-                level=list(range(len(group_cols))), drop=True
-            )
-            stats = pd.DataFrame(
-                {
-                    f"{prefix}{col}_mean_{window}": mean,
-                    f"{prefix}{col}_std_{window}": roll.std().reset_index(
-                        level=list(range(len(group_cols))), drop=True
-                    ),
-                }
-            )
-            stats[f"{prefix}{col}_momentum_{window}"] = shifted - mean
-            parts.append(stats)
-        if ewm_halflife is not None:
-            ewm = grouped.apply(
-                lambda x: x.shift(1).ewm(halflife=ewm_halflife, min_periods=1).mean()
-            )
-            ewm = ewm.reset_index(level=list(range(len(group_cols))), drop=True)
-            ewm_stats = pd.DataFrame({f"{prefix}{col}_ewm_{int(ewm_halflife)}": ewm})
-            ewm_stats[f"{prefix}{col}_momentum_ewm_{int(ewm_halflife)}"] = shifted - ewm
-            parts.append(ewm_stats)
-        return pd.concat(parts, axis=1)
-
-    frames = [df]
-    results = Parallel(n_jobs=n_jobs)(
-        delayed(_calc_for_col)(c, df[[c, *group_cols, date_col]]) for c in numeric_cols
-    )
-    frames.extend(results)
-
-    df = pd.concat(frames, axis=1)
-    return df
+    result = pd.concat(frames, axis=1)
+    return result.reset_index()
 
 
 def engineer_opponent_features(
@@ -205,10 +199,7 @@ def engineer_opponent_features(
         else:
             latest = get_latest_date(conn, target_table, "game_date")
 
-        query = f"SELECT * FROM {source_table}"
-        if year:
-            query += f" WHERE strftime('%Y', game_date) = '{year}'"
-        df = pd.read_sql_query(query, conn)
+        df = load_table_cached(db_path, source_table, year, rebuild=rebuild)
 
         hand_query = """
             SELECT b.game_pk,
@@ -342,10 +333,7 @@ def engineer_contextual_features(
         else:
             latest = get_latest_date(conn, target_table, "game_date")
 
-        query = f"SELECT * FROM {source_table}"
-        if year:
-            query += f" WHERE strftime('%Y', game_date) = '{year}'"
-        df = pd.read_sql_query(query, conn)
+        df = load_table_cached(db_path, source_table, year, rebuild=rebuild)
 
         if df.empty:
             logger.warning("No data found in %s", source_table)
@@ -441,13 +429,15 @@ def engineer_lineup_trends(
         else:
             latest = get_latest_date(conn, target_table, "game_date")
 
-        query = f"SELECT * FROM {source_table}"
-        if year:
-            query += f" WHERE strftime('%Y', game_date) = '{year}'"
-        df = pd.read_sql_query(query, conn)
+        df = load_table_cached(db_path, source_table, year, rebuild=rebuild)
 
         if "game_date" not in df.columns:
-            date_df = pd.read_sql_query("SELECT game_pk, pitcher_id, game_date FROM game_level_starting_pitchers", conn)
+            date_df = load_table_cached(
+                db_path,
+                "game_level_starting_pitchers",
+                year,
+                rebuild=rebuild,
+            )[["game_pk", "pitcher_id", "game_date"]]
             merge_cols=["game_pk"]
             if "pitcher_id" in df.columns:
                 merge_cols.append("pitcher_id")
