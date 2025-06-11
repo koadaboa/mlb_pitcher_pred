@@ -13,6 +13,7 @@ from src.utils import (
     table_exists,
     get_latest_date,
     safe_merge,
+    load_table_cached,
 )
 from src.config import (
     DBConfig,
@@ -205,10 +206,7 @@ def engineer_opponent_features(
         else:
             latest = get_latest_date(conn, target_table, "game_date")
 
-        query = f"SELECT * FROM {source_table}"
-        if year:
-            query += f" WHERE strftime('%Y', game_date) = '{year}'"
-        df = pd.read_sql_query(query, conn)
+        df = load_table_cached(db_path, source_table, year, rebuild=rebuild)
 
         hand_query = """
             SELECT b.game_pk,
@@ -342,10 +340,7 @@ def engineer_contextual_features(
         else:
             latest = get_latest_date(conn, target_table, "game_date")
 
-        query = f"SELECT * FROM {source_table}"
-        if year:
-            query += f" WHERE strftime('%Y', game_date) = '{year}'"
-        df = pd.read_sql_query(query, conn)
+        df = load_table_cached(db_path, source_table, year, rebuild=rebuild)
 
         if df.empty:
             logger.warning("No data found in %s", source_table)
@@ -441,13 +436,15 @@ def engineer_lineup_trends(
         else:
             latest = get_latest_date(conn, target_table, "game_date")
 
-        query = f"SELECT * FROM {source_table}"
-        if year:
-            query += f" WHERE strftime('%Y', game_date) = '{year}'"
-        df = pd.read_sql_query(query, conn)
+        df = load_table_cached(db_path, source_table, year, rebuild=rebuild)
 
         if "game_date" not in df.columns:
-            date_df = pd.read_sql_query("SELECT game_pk, pitcher_id, game_date FROM game_level_starting_pitchers", conn)
+            date_df = load_table_cached(
+                db_path,
+                "game_level_starting_pitchers",
+                year,
+                rebuild=rebuild,
+            )[["game_pk", "pitcher_id", "game_date"]]
             merge_cols=["game_pk"]
             if "pitcher_id" in df.columns:
                 merge_cols.append("pitcher_id")
