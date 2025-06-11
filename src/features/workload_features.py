@@ -18,17 +18,22 @@ logger = setup_logger("workload_features", LogConfig.LOG_DIR / "workload_feature
 
 def add_recent_pitch_counts(df: pd.DataFrame, window_days: int = 7) -> pd.Series:
     """Return rolling sum of pitches thrown in the previous ``window_days``."""
-    df = df.sort_values(["pitcher_id", "game_date"])
-    result_parts = []
-    for pid, g in df.groupby("pitcher_id"):
-        shifted = g.set_index("game_date")["pitches"].shift(1)
-        rolled = shifted.rolling(f"{window_days}D").sum()
-        # Maintain alignment with the original group by restoring its index
-        rolled.index = g.index
-        result_parts.append(rolled)
-    out = pd.concat(result_parts).sort_index()
-    out.name = f"pitches_last_{window_days}d"
-    return out
+
+    # Compute rolling sums grouped by pitcher without explicit Python loops
+    df_sorted = df.sort_values(["pitcher_id", "game_date"])
+    rolled = (
+        df_sorted.set_index(["pitcher_id", "game_date"])
+        .groupby(level=0)["pitches"]
+        .shift(1)
+        .rolling(f"{window_days}D")
+        .sum()
+    )
+
+    # Align results with the sorted dataframe and restore original row order
+    rolled.index = df_sorted.index
+    rolled = rolled.reindex(df.index)
+    rolled.name = f"pitches_last_{window_days}d"
+    return rolled
 
 
 def add_injury_indicators(df: pd.DataFrame, injury_df: pd.DataFrame) -> pd.DataFrame:
@@ -90,16 +95,20 @@ def add_pitcher_age(df: pd.DataFrame, players_df: pd.DataFrame) -> pd.DataFrame:
 
 def add_recent_innings(df: pd.DataFrame, window_days: int = 30) -> pd.Series:
     """Return rolling sum of innings pitched in the previous ``window_days``."""
-    df = df.sort_values(["pitcher_id", "game_date"])
-    parts = []
-    for pid, g in df.groupby("pitcher_id"):
-        shifted = g.set_index("game_date")["innings_pitched"].shift(1)
-        rolled = shifted.rolling(f"{window_days}D").sum()
-        rolled.index = g.index
-        parts.append(rolled)
-    out = pd.concat(parts).sort_index()
-    out.name = f"season_ip_last_{window_days}d"
-    return out
+
+    df_sorted = df.sort_values(["pitcher_id", "game_date"])
+    rolled = (
+        df_sorted.set_index(["pitcher_id", "game_date"])
+        .groupby(level=0)["innings_pitched"]
+        .shift(1)
+        .rolling(f"{window_days}D")
+        .sum()
+    )
+
+    rolled.index = df_sorted.index
+    rolled = rolled.reindex(df.index)
+    rolled.name = f"season_ip_last_{window_days}d"
+    return rolled
 
 
 def engineer_workload_features(
