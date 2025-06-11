@@ -492,6 +492,12 @@ async def main(start_date_str, end_date_str, debug_api):
                       df_all.drop_duplicates(subset=['game_pk'], keep='last', inplace=True)
                       df_all.sort_values(by=['game_date', 'game_pk'], inplace=True) # Sort before saving
                       df_all.to_csv(OUTPUT_PATH, index=False)
+                      # Also append just the newly fetched games to the database
+                      df_new = pd.DataFrame(new_games_for_date)
+                      if not df_new.empty:
+                           ensure_boxscores_table(DB_PATH)
+                           with DBConnection(DB_PATH) as conn:
+                                df_new.to_sql("mlb_boxscores", conn, if_exists="append", index=False)
                       processed_count = len(new_games_for_date)
                       logger.info(f"Appended {processed_count} new games for {date_str}. Saved {len(df_all)} total games to {OUTPUT_PATH.name}.")
                       print(f"Finished processing {date_str}. Added {processed_count} new games. Total saved: {len(df_all)}.")
