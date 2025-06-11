@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 from pathlib import Path
 from typing import Optional, Union, Dict, Tuple
@@ -39,33 +40,19 @@ def ensure_dir(path: Union[str, Path]) -> Path:
     p.mkdir(parents=True, exist_ok=True)
     return p
 
+def setup_logger(
+    name: str, log_file: Optional[Union[str, Path]] = None,
+    level: int = logging.WARNING,
+) -> logging.Logger:
+    """Create and return a console/file logger with a standard format.
 
-# Simple in-memory cache for DataFrames loaded from SQLite
-_table_cache: Dict[Tuple[str, str, Optional[int]], pd.DataFrame] = {}
+    The level defaults to ``WARNING`` but can be overridden via the
+    ``LOG_LEVEL`` environment variable.
+    """
+    env_level = os.getenv("LOG_LEVEL")
+    if env_level:
+        level = getattr(logging, env_level.upper(), level)
 
-
-def load_table_cached(
-    db_path: Union[str, Path],
-    table_name: str,
-    year: int | None = None,
-    rebuild: bool = False,
-) -> pd.DataFrame:
-    """Return a DataFrame from ``table_name`` using a cache for efficiency."""
-
-    key = (str(Path(db_path)), table_name, year)
-    if rebuild:
-        _table_cache.pop(key, None)
-    if key not in _table_cache:
-        query = f"SELECT * FROM {table_name}"
-        if year is not None:
-            query += f" WHERE strftime('%Y', game_date) = '{year}'"
-        with DBConnection(db_path) as conn:
-            _table_cache[key] = pd.read_sql_query(query, conn)
-    return _table_cache[key].copy()
-
-
-def setup_logger(name: str, log_file: Optional[Union[str, Path]] = None, level: int = logging.INFO) -> logging.Logger:
-    """Create and return a console/file logger with a standard format."""
     logger = logging.getLogger(name)
     logger.setLevel(level)
 
