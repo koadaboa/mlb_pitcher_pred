@@ -24,7 +24,13 @@ if str(project_root) not in sys.path:
 
 try:
     from src.config import LogConfig, FileConfig
-    from src.utils import setup_logger, ensure_dir
+    from src.utils import (
+        setup_logger,
+        ensure_dir,
+        DBConnection,
+        table_exists,
+        get_latest_date,
+    )
     MODULE_IMPORTS_OK = True
     # Define DB_PATH from config if available, needed for fallback DBConnection path
     try: from src.config import DBConfig; DB_PATH = DBConfig.PATH
@@ -42,6 +48,31 @@ except ImportError as e:
     DB_PATH = str(project_root / 'data' / 'pitcher_stats.db')
     def setup_logger(name, log_file=None, level=logging.INFO): return logger
     def ensure_dir(path): Path(path).mkdir(parents=True, exist_ok=True)
+    class DBConnection:
+        def __init__(self, db_path=None):
+            self.db_path = Path(db_path or DB_PATH)
+        def __enter__(self):
+            import sqlite3
+            self.conn = sqlite3.connect(str(self.db_path))
+            return self.conn
+        def __exit__(self, exc_type, exc, tb):
+            if self.conn:
+                if exc_type:
+                    self.conn.rollback()
+                else:
+                    self.conn.commit()
+                self.conn.close()
+    def table_exists(conn, table):
+        cur = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,))
+        return cur.fetchone() is not None
+    def get_latest_date(conn, table, date_col="game_date"):
+        if not table_exists(conn, table):
+            return None
+        cur = conn.execute(f"SELECT MAX({date_col}) FROM {table}")
+        row = cur.fetchone()
+        if row and row[0] is not None:
+            return pd.to_datetime(row[0])
+        return None
 
 
 # --- Constants ---
@@ -58,7 +89,6 @@ INITIAL_RETRY_DELAY = 1
 MAX_RETRY_DELAY = 10
 REQUEST_TIMEOUT = 20
 OUTPUT_CSV_FILE = "mlb_boxscores_combined.csv"
-CHECKPOINT_FILE = "mlb_boxscores_checkpoint.txt"
 
 # Offseason Bounds & League IDs
 OFFSEASON_START_MONTH = 11; OFFSEASON_START_DAY = 5
@@ -78,11 +108,8 @@ logger = setup_logger('scrape_mlb_boxscores_api_csv', log_file=log_file, level=l
 # --- Define Output and Debug Directories ---
 OUTPUT_DIR = FileConfig.DATA_DIR / 'raw' if MODULE_IMPORTS_OK else project_root / 'data' / 'raw'
 OUTPUT_PATH = OUTPUT_DIR / OUTPUT_CSV_FILE
-CHECKPOINT_DIR = OUTPUT_DIR.parent / '.checkpoints' if MODULE_IMPORTS_OK else project_root / 'data' / '.checkpoints'
-CHECKPOINT_PATH = CHECKPOINT_DIR / CHECKPOINT_FILE
 DEBUG_API_DIR = FileConfig.DEBUG_DIR if hasattr(FileConfig, 'DEBUG_DIR') else OUTPUT_DIR.parent / 'debug_api' / 'mlb_boxscores'
 ensure_dir(OUTPUT_DIR)
-ensure_dir(CHECKPOINT_PATH.parent)
 # Debug dir created later if needed
 
 # --- Retry Logic ---
@@ -98,18 +125,43 @@ retry_decorator = retry(
     before_sleep=lambda rs: logger.warning(f"Retrying ({rs.attempt_number}/{MAX_RETRIES}): {rs.outcome.exception()}. Waiting {rs.next_action.sleep:.2f}s...")
 )
 
-# --- Checkpoint Functions ---
-def load_last_processed_date(filename=CHECKPOINT_PATH):
-    if filename.exists():
-        try:
-            last_date_str = filename.read_text().strip(); datetime.strptime(last_date_str, "%Y-%m-%d")
-            logger.info(f"Checkpoint found. Last successfully processed date: {last_date_str}"); return last_date_str
-        except Exception as e: logger.warning(f"Could not read/validate checkpoint '{filename}': {e}"); return None
-    return None
+# --- Database Utility Functions ---
+CREATE_TABLE_SQL = f"""
+CREATE TABLE IF NOT EXISTS mlb_boxscores (
+    game_pk INTEGER PRIMARY KEY,
+    game_date TEXT,
+    away_team TEXT,
+    home_team TEXT,
+    game_number INTEGER,
+    double_header TEXT,
+    away_pitcher_ids TEXT,
+    home_pitcher_ids TEXT,
+    hp_umpire TEXT,
+    "1b_umpire" TEXT,
+    "2b_umpire" TEXT,
+    "3b_umpire" TEXT,
+    weather TEXT,
+    temp REAL,
+    wind TEXT,
+    elevation REAL,
+    dayNight TEXT,
+    first_pitch TEXT,
+    scraped_timestamp TEXT
+)
+"""
 
-def save_checkpoint(date_str, filename=CHECKPOINT_PATH):
-    try: ensure_dir(filename.parent); filename.write_text(date_str); logger.info(f"Checkpoint saved for date: {date_str} to {filename}")
-    except Exception as e: logger.error(f"Could not write checkpoint file '{filename}': {e}")
+def ensure_boxscores_table(db_path=DB_PATH):
+    """Create the ``mlb_boxscores`` table if it doesn't exist."""
+    with DBConnection(db_path) as conn:
+        conn.execute(CREATE_TABLE_SQL)
+
+def get_latest_boxscore_date(db_path=DB_PATH):
+    """Return the latest ``game_date`` in ``mlb_boxscores`` if the table exists."""
+    with DBConnection(db_path) as conn:
+        latest = get_latest_date(conn, "mlb_boxscores", "game_date")
+        if latest is not None:
+            return latest.strftime("%Y-%m-%d")
+    return None
 
 # --- Core Fetching/Parsing Functions ---
 
@@ -305,10 +357,20 @@ async def main(start_date_str, end_date_str, debug_api):
     start_date = datetime.strptime(start_date_str, "%Y-%m-%d").date()
     end_date = datetime.strptime(end_date_str, "%Y-%m-%d").date()
 
-    # Load existing data and checkpoint
+    # Ensure DB table exists and determine last processed date
+    logger.info(f"Using SQLite DB at: {DB_PATH}")
+    ensure_boxscores_table(DB_PATH)
+
+    last_processed_date_str = get_latest_boxscore_date(DB_PATH)
+    if last_processed_date_str:
+        logger.info(f"Latest game_date in database: {last_processed_date_str}")
+    else:
+        logger.info("No records found in mlb_boxscores table; starting from provided start date")
+        last_processed_date_str = None
+
+    # Load existing CSV data
     all_game_data = []
     existing_pks = set()
-    last_processed_date_str = load_last_processed_date()
     resume_from_dt = start_date
 
     if OUTPUT_PATH.exists() and OUTPUT_PATH.stat().st_size > 0:
@@ -331,7 +393,7 @@ async def main(start_date_str, end_date_str, debug_api):
         try:
             last_processed_dt = datetime.strptime(last_processed_date_str, "%Y-%m-%d").date()
             resume_from_dt = last_processed_dt + timedelta(days=1)
-        except ValueError: logger.warning(f"Invalid date in checkpoint '{last_processed_date_str}'."); resume_from_dt = start_date
+        except ValueError: logger.warning(f"Invalid date '{last_processed_date_str}' from database or CSV."); resume_from_dt = start_date
 
     effective_start_date = max(start_date, resume_from_dt)
     logger.info(f"Effective processing start date: {effective_start_date.strftime('%Y-%m-%d')}")
@@ -354,8 +416,8 @@ async def main(start_date_str, end_date_str, debug_api):
             game_pks = await get_game_pks(client, date_str) # Pass client now
 
             if not game_pks:
-                logger.warning(f"No gamePks found via API schedule for {date_str}. Saving checkpoint.")
-                save_checkpoint(date_str); continue
+                logger.warning(f"No gamePks found via API schedule for {date_str}.")
+                continue
 
             new_games_for_date = []; processed_pks_in_batch = set(); tasks = []; pks_to_fetch = []
             for pk in game_pks:
@@ -365,7 +427,7 @@ async def main(start_date_str, end_date_str, debug_api):
                       tasks.append(asyncio.ensure_future(fetch_api_data_wrapper(client, api_url))) # Pass client
                  else: logger.debug(f"GamePk {pk} already exists. Skipping API call.")
 
-            if not tasks: logger.info(f"All gamePks for {date_str} already exist. Saving checkpoint."); save_checkpoint(date_str); await asyncio.sleep(0.1); continue
+            if not tasks: logger.info(f"All gamePks for {date_str} already exist."); await asyncio.sleep(0.1); continue
 
             api_results = await asyncio.gather(*tasks)
 
@@ -415,6 +477,12 @@ async def main(start_date_str, end_date_str, debug_api):
                       df_all.drop_duplicates(subset=['game_pk'], keep='last', inplace=True)
                       df_all.sort_values(by=['game_date', 'game_pk'], inplace=True) # Sort before saving
                       df_all.to_csv(OUTPUT_PATH, index=False)
+                      # Also append just the newly fetched games to the database
+                      df_new = pd.DataFrame(new_games_for_date)
+                      if not df_new.empty:
+                           ensure_boxscores_table(DB_PATH)
+                           with DBConnection(DB_PATH) as conn:
+                                df_new.to_sql("mlb_boxscores", conn, if_exists="append", index=False)
                       processed_count = len(new_games_for_date)
                       logger.info(f"Appended {processed_count} new games for {date_str}. Saved {len(df_all)} total games to {OUTPUT_PATH.name}.")
                       print(f"Finished processing {date_str}. Added {processed_count} new games. Total saved: {len(df_all)}.")
@@ -424,15 +492,10 @@ async def main(start_date_str, end_date_str, debug_api):
                       print(f"ERROR saving data for {date_str} to CSV. Check logs.")
                       DATES_WITH_ISSUES.add(date_str)
 
-            # --- Update Checkpoint and Issue List ---
-            if date_save_successful:
-                 save_checkpoint(date_str)
-            elif fetch_or_parse_issue_occurred and pks_to_fetch:
+            # --- Update issue tracking ---
+            if not date_save_successful and fetch_or_parse_issue_occurred and pks_to_fetch:
                  logger.warning(f"Date {date_str} had fetch/parse issues for some attempted gamePks. Adding to issue list.")
                  DATES_WITH_ISSUES.add(date_str)
-            elif game_pks:
-                 logger.info(f"No new, valid, parsable games found for {date_str} (likely existed or filtered). Saving checkpoint.")
-                 save_checkpoint(date_str)
 
             await asyncio.sleep(0.5 + random.uniform(0, 0.5)) # Delay between dates
 
@@ -452,7 +515,6 @@ if __name__ == "__main__":
 
     logger.info(f"--- Starting MLB Box Score API Fetcher: {args.start_date} to {end_dt_str} ---")
     logger.info(f"Saving data to CSV: '{OUTPUT_PATH}'.")
-    logger.info(f"Using checkpoint file: '{CHECKPOINT_PATH}'.")
     logger.info(f"Debug API JSON saving {'enabled' if args.debug_api else 'disabled'}.")
 
     try:
