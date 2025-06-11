@@ -6,6 +6,7 @@ import sys
 
 from src.features import (
     engineer_pitcher_features,
+    engineer_workload_features,
     engineer_opponent_features,
     engineer_contextual_features,
     engineer_lineup_trends,
@@ -39,6 +40,7 @@ def setup_test_db(tmp_path: Path, cross_season: bool = False) -> Path:
                 "elevation": [500, 500, 600],
                 "strikeouts": [5, 6, 7],
                 "pitches": [80, 85, 90],
+                "innings_pitched": [5, 6, 6],
                 "fip": [4.0, 3.5, 3.0],
                 "slider_pct": [0.2, 0.25, 0.3],
                 "offspeed_to_fastball_ratio": [0.5, 0.6, 0.55],
@@ -382,3 +384,24 @@ def test_extra_cat_cols_excluded(tmp_path: Path) -> None:
         assert "away_pitcher_ids" not in df.columns
         assert "home_pitcher_ids" not in df.columns
         assert "scraped_timestamp" not in df.columns
+
+
+def test_engineer_workload_features_sql(tmp_path: Path) -> None:
+    db_path = setup_test_db(tmp_path)
+
+    with sqlite3.connect(db_path) as conn:
+        injury_df = pd.DataFrame({
+            "player_id": [10],
+            "start_date": pd.to_datetime(["2024-03-20"]),
+            "end_date": [None],
+        })
+        injury_df.to_sql("player_injury_log", conn, index=False)
+
+    df = engineer_workload_features(db_path=db_path)
+
+    assert "pitches_last_7d" in df.columns
+    assert "season_ip_last_30d" in df.columns
+    assert df.loc[1, "pitches_last_7d"] == 80
+    assert df.loc[2, "pitches_last_7d"] == 165
+    assert df.loc[1, "season_ip_last_30d"] == 5
+    assert df.loc[2, "season_ip_last_30d"] == 11
