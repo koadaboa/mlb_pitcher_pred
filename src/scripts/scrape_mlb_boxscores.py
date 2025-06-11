@@ -1,5 +1,5 @@
 # src/scripts/scrape_mlb_boxscores.py
-# (CSV Output Version with API Schedule, AL/NL Filter, New Columns)
+# Fetches box score data and stores results in the ``mlb_boxscores`` table.
 
 import httpx
 # Removed BeautifulSoup import as it's no longer needed for get_game_pks
@@ -88,7 +88,6 @@ MAX_RETRIES = 4
 INITIAL_RETRY_DELAY = 1
 MAX_RETRY_DELAY = 10
 REQUEST_TIMEOUT = 20
-OUTPUT_CSV_FILE = "mlb_boxscores_combined.csv"
 
 # Offseason Bounds & League IDs
 OFFSEASON_START_MONTH = 11; OFFSEASON_START_DAY = 5
@@ -107,7 +106,6 @@ logger = setup_logger('scrape_mlb_boxscores_api_csv', log_file=log_file, level=l
 
 # --- Define Output and Debug Directories ---
 OUTPUT_DIR = FileConfig.DATA_DIR / 'raw' if MODULE_IMPORTS_OK else project_root / 'data' / 'raw'
-OUTPUT_PATH = OUTPUT_DIR / OUTPUT_CSV_FILE
 DEBUG_API_DIR = FileConfig.DEBUG_DIR if hasattr(FileConfig, 'DEBUG_DIR') else OUTPUT_DIR.parent / 'debug_api' / 'mlb_boxscores'
 ensure_dir(OUTPUT_DIR)
 # Debug dir created later if needed
@@ -162,6 +160,27 @@ def get_latest_boxscore_date(db_path=DB_PATH):
         if latest is not None:
             return latest.strftime("%Y-%m-%d")
     return None
+
+def get_earliest_boxscore_date(db_path=DB_PATH):
+    """Return the earliest ``game_date`` in ``mlb_boxscores`` if the table exists."""
+    with DBConnection(db_path) as conn:
+        if not table_exists(conn, "mlb_boxscores"):
+            return None
+        cur = conn.execute("SELECT MIN(game_date) FROM mlb_boxscores")
+        row = cur.fetchone()
+        if row and row[0] is not None:
+            return pd.to_datetime(row[0]).strftime("%Y-%m-%d")
+    return None
+
+def load_existing_game_pks(db_path=DB_PATH):
+    """Return a set of all ``game_pk`` values currently stored."""
+    with DBConnection(db_path) as conn:
+        if not table_exists(conn, "mlb_boxscores"):
+            return set()
+        df = pd.read_sql_query("SELECT game_pk FROM mlb_boxscores", conn)
+    df["game_pk"] = pd.to_numeric(df["game_pk"], errors="coerce").astype("Int64")
+    df.dropna(subset=["game_pk"], inplace=True)
+    return set(df["game_pk"].astype(int).tolist())
 # --- Core Fetching/Parsing Functions ---
 
 # Removed fetch_html_url as it's no longer needed
@@ -361,42 +380,19 @@ async def main(start_date_str, end_date_str, debug_api):
     ensure_boxscores_table(DB_PATH)
 
     last_processed_date_str = get_latest_boxscore_date(DB_PATH)
+    earliest_date_str = get_earliest_boxscore_date(DB_PATH)
+    if earliest_date_str:
+        logger.info(f"Earliest game_date in database: {earliest_date_str}")
     if last_processed_date_str:
         logger.info(f"Latest game_date in database: {last_processed_date_str}")
-    else:
+    if not last_processed_date_str and not earliest_date_str:
         logger.info("No records found in mlb_boxscores table; starting from provided start date")
-        last_processed_date_str = None
 
-    # Load existing CSV data
-    all_game_data = []
-    existing_pks = set()
-    resume_from_dt = start_date
+    existing_pks = load_existing_game_pks(DB_PATH)
+    logger.info(f"Found {len(existing_pks)} existing gamePks in database.")
 
-    if OUTPUT_PATH.exists() and OUTPUT_PATH.stat().st_size > 0:
-        logger.info(f"Loading existing data from {OUTPUT_PATH}...")
-        try:
-            all_game_data_df = pd.read_csv(OUTPUT_PATH, low_memory=False)
-            all_game_data_df['game_pk'] = pd.to_numeric(all_game_data_df['game_pk'], errors='coerce').astype('Int64')
-            all_game_data_df.dropna(subset=['game_pk'], inplace=True)
-            existing_pks = set(all_game_data_df['game_pk'].unique())
-            all_game_data = all_game_data_df.to_dict('records')
-            logger.info(f"Loaded {len(all_game_data)} existing records with {len(existing_pks)} unique gamePks.")
-            if not last_processed_date_str and 'game_date' in all_game_data_df.columns and not all_game_data_df.empty:
-                 max_date_in_csv = pd.to_datetime(all_game_data_df['game_date'], errors='coerce').max()
-                 if pd.notna(max_date_in_csv):
-                      last_processed_date_str = max_date_in_csv.strftime('%Y-%m-%d')
-                      logger.info(f"Using max date from CSV ({last_processed_date_str}) as last processed date.")
-        except Exception as e: logger.error(f"Error loading existing CSV {OUTPUT_PATH}: {e}. Starting fresh.", exc_info=True); all_game_data = []; existing_pks = set(); last_processed_date_str = None
-
-    if last_processed_date_str:
-        try:
-            last_processed_dt = datetime.strptime(last_processed_date_str, "%Y-%m-%d").date()
-            resume_from_dt = last_processed_dt + timedelta(days=1)
-        except ValueError: logger.warning(f"Invalid date '{last_processed_date_str}' from database or CSV."); resume_from_dt = start_date
-
-    effective_start_date = max(start_date, resume_from_dt)
-    logger.info(f"Effective processing start date: {effective_start_date.strftime('%Y-%m-%d')}")
-    if effective_start_date > end_date: logger.info("Effective start date is after end date."); return
+    effective_start_date = start_date
+    logger.info(f"Processing date range {effective_start_date} to {end_date}")
 
     # Use API_HEADERS for the main client
     async with httpx.AsyncClient(headers=API_HEADERS, http2=True, timeout=REQUEST_TIMEOUT + 5) as client:
@@ -452,44 +448,23 @@ async def main(start_date_str, end_date_str, debug_api):
                      PROBLEMATIC_GAME_PKS.add(game_pk); fetch_or_parse_issue_occurred = True
                      if debug_api and api_response: save_debug_json(api_response, date_str, game_pk)
 
-            # --- Append new data and save entire CSV ---
+            # --- Save new games directly to the database ---
             date_save_successful = False
             if new_games_for_date:
-                 try:
-                      all_game_data.extend(new_games_for_date)
-                      df_all = pd.DataFrame(all_game_data)
-                      # --- <<< MODIFIED: Added new columns to order >>> ---
-                      cols_order = [
-                           'game_pk', 'game_date', 'away_team', 'home_team',
-                           'game_number', 'double_header', # Added new columns
-                           'away_pitcher_ids', 'home_pitcher_ids',
-                           'hp_umpire', '1b_umpire', '2b_umpire', '3b_umpire',
-                           'weather', 'temp', 'wind', # Added temp
-                           'elevation', # Added elevation
-                           'dayNight', # Added dayNight
-                           'first_pitch', 'scraped_timestamp'
-                      ]
-                      # --- <<< END MODIFIED >>> ---
-                      for col in cols_order:
-                           if col not in df_all.columns: df_all[col] = None
-                      df_all = df_all[cols_order]
-                      df_all.drop_duplicates(subset=['game_pk'], keep='last', inplace=True)
-                      df_all.sort_values(by=['game_date', 'game_pk'], inplace=True) # Sort before saving
-                      df_all.to_csv(OUTPUT_PATH, index=False)
-                      # Also append just the newly fetched games to the database
-                      df_new = pd.DataFrame(new_games_for_date)
-                      if not df_new.empty:
-                           ensure_boxscores_table(DB_PATH)
-                           with DBConnection(DB_PATH) as conn:
-                                df_new.to_sql("mlb_boxscores", conn, if_exists="append", index=False)
-                      processed_count = len(new_games_for_date)
-                      logger.info(f"Appended {processed_count} new games for {date_str}. Saved {len(df_all)} total games to {OUTPUT_PATH.name}.")
-                      print(f"Finished processing {date_str}. Added {processed_count} new games. Total saved: {len(df_all)}.")
-                      date_save_successful = True
-                 except Exception as e:
-                      logger.error(f"Error saving combined data for {date_str} to {OUTPUT_PATH}: {e}", exc_info=True)
-                      print(f"ERROR saving data for {date_str} to CSV. Check logs.")
-                      DATES_WITH_ISSUES.add(date_str)
+                try:
+                    df_new = pd.DataFrame(new_games_for_date)
+                    if not df_new.empty:
+                        ensure_boxscores_table(DB_PATH)
+                        with DBConnection(DB_PATH) as conn:
+                            df_new.to_sql("mlb_boxscores", conn, if_exists="append", index=False)
+                    processed_count = len(new_games_for_date)
+                    logger.info(f"Inserted {processed_count} new games for {date_str} into mlb_boxscores.")
+                    print(f"Finished processing {date_str}. Added {processed_count} new games.")
+                    date_save_successful = True
+                except Exception as e:
+                    logger.error(f"Error saving games for {date_str} to database: {e}", exc_info=True)
+                    print(f"ERROR saving data for {date_str}. Check logs.")
+                    DATES_WITH_ISSUES.add(date_str)
 
             # --- Update issue tracking ---
             if not date_save_successful and fetch_or_parse_issue_occurred and pks_to_fetch:
@@ -499,7 +474,7 @@ async def main(start_date_str, end_date_str, debug_api):
             await asyncio.sleep(0.5 + random.uniform(0, 0.5)) # Delay between dates
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Fetch MLB box score data via API for date range and save to single CSV.")
+    parser = argparse.ArgumentParser(description="Fetch MLB box score data via API for a date range and store in SQLite.")
     parser.add_argument("--start-date", required=True, help="Start date in YYYY-MM-DD format.")
     parser.add_argument("--end-date", required=False, help="End date in YYYY-MM-DD format (inclusive).")
     parser.add_argument("--debug-api", action='store_true', help="Save API JSON if parsing fails.")
@@ -513,7 +488,6 @@ if __name__ == "__main__":
     except ValueError as e: print(f"ERROR: Invalid date: {e}. Use YYYY-MM-DD."); sys.exit(1)
 
     logger.info(f"--- Starting MLB Box Score API Fetcher: {args.start_date} to {end_dt_str} ---")
-    logger.info(f"Saving data to CSV: '{OUTPUT_PATH}'.")
     logger.info(f"Debug API JSON saving {'enabled' if args.debug_api else 'disabled'}.")
 
     try:
