@@ -162,7 +162,6 @@ def get_latest_boxscore_date(db_path=DB_PATH):
         if latest is not None:
             return latest.strftime("%Y-%m-%d")
     return None
-
 # --- Core Fetching/Parsing Functions ---
 
 # Removed fetch_html_url as it's no longer needed
