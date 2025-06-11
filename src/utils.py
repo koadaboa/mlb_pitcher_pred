@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 from pathlib import Path
 from typing import Optional, Union
@@ -40,8 +41,19 @@ def ensure_dir(path: Union[str, Path]) -> Path:
     return p
 
 
-def setup_logger(name: str, log_file: Optional[Union[str, Path]] = None, level: int = logging.INFO) -> logging.Logger:
-    """Create and return a console/file logger with a standard format."""
+def setup_logger(
+    name: str, log_file: Optional[Union[str, Path]] = None,
+    level: int = logging.WARNING,
+) -> logging.Logger:
+    """Create and return a console/file logger with a standard format.
+
+    The level defaults to ``WARNING`` but can be overridden via the
+    ``LOG_LEVEL`` environment variable.
+    """
+    env_level = os.getenv("LOG_LEVEL")
+    if env_level:
+        level = getattr(logging, env_level.upper(), level)
+
     logger = logging.getLogger(name)
     logger.setLevel(level)
 
