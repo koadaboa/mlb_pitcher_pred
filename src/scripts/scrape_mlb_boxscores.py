@@ -24,7 +24,13 @@ if str(project_root) not in sys.path:
 
 try:
     from src.config import LogConfig, FileConfig
-    from src.utils import setup_logger, ensure_dir
+    from src.utils import (
+        setup_logger,
+        ensure_dir,
+        DBConnection,
+        table_exists,
+        get_latest_date,
+    )
     MODULE_IMPORTS_OK = True
     # Define DB_PATH from config if available, needed for fallback DBConnection path
     try: from src.config import DBConfig; DB_PATH = DBConfig.PATH
@@ -42,6 +48,31 @@ except ImportError as e:
     DB_PATH = str(project_root / 'data' / 'pitcher_stats.db')
     def setup_logger(name, log_file=None, level=logging.INFO): return logger
     def ensure_dir(path): Path(path).mkdir(parents=True, exist_ok=True)
+    class DBConnection:
+        def __init__(self, db_path=None):
+            self.db_path = Path(db_path or DB_PATH)
+        def __enter__(self):
+            import sqlite3
+            self.conn = sqlite3.connect(str(self.db_path))
+            return self.conn
+        def __exit__(self, exc_type, exc, tb):
+            if self.conn:
+                if exc_type:
+                    self.conn.rollback()
+                else:
+                    self.conn.commit()
+                self.conn.close()
+    def table_exists(conn, table):
+        cur = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,))
+        return cur.fetchone() is not None
+    def get_latest_date(conn, table, date_col="game_date"):
+        if not table_exists(conn, table):
+            return None
+        cur = conn.execute(f"SELECT MAX({date_col}) FROM {table}")
+        row = cur.fetchone()
+        if row and row[0] is not None:
+            return pd.to_datetime(row[0])
+        return None
 
 
 # --- Constants ---
@@ -110,6 +141,44 @@ def load_last_processed_date(filename=CHECKPOINT_PATH):
 def save_checkpoint(date_str, filename=CHECKPOINT_PATH):
     try: ensure_dir(filename.parent); filename.write_text(date_str); logger.info(f"Checkpoint saved for date: {date_str} to {filename}")
     except Exception as e: logger.error(f"Could not write checkpoint file '{filename}': {e}")
+
+# --- Database Utility Functions ---
+CREATE_TABLE_SQL = f"""
+CREATE TABLE IF NOT EXISTS mlb_boxscores (
+    game_pk INTEGER PRIMARY KEY,
+    game_date TEXT,
+    away_team TEXT,
+    home_team TEXT,
+    game_number INTEGER,
+    double_header TEXT,
+    away_pitcher_ids TEXT,
+    home_pitcher_ids TEXT,
+    hp_umpire TEXT,
+    "1b_umpire" TEXT,
+    "2b_umpire" TEXT,
+    "3b_umpire" TEXT,
+    weather TEXT,
+    temp REAL,
+    wind TEXT,
+    elevation REAL,
+    dayNight TEXT,
+    first_pitch TEXT,
+    scraped_timestamp TEXT
+)
+"""
+
+def ensure_boxscores_table(db_path=DB_PATH):
+    """Create the ``mlb_boxscores`` table if it doesn't exist."""
+    with DBConnection(db_path) as conn:
+        conn.execute(CREATE_TABLE_SQL)
+
+def get_latest_boxscore_date(db_path=DB_PATH):
+    """Return the latest ``game_date`` in ``mlb_boxscores`` if the table exists."""
+    with DBConnection(db_path) as conn:
+        latest = get_latest_date(conn, "mlb_boxscores", "game_date")
+        if latest is not None:
+            return latest.strftime("%Y-%m-%d")
+    return None
 
 # --- Core Fetching/Parsing Functions ---
 
@@ -305,10 +374,18 @@ async def main(start_date_str, end_date_str, debug_api):
     start_date = datetime.strptime(start_date_str, "%Y-%m-%d").date()
     end_date = datetime.strptime(end_date_str, "%Y-%m-%d").date()
 
-    # Load existing data and checkpoint
+    # Ensure DB table exists and determine last processed date
+    ensure_boxscores_table(DB_PATH)
+
+    last_processed_date_str = get_latest_boxscore_date(DB_PATH)
+    if last_processed_date_str:
+        logger.info(f"Latest game_date in database: {last_processed_date_str}")
+    else:
+        last_processed_date_str = load_last_processed_date()
+
+    # Load existing data and checkpoint/DB date
     all_game_data = []
     existing_pks = set()
-    last_processed_date_str = load_last_processed_date()
     resume_from_dt = start_date
 
     if OUTPUT_PATH.exists() and OUTPUT_PATH.stat().st_size > 0:
