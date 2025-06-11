@@ -96,15 +96,17 @@ def main() -> int:
 
     logger.info("--- Initializing MLB Data Fetcher ---")
     fetcher = DataFetcher(args)
-    success = fetcher.run()
+    pipeline_success = fetcher.run()
 
-    if success and not args.mlb_api:
+    bs_ok = True
+    if not args.mlb_api:
         if fetcher.single_date_historical_mode:
             seasons = [fetcher.target_fetch_date_obj.year]
         else:
             seasons = fetcher.seasons_to_fetch
         bs_ok = _fetch_boxscores(seasons, debug=args.debug)
-        success = success and bs_ok
+
+    success = pipeline_success and bs_ok
 
     if success:
         logger.info("--- Data Fetching Script Finished Successfully ---")
