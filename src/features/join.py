@@ -9,6 +9,7 @@ from src.utils import (
     table_exists,
     get_latest_date,
     safe_merge,
+    load_table_cached,
 )
 from src.config import DBConfig, LogConfig, StrikeoutModelConfig
 from .encoding import mean_target_encode
@@ -78,29 +79,13 @@ def build_model_features(
         else:
             latest = get_latest_date(conn, target_table, "game_date")
 
-        base_query = "SELECT * FROM {}"
-        filter_clause = f" WHERE strftime('%Y', game_date) = '{year}'" if year else ""
-        pitcher_df = pd.read_sql_query(
-            base_query.format(pitcher_table) + filter_clause, conn
-        )
-        if "game_date" in pitcher_df.columns:
-            pitcher_df["game_date"] = pd.to_datetime(pitcher_df["game_date"])
-        opp_df = pd.read_sql_query(base_query.format(opp_table) + filter_clause, conn)
-        ctx_df = pd.read_sql_query(
-            base_query.format(context_table) + filter_clause, conn
-        )
-        lineup_df = pd.read_sql_query(
-            base_query.format(lineup_table) + filter_clause, conn
-        )
-        catcher_df = pd.read_sql_query(
-            base_query.format(catcher_table) + filter_clause, conn
-        )
-        bp_df = pd.read_sql_query(
-            base_query.format(batter_history_table) + filter_clause, conn
-        )
-        lineup_ids = pd.read_sql_query(
-            base_query.format(lineup_ids_table), conn
-        )
+        pitcher_df = load_table_cached(db_path, pitcher_table, year, rebuild=rebuild)
+        opp_df = load_table_cached(db_path, opp_table, year, rebuild=rebuild)
+        ctx_df = load_table_cached(db_path, context_table, year, rebuild=rebuild)
+        lineup_df = load_table_cached(db_path, lineup_table, year, rebuild=rebuild)
+        catcher_df = load_table_cached(db_path, catcher_table, year, rebuild=rebuild)
+        bp_df = load_table_cached(db_path, batter_history_table, year, rebuild=rebuild)
+        lineup_ids = load_table_cached(db_path, lineup_ids_table, rebuild=rebuild)
 
         # ``game_date`` should be identical across tables for the same ``game_pk``
         # and ``pitcher_id``. Drop duplicate instances from the right-hand

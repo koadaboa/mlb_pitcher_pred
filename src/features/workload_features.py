@@ -11,6 +11,7 @@ from src.utils import (
     table_exists,
     get_latest_date,
     safe_merge,
+    load_table_cached,
 )
 from src.config import DBConfig, LogConfig
 
@@ -150,7 +151,7 @@ def engineer_workload_features(
         df = pd.read_sql_query(query, conn, params=params)
 
         if table_exists(conn, injury_table):
-            injury_df = pd.read_sql_query(f"SELECT * FROM {injury_table}", conn)
+            injury_df = load_table_cached(db_path, injury_table, rebuild=rebuild)
         else:
             injury_df = pd.DataFrame(columns=["player_id", "start_date", "end_date"])
 
