@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from src.config import DBConfig
+
 from src.features import (
     engineer_pitcher_features,
     engineer_workload_features,
@@ -17,7 +19,12 @@ from src.features import (
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Run feature engineering pipeline")
-    parser.add_argument("--db-path", type=Path, default=None, help="Path to SQLite DB")
+    parser.add_argument(
+        "--db-path",
+        type=Path,
+        default=DBConfig.PATH,
+        help="Path to SQLite DB",
+    )
     parser.add_argument(
         "--n-jobs",
         type=int,
@@ -37,44 +44,44 @@ def main(argv: list[str] | None = None) -> None:
     )
     args = parser.parse_args(argv)
 
-    engineer_pitcher_features(
-        db_path=args.db_path, year=args.year, rebuild=args.rebuild
-    )
+    db_path = args.db_path or DBConfig.PATH
+
+    engineer_pitcher_features(db_path=db_path, year=args.year, rebuild=args.rebuild)
     engineer_workload_features(
-        db_path=args.db_path,
+        db_path=db_path,
         year=args.year,
         rebuild=args.rebuild,
     )
     engineer_opponent_features(
-        db_path=args.db_path,
+        db_path=db_path,
         n_jobs=args.n_jobs,
         year=args.year,
         rebuild=args.rebuild,
     )
     engineer_contextual_features(
-        db_path=args.db_path,
+        db_path=db_path,
         n_jobs=args.n_jobs,
         year=args.year,
         rebuild=args.rebuild,
     )
     engineer_batter_pitcher_history(
-        db_path=args.db_path,
+        db_path=db_path,
         year=args.year,
         rebuild=args.rebuild,
     )
     engineer_lineup_trends(
-        db_path=args.db_path,
+        db_path=db_path,
         n_jobs=args.n_jobs,
         year=args.year,
         rebuild=args.rebuild,
     )
     engineer_catcher_defense(
-        db_path=args.db_path,
+        db_path=db_path,
         n_jobs=args.n_jobs,
         year=args.year,
         rebuild=args.rebuild,
     )
-    build_model_features(db_path=args.db_path, year=args.year, rebuild=args.rebuild)
+    build_model_features(db_path=db_path, year=args.year, rebuild=args.rebuild)
 
 
 if __name__ == "__main__":

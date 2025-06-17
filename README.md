@@ -182,7 +182,7 @@ sequentially calls `engineer_pitcher_features`, `engineer_workload_features`,
 `engineer_opponent_features`, `engineer_contextual_features`,
 `engineer_lineup_trends` and then `build_model_features`. The `lineup_trends`
 table must be present for the final
-join:
+join. The `--db-path` argument is optional and defaults to `DBConfig.PATH`:
 
 ```bash
 python -m src.scripts.run_feature_engineering --db-path path/to/pitcher_stats.db
