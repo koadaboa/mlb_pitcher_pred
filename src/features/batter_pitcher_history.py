@@ -9,6 +9,7 @@ from src.utils import (
     table_exists,
     get_latest_date,
     safe_merge,
+    load_table_cached,
 )
 from src.config import DBConfig, LogConfig, StrikeoutModelConfig
 from .engineer_features import add_rolling_features
@@ -38,16 +39,12 @@ def engineer_batter_pitcher_history(
         else:
             latest = get_latest_date(conn, target_table, "game_date")
 
-        query = f"SELECT * FROM {source_table}"
-        if year:
-            query += f" WHERE strftime('%Y', game_date) = '{year}'"
-        df = pd.read_sql_query(query, conn)
 
-        if "game_date" not in df.columns:
-            date_df = pd.read_sql_query(
-                f"SELECT game_pk, game_date FROM {date_table}", conn
-            )
-            df = safe_merge(df, date_df, on="game_pk", how="left")
+    df = load_table_cached(db_path, source_table, year, rebuild=rebuild)
+
+    if "game_date" not in df.columns:
+        date_df = load_table_cached(db_path, date_table, rebuild=rebuild)
+        df = safe_merge(df, date_df[["game_pk", "game_date"]], on="game_pk", how="left")
 
     if df.empty:
         logger.warning("No data found in %s", source_table)

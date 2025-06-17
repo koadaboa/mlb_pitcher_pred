@@ -10,6 +10,7 @@ from src.utils import (
     table_exists,
     get_latest_date,
     safe_merge,
+    load_table_cached,
 )
 from src.config import DBConfig, LogConfig, StrikeoutModelConfig
 from .contextual import _add_group_rolling
@@ -44,10 +45,8 @@ def engineer_lineup_trends(
         else:
             latest = get_latest_date(conn, target_table, "game_date")
 
-        query = f"SELECT * FROM {source_table}"
-        if year:
-            query += f" WHERE strftime('%Y', game_date) = '{year}'"
-        df = pd.read_sql_query(query, conn)
+
+    df = load_table_cached(db_path, source_table, year, rebuild=rebuild)
 
     if df.empty:
         logger.warning("No data found in %s", source_table)

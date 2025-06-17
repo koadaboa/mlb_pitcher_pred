@@ -11,6 +11,9 @@ import pandas as pd
 
 from src.config import DBConfig
 
+# Simple cache for SQLite table loads
+_CACHE: Dict[Tuple[Path, str, int | None], pd.DataFrame] = {}
+
 class DBConnection:
     """Simple context manager for SQLite connections."""
 
@@ -181,5 +184,31 @@ def safe_merge(
     merged = left.merge(right, *args, **kwargs)
     merged = deduplicate_columns(merged)
     return merged
+
+
+def load_table_cached(
+    db_path: Path,
+    table: str,
+    year: int | None = None,
+    rebuild: bool = False,
+) -> pd.DataFrame:
+    """Return ``table`` from ``db_path`` with optional year filter and caching."""
+
+    key = (Path(db_path), table, year)
+    if not rebuild and key in _CACHE:
+        return _CACHE[key].copy()
+
+    query = f"SELECT * FROM {table}"
+    if year is not None:
+        query += f" WHERE strftime('%Y', game_date) = '{year}'"
+
+    with DBConnection(db_path) as conn:
+        df = pd.read_sql_query(query, conn)
+
+    if "game_date" in df.columns:
+        df["game_date"] = pd.to_datetime(df["game_date"])
+
+    _CACHE[key] = df
+    return df.copy()
 
 
