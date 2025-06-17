@@ -183,3 +183,36 @@ def safe_merge(
     return merged
 
 
+def load_table_cached(
+    db_path: Union[str, Path],
+    table: str,
+    year: int | None = None,
+    rebuild: bool = False,
+) -> pd.DataFrame:
+    """Load a SQLite table and optionally filter by year.
+
+    Parameters
+    ----------
+    db_path : str or Path
+        Path to the SQLite database file.
+    table : str
+        Table name to read from ``db_path``.
+    year : int, optional
+        Filter rows where ``game_date`` falls within ``year``.
+    rebuild : bool, default False
+        Placeholder for compatibility with feature engineering APIs. Ignored.
+    """
+
+    db_path = Path(db_path)
+    with DBConnection(db_path) as conn:
+        query = f"SELECT * FROM {table}"
+        if year is not None:
+            query += f" WHERE strftime('%Y', game_date) = '{year}'"
+        df = pd.read_sql_query(query, conn)
+
+    if "game_date" in df.columns:
+        df["game_date"] = pd.to_datetime(df["game_date"])
+
+    return df
+
+
