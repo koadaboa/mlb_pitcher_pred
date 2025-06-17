@@ -14,6 +14,7 @@ from src.utils import (
     get_latest_date,
     safe_merge,
     load_table_cached,
+    deduplicate_columns,
 )
 from src.config import (
     DBConfig,
@@ -122,6 +123,9 @@ def _add_group_rolling(
         specified ``halflife``. Columns are suffixed with ``ewm_<halflife>`` and
         ``momentum_ewm_<halflife>``.
     """
+    df = deduplicate_columns(df)
+    group_cols = list(dict.fromkeys(group_cols))
+
     if windows is None:
         windows = StrikeoutModelConfig.WINDOW_SIZES
 
@@ -170,7 +174,9 @@ def _add_group_rolling(
         frames.extend([ewm, momentum_ewm])
 
     result = pd.concat(frames, axis=1)
-    return result.reset_index()
+    result = result.reset_index()
+    result = deduplicate_columns(result)
+    return result
 
 
 def engineer_opponent_features(

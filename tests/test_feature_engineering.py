@@ -14,6 +14,7 @@ from src.features import (
     build_model_features,
 )
 from src.features.engineer_features import add_rolling_features
+from src.features.contextual import _add_group_rolling
 from src.config import StrikeoutModelConfig
 
 
@@ -405,3 +406,25 @@ def test_engineer_workload_features_sql(tmp_path: Path) -> None:
     assert df.loc[2, "pitches_last_7d"] == 165
     assert df.loc[1, "season_ip_last_30d"] == 5
     assert df.loc[2, "season_ip_last_30d"] == 11
+
+
+def test_group_rolling_dedup_pitcher_id() -> None:
+    df = pd.DataFrame(
+        {
+            "pitcher_id": [10, 10, 20],
+            "pitcher_id_x": [10, 10, 20],
+            "game_pk": [1, 2, 3],
+            "game_date": pd.to_datetime(["2024-04-01", "2024-04-08", "2024-04-15"]),
+            "strikeouts": [5, 6, 7],
+        }
+    )
+    result = _add_group_rolling(
+        df,
+        ["pitcher_id", "pitcher_id_x"],
+        "game_date",
+        prefix="",
+        windows=[3],
+        numeric_cols=["strikeouts"],
+    )
+    assert "pitcher_id" in result.columns
+    assert list(result.columns).count("pitcher_id") == 1
