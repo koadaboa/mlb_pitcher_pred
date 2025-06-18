@@ -157,8 +157,14 @@ def _add_group_rolling(
         stds = roll.xs("std", level=-1, axis=1)
         means.columns = [f"{prefix}{c}_mean_{window}" for c in numeric_cols]
         stds.columns = [f"{prefix}{c}_std_{window}" for c in numeric_cols]
-        momentum = shifted[numeric_cols] - means
-        momentum.columns = [f"{prefix}{c}_momentum_{window}" for c in numeric_cols]
+        # Subtract using numpy arrays to avoid index alignment issues when
+        # duplicate level names exist in the MultiIndex
+        momentum_values = shifted[numeric_cols].to_numpy() - means.to_numpy()
+        momentum = pd.DataFrame(
+            momentum_values,
+            index=means.index,
+            columns=[f"{prefix}{c}_momentum_{window}" for c in numeric_cols],
+        )
         frames.extend([means, stds, momentum])
 
     if ewm_halflife is not None:
@@ -167,10 +173,14 @@ def _add_group_rolling(
             .apply(lambda x: x.ewm(halflife=ewm_halflife, min_periods=1).mean())
         )
         ewm.columns = [f"{prefix}{c}_ewm_{int(ewm_halflife)}" for c in numeric_cols]
-        momentum_ewm = shifted[numeric_cols] - ewm
-        momentum_ewm.columns = [
-            f"{prefix}{c}_momentum_ewm_{int(ewm_halflife)}" for c in numeric_cols
-        ]
+        momentum_ewm_values = shifted[numeric_cols].to_numpy() - ewm.to_numpy()
+        momentum_ewm = pd.DataFrame(
+            momentum_ewm_values,
+            index=ewm.index,
+            columns=[
+                f"{prefix}{c}_momentum_ewm_{int(ewm_halflife)}" for c in numeric_cols
+            ],
+        )
         frames.extend([ewm, momentum_ewm])
 
     result = pd.concat(frames, axis=1)
