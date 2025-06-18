@@ -15,6 +15,7 @@ from src.utils import (
     safe_merge,
     load_table_cached,
     deduplicate_columns,
+    deduplicate_index,
 )
 from src.config import (
     DBConfig,
@@ -144,6 +145,7 @@ def _add_group_rolling(
         numeric_cols = [c for c in numeric_cols if c in df.columns and c not in exclude_cols]
 
     df_idx = df.set_index(list(group_cols) + [date_col])
+    df_idx = deduplicate_index(df_idx)
     shifted = df_idx[numeric_cols].groupby(level=group_cols).shift(1)
 
     frames = [df_idx]

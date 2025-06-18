@@ -15,6 +15,7 @@ from src.features import (
 )
 from src.features.engineer_features import add_rolling_features
 from src.features.contextual import _add_group_rolling
+from src.utils import deduplicate_index
 from src.config import StrikeoutModelConfig
 
 
@@ -428,3 +429,12 @@ def test_group_rolling_dedup_pitcher_id() -> None:
     )
     assert "pitcher_id" in result.columns
     assert list(result.columns).count("pitcher_id") == 1
+
+
+def test_deduplicate_index_names() -> None:
+    index = pd.MultiIndex.from_arrays(
+        [[10, 20], [1, 2]], names=["pitcher_id", "pitcher_id"]
+    )
+    df = pd.DataFrame({"strikeouts": [5, 6]}, index=index)
+    df = deduplicate_index(df)
+    assert df.index.names == ["pitcher_id", "pitcher_id_1"]
