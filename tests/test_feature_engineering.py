@@ -15,6 +15,7 @@ from src.features import (
 )
 from src.features.engineer_features import add_rolling_features
 from src.features.contextual import _add_group_rolling
+from src.utils import deduplicate_index
 from src.config import StrikeoutModelConfig
 
 
@@ -370,6 +371,8 @@ def test_extra_cat_cols_excluded(tmp_path: Path) -> None:
         df = pd.read_sql_query("SELECT * FROM contextual_features", conn)
         df["away_pitcher_ids"] = ["[1]"] * len(df)
         df["home_pitcher_ids"] = ["[2]"] * len(df)
+        df["away_starting_pitcher_id"] = [1] * len(df)
+        df["home_starting_pitcher_id"] = [2] * len(df)
         df["scraped_timestamp"] = "2024-04-01"
         df.to_sql("contextual_features", conn, if_exists="replace", index=False)
 
@@ -384,6 +387,8 @@ def test_extra_cat_cols_excluded(tmp_path: Path) -> None:
         assert "scraped_timestamp_enc" not in df.columns
         assert "away_pitcher_ids" not in df.columns
         assert "home_pitcher_ids" not in df.columns
+        assert "away_starting_pitcher_id" not in df.columns
+        assert "home_starting_pitcher_id" not in df.columns
         assert "scraped_timestamp" not in df.columns
 
 
@@ -428,3 +433,12 @@ def test_group_rolling_dedup_pitcher_id() -> None:
     )
     assert "pitcher_id" in result.columns
     assert list(result.columns).count("pitcher_id") == 1
+
+
+def test_deduplicate_index_names() -> None:
+    index = pd.MultiIndex.from_arrays(
+        [[10, 20], [1, 2]], names=["pitcher_id", "pitcher_id"]
+    )
+    df = pd.DataFrame({"strikeouts": [5, 6]}, index=index)
+    df = deduplicate_index(df)
+    assert df.index.names == ["pitcher_id", "pitcher_id_1"]

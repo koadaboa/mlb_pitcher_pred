@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Optional, Union, Dict, Tuple
 import logging
 import re
+import json
 from datetime import datetime
 import pandas as pd
 
@@ -171,6 +172,40 @@ def deduplicate_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def deduplicate_index(df: pd.DataFrame) -> pd.DataFrame:
+    """Ensure index level names are unique.
+
+    Parameters
+    ----------
+    df : DataFrame
+        Input DataFrame whose ``index`` may contain duplicate level names.
+
+    Returns
+    -------
+    DataFrame
+        ``df`` with duplicate index level names suffixed with ``_1`` ``_2`` etc.
+    """
+
+    idx = df.index
+    if not isinstance(idx, pd.MultiIndex):
+        return df
+
+    counts: dict[str | None, int] = {}
+    new_names = []
+    for name in idx.names:
+        if name not in counts:
+            counts[name] = 0
+            new_names.append(name)
+        else:
+            counts[name] += 1
+            suffix = counts[name]
+            new_names.append(f"{name}_{suffix}")
+
+    if new_names != list(idx.names):
+        df.index = idx.set_names(new_names)
+    return df
+
+
 def safe_merge(
     left: pd.DataFrame,
     right: pd.DataFrame,
@@ -210,5 +245,25 @@ def load_table_cached(
 
     _CACHE[key] = df
     return df.copy()
+
+
+def parse_starting_pitcher_id(ids: str | list[int] | None) -> int | None:
+    """Return the first pitcher ID from a serialized list."""
+
+    if ids is None:
+        return None
+    if isinstance(ids, str):
+        try:
+            parsed = json.loads(ids)
+        except Exception:
+            return None
+    else:
+        parsed = ids
+    if isinstance(parsed, list) and parsed:
+        try:
+            return int(parsed[0])
+        except (TypeError, ValueError):
+            return None
+    return None
 
 
