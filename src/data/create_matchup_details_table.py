@@ -4,7 +4,12 @@ import pandas as pd
 from pathlib import Path
 import logging
 
-from src.utils import DBConnection, setup_logger, safe_merge
+from src.utils import (
+    DBConnection,
+    setup_logger,
+    safe_merge,
+    parse_starting_pitcher_id,
+)
 from src.config import DBConfig, LogConfig
 
 STARTERS_TABLE = "game_level_starting_pitchers"
@@ -32,6 +37,15 @@ def build_matchup_table(db_path: Path = DBConfig.PATH) -> pd.DataFrame:
         boxscores = pd.read_sql_query(f"SELECT * FROM {BOXSCORES_TABLE}", conn)
         if boxscores.empty:
             logger.warning("No rows found in %s", BOXSCORES_TABLE)
+        else:
+            if "away_pitcher_ids" in boxscores.columns:
+                boxscores["away_starting_pitcher_id"] = boxscores[
+                    "away_pitcher_ids"
+                ].apply(parse_starting_pitcher_id)
+            if "home_pitcher_ids" in boxscores.columns:
+                boxscores["home_starting_pitcher_id"] = boxscores[
+                    "home_pitcher_ids"
+                ].apply(parse_starting_pitcher_id)
 
         # Merge starter metrics with opponent batting
         merge_cols = ["game_pk", "pitcher_id", "opponent_team"]

@@ -19,6 +19,8 @@ from .selection import BASE_EXCLUDE_COLS
 EXTRA_CAT_EXCLUDE_COLS = [
     "away_pitcher_ids",
     "home_pitcher_ids",
+    "away_starting_pitcher_id",
+    "home_starting_pitcher_id",
     "scraped_timestamp",
 ]
 import re

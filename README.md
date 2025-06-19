@@ -35,7 +35,11 @@ Contains similar data to `statcast_pitchers` but from the batter's point of view
 Includes metadata for each game such as:
 
 ```
-['game_pk', 'game_date', 'away_team', 'home_team', 'game_number', 'double_header', 'away_pitcher_ids', 'home_pitcher_ids', 'hp_umpire', '1b_umpire', '2b_umpire', '3b_umpire', 'weather', 'temp', 'wind', 'elevation', 'dayNight', 'first_pitch', 'scraped_timestamp']
+['game_pk', 'game_date', 'away_team', 'home_team', 'game_number', 'double_header',
+ 'away_pitcher_ids', 'home_pitcher_ids', 'away_starting_pitcher_id',
+ 'home_starting_pitcher_id', 'hp_umpire', '1b_umpire', '2b_umpire', '3b_umpire',
+ 'weather', 'temp', 'wind', 'elevation', 'dayNight', 'first_pitch',
+ 'scraped_timestamp']
 ```
 ### `game_starting_lineups`
 
@@ -209,7 +213,8 @@ python -m src.scripts.run_feature_engineering --db-path path/to/pitcher_stats.db
 
 `build_model_features` removes columns that could leak target information. Raw
 game outcome stats (e.g. `bat_strikeouts`) and identifier fields such as
-`away_pitcher_ids`, `home_pitcher_ids`, and `scraped_timestamp` are dropped
+`away_pitcher_ids`, `home_pitcher_ids`, `away_starting_pitcher_id`,
+`home_starting_pitcher_id`, and `scraped_timestamp` are dropped
 before saving `model_features`. Only rolling statistics or whitelisted numeric
 columns like `temp`, `wind_speed`, `park_factor`, and `team_k_rate` are
 retained.

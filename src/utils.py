@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Optional, Union, Dict, Tuple
 import logging
 import re
+import json
 from datetime import datetime
 import pandas as pd
 
@@ -244,5 +245,25 @@ def load_table_cached(
 
     _CACHE[key] = df
     return df.copy()
+
+
+def parse_starting_pitcher_id(ids: str | list[int] | None) -> int | None:
+    """Return the first pitcher ID from a serialized list."""
+
+    if ids is None:
+        return None
+    if isinstance(ids, str):
+        try:
+            parsed = json.loads(ids)
+        except Exception:
+            return None
+    else:
+        parsed = ids
+    if isinstance(parsed, list) and parsed:
+        try:
+            return int(parsed[0])
+        except (TypeError, ValueError):
+            return None
+    return None
 
 

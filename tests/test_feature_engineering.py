@@ -371,6 +371,8 @@ def test_extra_cat_cols_excluded(tmp_path: Path) -> None:
         df = pd.read_sql_query("SELECT * FROM contextual_features", conn)
         df["away_pitcher_ids"] = ["[1]"] * len(df)
         df["home_pitcher_ids"] = ["[2]"] * len(df)
+        df["away_starting_pitcher_id"] = [1] * len(df)
+        df["home_starting_pitcher_id"] = [2] * len(df)
         df["scraped_timestamp"] = "2024-04-01"
         df.to_sql("contextual_features", conn, if_exists="replace", index=False)
 
@@ -385,6 +387,8 @@ def test_extra_cat_cols_excluded(tmp_path: Path) -> None:
         assert "scraped_timestamp_enc" not in df.columns
         assert "away_pitcher_ids" not in df.columns
         assert "home_pitcher_ids" not in df.columns
+        assert "away_starting_pitcher_id" not in df.columns
+        assert "home_starting_pitcher_id" not in df.columns
         assert "scraped_timestamp" not in df.columns
 
 
